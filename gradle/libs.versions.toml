@@ -1,5 +1,5 @@
 [versions]
-agp = "8.13.1"
+agp = "8.13.2"
 kotlin = "2.1.0"
 coreKtx = "1.10.1"
 junit = "4.13.2"
@@ -38,6 +38,13 @@ ktor-server-cio = { module = "io.ktor:ktor-server-cio", version.ref = "ktorServe
 ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktorServerContentNegotiation" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktorServerCore" }
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktorServerNetty" }
+bouncycastle-prov = { group = "org.bouncycastle", name = "bcprov-jdk15to18", version = "1.73" }
+bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk15to18", version = "1.73" }
+
+[bundles]
+bouncycastle = ["bouncycastle-prov", "bouncycastle-pkix"]
+
+
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
