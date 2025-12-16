@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.ConnectivityManager
 import android.os.IBinder
 import android.util.Log
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
@@ -21,6 +22,30 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.FileInputStream
 import java.security.KeyStore
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
+
+
+@Serializable
+data class ConfigRequest(
+    val sensors: Map<String, Boolean>,
+    val rooms: List<Room>,
+    val situationalSettings: SituationalSettings,
+    val sleepTime: String
+)
+
+@Serializable
+data class Room(
+    val name: String,
+    val sensors: Map<String, Boolean>
+)
+
+@Serializable
+data class SituationalSettings(
+    val SituationenErkennen: Boolean,
+    val ObjekteVerpixeln: Boolean
+)
 
 class RobotServerService : Service() {
 
@@ -60,10 +85,20 @@ class RobotServerService : Service() {
                     get("/ping") { call.respondText("alive")
                     Log.i("Server", "Ping received")}
                     post("/save") {
-                        val text = call.receive<String>()
-                        saveToFile(text)
-                        call.respondText("OK")
-                        Log.i("Server", "Data saved: $text")
+                        val rawJson = call.receiveText() // roh einlesen
+                        try {
+                            // JSON prüfen
+                            val config = Json { ignoreUnknownKeys = true }.decodeFromString<ConfigRequest>(rawJson)
+                            Log.i("Server", "Received config with ${config.rooms.size} rooms")
+
+                            // UNVERÄNDERT speichern
+                            saveToFile(rawJson)
+
+                            call.respondText("OK", status = HttpStatusCode.OK)
+                        } catch (e: Exception) {
+                            Log.e("Server", "Failed to parse JSON: ${e.message}")
+                            call.respond(HttpStatusCode.BadRequest, "Invalid JSON: ${e.message}")
+                        }
                     }
                 }
             },
