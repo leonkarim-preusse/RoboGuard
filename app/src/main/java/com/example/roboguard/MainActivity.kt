@@ -1,5 +1,6 @@
 package com.example.roboguard
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
@@ -24,6 +25,9 @@ import java.security.cert.X509Certificate
 import java.util.Base64
 
 class MainActivity : ComponentActivity() {
+
+    private var serviceConnection: android.content.ServiceConnection? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -35,29 +39,52 @@ class MainActivity : ComponentActivity() {
                             .fillMaxSize()
                             .padding(paddingValues)
                     ) {
-                        QRCodeScreen()
+                        val (robotService, setRobotService) = remember { mutableStateOf<RobotServerService?>(null) }
+
+                        // BindService nur einmal starten
+                        LaunchedEffect(Unit) {
+                            val intent = android.content.Intent(this@MainActivity, RobotServerService::class.java)
+                            startService(intent)
+
+                            serviceConnection = object : android.content.ServiceConnection {
+                                override fun onServiceConnected(
+                                    name: android.content.ComponentName?,
+                                    service: android.os.IBinder?
+                                ) {
+                                    val binder = service as RobotServerService.LocalBinder
+                                    setRobotService(binder.getService())
+                                }
+
+                                override fun onServiceDisconnected(name: android.content.ComponentName?) {
+                                    setRobotService(null)
+                                }
+                            }
+
+                            bindService(intent, serviceConnection!!, Context.BIND_AUTO_CREATE)
+                        }
+
+                        // QR-Code anzeigen, sobald Service verfügbar
+                        robotService?.let { QRCodeScreen(it) } ?: Text("Starting server...")
                     }
                 }
             }
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        startService(android.content.Intent(this, RobotServerService::class.java))
+    override fun onStop() {
+        super.onStop()
+        serviceConnection?.let { unbindService(it) }
     }
 }
 
 @Composable
-fun QRCodeScreen() {
-    val context = LocalContext.current
+fun QRCodeScreen(serverService: RobotServerService) {
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    LaunchedEffect(Unit) {
-        val publicKey = loadServerPublicKey(context)
-        if (publicKey != null) {
-            val authentification = Authentification(publicKey)
-            qrBitmap = generateQRCode(authentification.createAuthMessage())
+    // QR-Code generieren, wenn Authentification verfügbar ist
+    LaunchedEffect(serverService) {
+        serverService.authentification?.let {
+            qrBitmap = generateQRCode(it.createAuthMessage())
         }
     }
 
@@ -68,29 +95,16 @@ fun QRCodeScreen() {
                 contentDescription = "QR Code",
                 modifier = Modifier.size(500.dp)
             )
-        } ?: run {
-            Text(text = "Generating QR code...")
-        }
+        } ?: Text("Generating QR code...")
     }
 }
 
 // --- Helper functions ---
 
-fun loadServerPublicKey(context: android.content.Context): String? {
-    val keyStoreFile = File(context.filesDir, "server.p12")
-    if (!keyStoreFile.exists()) return null
-
-    val password = KeyStorePasswordManager.getOrCreatePassword(context)
-        .toString(Charsets.UTF_8).toCharArray()
-
-    val keyStore = KeyStore.getInstance("PKCS12").apply {
-        FileInputStream(keyStoreFile).use { load(it, password) }
-    }
-
-    val cert = keyStore.getCertificate("serverkey") as? X509Certificate
-    Log.i("Certificate", "Loaded publickey")
+fun loadServerPublicKey(): String? {
+    val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    val cert = keyStore.getCertificate("serverKey") as? X509Certificate
     return cert?.publicKey?.encoded?.let { Base64.getEncoder().encodeToString(it) }
-
 }
 
 fun generateQRCode(json: String, size: Int = 1024): Bitmap {

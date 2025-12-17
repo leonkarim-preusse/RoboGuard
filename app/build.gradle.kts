@@ -2,7 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    id("org.jetbrains.kotlin.plugin.serialization") version "1.9.10"
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -71,12 +72,34 @@ dependencies {
     // JSON
     implementation(libs.kotlinx.serialization.json)
 
-    //security
+    // security
     implementation(libs.bundles.bouncycastle)
 
+// QR code
     implementation("com.google.zxing:core:3.5.2")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
+    // Room
+    implementation("androidx.room:room-runtime:2.6.1")
+
+// SQLCipher
+    implementation("net.zetetic:android-database-sqlcipher:4.5.4")
+    ksp("androidx.room:room-compiler:2.6.1")
+
+// AndroidX SQLite
+    implementation("androidx.sqlite:sqlite:2.3.1")
+
+    // Coroutine Unterstützung (optional, falls du suspend functions in DAO nutzt)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    implementation("com.google.guava:guava:31.1-android"){
+        exclude(group = "com.google.guava", module = "listenablefuture")
+    }
+
+}
+configurations.all {
+    exclude(group = "com.google.guava", module = "listenablefuture")
 }
 
 

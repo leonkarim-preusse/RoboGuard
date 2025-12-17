@@ -9,38 +9,33 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import java.security.SecureRandom
 
-object KeyStorePasswordManager {
+object PasswordManager {
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
     private const val AES_ALIAS = "RoboGuardAESKey"
-    private const val PREFS_NAME = "keystore_prefs"
-    private const val PASSWORD_KEY = "keystore_password"
+    private const val PREFS_NAME = "secure_prefs"
+    private const val PASSWORD_KEY = "stored_password"
 
-    fun getOrCreatePassword(context: Context): ByteArray {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val encryptedPassword = prefs.getString(PASSWORD_KEY, null)
-        return if (encryptedPassword != null) {
-            decryptPassword(encryptedPassword)
-        } else {
-            val password = ByteArray(32).also { SecureRandom().nextBytes(it) }
-            val encrypted = encryptPassword(password)
-            prefs.edit().putString(PASSWORD_KEY, encrypted).apply()
-            password
-        }
-    }
-
-    private fun encryptPassword(password: ByteArray): String {
+    /** Passwort / Shared Secret speichern */
+    fun savePassword(password: ByteArray, context: Context) {
         val key = getOrCreateAESKey()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key)
         val iv = cipher.iv
         val encrypted = cipher.doFinal(password)
-        return Base64.encodeToString(iv + encrypted, Base64.DEFAULT)
+        val encryptedB64 = Base64.encodeToString(iv + encrypted, Base64.DEFAULT)
+
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PASSWORD_KEY, encryptedB64)
+            .apply()
     }
 
-    private fun decryptPassword(data: String): ByteArray {
-        val decoded = Base64.decode(data, Base64.DEFAULT)
+    /** Passwort / Shared Secret laden */
+    fun loadPassword(context: Context): ByteArray? {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val encryptedB64 = prefs.getString(PASSWORD_KEY, null) ?: return null
+        val decoded = Base64.decode(encryptedB64, Base64.DEFAULT)
         val iv = decoded.copyOfRange(0, 12)
         val encrypted = decoded.copyOfRange(12, decoded.size)
         val key = getOrCreateAESKey()
@@ -49,6 +44,7 @@ object KeyStorePasswordManager {
         return cipher.doFinal(encrypted)
     }
 
+    /** AES-Key im KeyStore erzeugen oder laden */
     private fun getOrCreateAESKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         keyStore.getKey(AES_ALIAS, null)?.let { return it as SecretKey }
@@ -60,6 +56,7 @@ object KeyStorePasswordManager {
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
             .build()
         keyGenerator.init(spec)
         return keyGenerator.generateKey()
