@@ -13,7 +13,7 @@ import java.util.UUID
 
 @SuppressLint("UnsafeOptInUsageError")
 @Serializable
-class Authentification(var publickey: String) {
+class Authentification(var publickey: String, var ip: String?) {
 
     protected var otp = createOTP()
 
@@ -58,8 +58,8 @@ class Authentification(var publickey: String) {
         return sharedSecret
     }
 
-    internal suspend fun authHandshake(otp: String, clientName: String, context: Context): Boolean {
-        if (!validateOTP(otp)) return false
+    internal suspend fun authHandshake(otp: String, clientName: String, context: Context): Int {
+        if (!validateOTP(otp)) throw SecurityException("Bad OTP")
 
         val sharedSecret = generateSharedSecret()
         val passphrase = getOrCreateDBPassword(context)
@@ -70,7 +70,7 @@ class Authentification(var publickey: String) {
         val id = clientDao.insertClient(client)
         Log.i("DB", "Client added, ID $id")
 
-        return true
+        return id
     }
 
     fun getOrCreateDBPassword(context: Context): ByteArray {
@@ -84,37 +84,47 @@ class Authentification(var publickey: String) {
     }
 
 
-    internal fun checkForSharedSecret(){
+    internal fun get_shared_secret(client_id, context: Context){
+        val passphrase = PasswordManager.loadPassword(context)
+            ?: return false
 
+        val db = ClientDatabase.getDatabase(context, passphrase)
+        val client = db.clientDao().getClientById(client_id)
+            ?: return false
+
+        val storedSecretBytes = try {
+            Base64.getDecoder().decode(client.sharedSecret)
+        } catch (e: IllegalArgumentException) {
+            return false
+        }
+        return storedSecretBytes
 
     }
-}
+    internal suspend fun authenticate(
+        context: Context,
+        clientId: Int,
+        sharedSecretClientBase64: String
+    ): Boolean {
 
-internal suspend fun authenticate(
-    context: Context,
-    clientId: Int,
-    sharedSecretClientBase64: String
-): Boolean {
+        val passphrase = PasswordManager.loadPassword(context)
+            ?: return false
 
-    val passphrase = PasswordManager.loadPassword(context)
-        ?: return false
+        val db = ClientDatabase.getDatabase(context, passphrase)
+        val client = db.clientDao().getClientById(clientId)
+            ?: return false
 
-    val db = ClientDatabase.getDatabase(context, passphrase)
-    val client = db.clientDao().getClientById(clientId)
-        ?: return false
+        val clientSecretBytes = try {
+            Base64.getDecoder().decode(sharedSecretClientBase64)
+        } catch (e: IllegalArgumentException) {
+            return false
+        }
 
-    val clientSecretBytes = try {
-        Base64.getDecoder().decode(sharedSecretClientBase64)
-    } catch (e: IllegalArgumentException) {
-        return false
+        val storedSecretBytes = try {
+            Base64.getDecoder().decode(client.sharedSecret)
+        } catch (e: IllegalArgumentException) {
+            return false
+        }
+
+        return storedSecretBytes.contentEquals(clientSecretBytes)
     }
-
-    val storedSecretBytes = try {
-        Base64.getDecoder().decode(client.sharedSecret)
-    } catch (e: IllegalArgumentException) {
-        return false
-    }
-
-    return storedSecretBytes.contentEquals(clientSecretBytes)
-}
 

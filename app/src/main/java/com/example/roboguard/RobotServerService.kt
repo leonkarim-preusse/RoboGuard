@@ -35,6 +35,7 @@ import io.ktor.server.routing.routing
 import io.ktor.util.pipeline.PipelineContext
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
@@ -69,6 +70,9 @@ data class Room(val name: String, val sensors: Map<String, Boolean>)
 @Serializable
 data class SituationalSettings(val SituationenErkennen: Boolean, val ObjekteVerpixeln: Boolean)
 
+@Serializable
+data class authHandshake(val id: Int, val secret: String)
+
 class RobotServerService : Service() {
     inner class LocalBinder : android.os.Binder() {
         fun getService(): RobotServerService = this@RobotServerService
@@ -94,9 +98,9 @@ class RobotServerService : Service() {
         // KeyPair + Self-Signed Zertifikat erzeugen oder laden
         createOrGetKeyStoreCertificate()
         val pub = loadServerPublicKey(); if (pub.isNullOrBlank()){ throw IllegalStateException("Public key not available") }
-        this.authentification = Authentification(pub)
-        // Ktor Server starten
+        this.authentification = Authentification(pub, null )
         startKtorServer()
+
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -117,8 +121,29 @@ class RobotServerService : Service() {
                 routing {
 
                     post("/otp_auth"){
-                        val clientId = call.request.headers["X-Client-Id"]?.toIntOrNull()
                         val otp = call.request.headers["X-Client-otp"]
+                        val clientName = call.request.headers["X-Client-name"]
+                        if (otp.isNullOrBlank() || clientName.isNullOrBlank()) {
+                            call.respond(
+                                HttpStatusCode.BadRequest,
+                                "Missing X-Client-otp or X-Client-name"
+                            )
+                            return@post
+                        }
+                        try {
+
+                            val id = authentification.authHandshake(otp, clientName, applicationContext)
+                            val secret = authentification.get_shared_secret(id, applicationContext)
+                            val authJSON = authHandshake(id, secret)
+                            call.respond(status = HttpStatusCode.OK, Json.encodeToString(authJSON))
+                        } catch (e: Exception) {
+                            call.respond(
+                                HttpStatusCode.Unauthorized,
+                                "Authorization failed"
+                            )
+
+                        }
+
 
 
 
@@ -139,6 +164,7 @@ class RobotServerService : Service() {
                             respond(HttpStatusCode.BadRequest, "Invalid JSON: ${e.message}")
                         }
                     }
+
                 }
             },
             configure = {
@@ -157,6 +183,7 @@ class RobotServerService : Service() {
         server?.start(wait = false)
 
         val ipAddress = getDeviceIp()
+        authentification.ip = ipAddress
         Log.i("Server", "Server started on http://$ipAddress:8080 and https://$ipAddress:8443")
     }
 
@@ -243,7 +270,7 @@ class RobotServerService : Service() {
      * QR-Code für Authentifikation erzeugen
      */
     fun copple(): Bitmap {
-        val authentification = Authentification(getServerPublicKey() ?: throw IllegalStateException("Public key not available"))
+        val authentification = Authentification(getServerPublicKey() ?: throw IllegalStateException("Public key not available"), getDeviceIp())
         val jsonQR = authentification.createAuthMessage()
         return generateQRCode(jsonQR)
     }
