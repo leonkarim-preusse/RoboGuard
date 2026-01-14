@@ -1,5 +1,7 @@
 package com.example.roboguard
 
+import android.util.Base64
+
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Bundle
@@ -8,21 +10,27 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.roboguard.ui.theme.RoboGuardTheme
-import java.io.File
-import java.io.FileInputStream
 import java.security.KeyStore
 import java.security.cert.X509Certificate
-import java.util.Base64
+
 
 class MainActivity : ComponentActivity() {
 
@@ -101,11 +109,6 @@ fun QRCodeScreen(serverService: RobotServerService) {
 
 // --- Helper functions ---
 
-fun loadServerPublicKey(): String? {
-    val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-    val cert = keyStore.getCertificate("serverKey") as? X509Certificate
-    return cert?.publicKey?.encoded?.let { Base64.getEncoder().encodeToString(it) }
-}
 
 fun generateQRCode(json: String, size: Int = 1024): Bitmap {
     val bitMatrix = com.google.zxing.MultiFormatWriter().encode(
@@ -117,5 +120,18 @@ fun generateQRCode(json: String, size: Int = 1024): Bitmap {
     val barcodeEncoder = com.journeyapps.barcodescanner.BarcodeEncoder()
     Log.i("Certificate", "Generated QR code")
     return barcodeEncoder.createBitmap(bitMatrix)
+}
+
+fun getServerCertificatePem(): String {
+    val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+    val cert = keyStore.getCertificate("serverKey") as X509Certificate
+
+    val base64 = Base64.encodeToString(cert.encoded, Base64.NO_WRAP)
+
+    return """
+        -----BEGIN CERTIFICATE-----
+        $base64
+        -----END CERTIFICATE-----
+    """.trimIndent()
 }
 

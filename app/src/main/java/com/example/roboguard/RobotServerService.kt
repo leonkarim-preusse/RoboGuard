@@ -32,10 +32,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
-import io.ktor.util.pipeline.PipelineContext
-
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
@@ -50,8 +47,6 @@ import java.security.Security
 import java.security.cert.X509Certificate
 import java.util.Date
 import javax.security.auth.x500.X500Principal
-import kotlin.text.toIntOrNull
-import kotlin.text.toLongOrNull
 
 @SuppressLint("UnsafeOptInUsageError")
 @Serializable
@@ -71,7 +66,7 @@ data class Room(val name: String, val sensors: Map<String, Boolean>)
 data class SituationalSettings(val SituationenErkennen: Boolean, val ObjekteVerpixeln: Boolean)
 
 @Serializable
-data class authHandshake(val id: Int, val secret: String)
+data class authcred(val id: Long, val secret: String)
 
 class RobotServerService : Service() {
     inner class LocalBinder : android.os.Binder() {
@@ -85,7 +80,8 @@ class RobotServerService : Service() {
     }
 
     private var server: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration>? = null
-    internal var authentification: Authentification? = null
+    lateinit var authentification: Authentification
+
 
     override fun onCreate() {
         super.onCreate()
@@ -97,8 +93,8 @@ class RobotServerService : Service() {
 
         // KeyPair + Self-Signed Zertifikat erzeugen oder laden
         createOrGetKeyStoreCertificate()
-        val pub = loadServerPublicKey(); if (pub.isNullOrBlank()){ throw IllegalStateException("Public key not available") }
-        this.authentification = Authentification(pub, null )
+        val pub = getServerCertificatePem(); if (pub.isNullOrBlank()){ throw IllegalStateException("Public key not available") }
+        authentification = Authentification(pub, null )
         startKtorServer()
 
     }
@@ -133,8 +129,8 @@ class RobotServerService : Service() {
                         try {
 
                             val id = authentification.authHandshake(otp, clientName, applicationContext)
-                            val secret = authentification.get_shared_secret(id, applicationContext)
-                            val authJSON = authHandshake(id, secret)
+                            val secret = Authentification.getSharedSecret(id.toInt(), applicationContext)
+                            val authJSON = authcred(id, secret.toString())
                             call.respond(status = HttpStatusCode.OK, Json.encodeToString(authJSON))
                         } catch (e: Exception) {
                             call.respond(
@@ -314,7 +310,7 @@ class RobotServerService : Service() {
             return false
         }
 
-        if (!authenticate(context, clientId, clientSecret)) {
+        if (!Authentification.authenticate(context, clientId, clientSecret)) {
             respond(HttpStatusCode.Unauthorized, "Invalid credentials")
             return false
         }

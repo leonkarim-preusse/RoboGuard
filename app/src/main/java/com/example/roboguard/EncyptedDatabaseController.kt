@@ -10,7 +10,7 @@ import net.sqlcipher.database.SupportFactory
 
 @Entity(tableName = "clients")
 data class ClientEntity(
-    @PrimaryKey(autoGenerate = true) val clientId: Int = 0,
+    @PrimaryKey(autoGenerate = true) val clientId: Long = 0,
     val sharedSecret: String,
     var clientName: String
 )

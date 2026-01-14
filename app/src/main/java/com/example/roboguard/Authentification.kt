@@ -23,10 +23,7 @@ class Authentification(var publickey: String, var ip: String?) {
     @Transient
     private val createdAt: Long = System.currentTimeMillis()
 
-    init{
 
-        this.publickey = Base64.getEncoder().encodeToString(this.publickey.toByteArray())
-    }
     protected fun createOTP(): String {
         return UUID.randomUUID().toString()
 
@@ -41,24 +38,26 @@ class Authentification(var publickey: String, var ip: String?) {
         return this.otp == otp
     }
 
-    protected fun updateOTP(){
+    protected fun updateOTP() {
         this.otp = createOTP()
 
     }
-    internal fun createAuthMessage(): String{
+
+    internal fun createAuthMessage(): String {
 
         val json = Json.encodeToString(serializer(), this)
         return json
 
 
     }
-    internal fun generateSharedSecret(): ByteArray{
+
+    internal fun generateSharedSecret(): ByteArray {
         val sharedSecret = ByteArray(64)
         SecureRandom().nextBytes(sharedSecret)
         return sharedSecret
     }
 
-    internal suspend fun authHandshake(otp: String, clientName: String, context: Context): Int {
+    internal suspend fun authHandshake(otp: String, clientName: String, context: Context): Long {
         if (!validateOTP(otp)) throw SecurityException("Bad OTP")
 
         val sharedSecret = generateSharedSecret()
@@ -66,7 +65,8 @@ class Authentification(var publickey: String, var ip: String?) {
         val database = ClientDatabase.getDatabase(context, passphrase)
         val clientDao = database.clientDao()
 
-        val client = ClientEntity(sharedSecret = sharedSecret.encodeBase64(), clientName = clientName)
+        val client =
+            ClientEntity(sharedSecret = sharedSecret.encodeBase64(), clientName = clientName)
         val id = clientDao.insertClient(client)
         Log.i("DB", "Client added, ID $id")
 
@@ -83,48 +83,53 @@ class Authentification(var publickey: String, var ip: String?) {
         }
     }
 
+    companion object {
+        internal suspend fun getSharedSecret(
+            clientId: Int,
+            context: Context
+        ): ByteArray? {
 
-    internal fun get_shared_secret(client_id, context: Context){
-        val passphrase = PasswordManager.loadPassword(context)
-            ?: return false
+            val passphrase = PasswordManager.loadPassword(context)
+                ?: return null
 
-        val db = ClientDatabase.getDatabase(context, passphrase)
-        val client = db.clientDao().getClientById(client_id)
-            ?: return false
+            val db = ClientDatabase.getDatabase(context, passphrase)
+            val client = db.clientDao().getClientById(clientId)
+                ?: return null
 
-        val storedSecretBytes = try {
-            Base64.getDecoder().decode(client.sharedSecret)
-        } catch (e: IllegalArgumentException) {
-            return false
+            return try {
+                Base64.getDecoder().decode(client.sharedSecret)
+            } catch (e: IllegalArgumentException) {
+                null
+            }
         }
-        return storedSecretBytes
 
+        internal suspend fun authenticate(
+            context: Context,
+            clientId: Int,
+            sharedSecretClientBase64: String
+        ): Boolean {
+
+            val passphrase = PasswordManager.loadPassword(context)
+                ?: return false
+
+            val db = ClientDatabase.getDatabase(context, passphrase)
+            val client = db.clientDao().getClientById(clientId)
+                ?: return false
+
+            val clientSecretBytes = try {
+                Base64.getDecoder().decode(sharedSecretClientBase64)
+            } catch (e: IllegalArgumentException) {
+                return false
+            }
+
+            val storedSecretBytes = try {
+                Base64.getDecoder().decode(client.sharedSecret)
+            } catch (e: IllegalArgumentException) {
+                return false
+            }
+
+            return storedSecretBytes.contentEquals(clientSecretBytes)
+        }
     }
-    internal suspend fun authenticate(
-        context: Context,
-        clientId: Int,
-        sharedSecretClientBase64: String
-    ): Boolean {
-
-        val passphrase = PasswordManager.loadPassword(context)
-            ?: return false
-
-        val db = ClientDatabase.getDatabase(context, passphrase)
-        val client = db.clientDao().getClientById(clientId)
-            ?: return false
-
-        val clientSecretBytes = try {
-            Base64.getDecoder().decode(sharedSecretClientBase64)
-        } catch (e: IllegalArgumentException) {
-            return false
-        }
-
-        val storedSecretBytes = try {
-            Base64.getDecoder().decode(client.sharedSecret)
-        } catch (e: IllegalArgumentException) {
-            return false
-        }
-
-        return storedSecretBytes.contentEquals(clientSecretBytes)
-    }
+}
 
