@@ -5,23 +5,27 @@ coreKtx = "1.10.1"
 junit = "4.13.2"
 junitVersion = "1.1.5"
 espressoCore = "3.5.1"
-kotlinxSerializationJson = "1.9.0"
-ktorSerializationKotlinxJson = "3.3.2"
-ktorServerCallLogging = "3.3.2"
-ktorServerCio = "3.3.2"
-ktorServerContentNegotiation = "3.3.2"
-ktorServerCore = "3.3.3"
-ktorServerNetty = "3.3.3"
 lifecycleRuntimeKtx = "2.6.1"
 activityCompose = "1.8.0"
 composeBom = "2024.09.00"
-ksp = "2.1.0-1.0.29"  #
+ksp = "2.1.0-1.0.29"
+
+# Ktor 2.x für Android 8 Stabilität
+ktor = "2.3.12"
+kotlinxSerializationJson = "1.6.3"
 
 [libraries]
+# Ktor Server 2.3.12
+ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
+ktor-server-cio = { module = "io.ktor:ktor-server-cio", version.ref = "ktor" }
+ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
+ktor-server-host-common = { module = "io.ktor:ktor-server-host-common", version.ref = "ktor" }
+ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktor" }
+ktor-server-call-logging = { module = "io.ktor:ktor-server-call-logging", version.ref = "ktor" }
+ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+
+# AndroidX & UI
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
-junit = { group = "junit", name = "junit", version.ref = "junit" }
-androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
-androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -29,23 +33,22 @@ androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
 androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
-androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
-androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+
+# Testing
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+
+# Serialization & Security
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
-ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktorSerializationKotlinxJson" }
-ktor-server-call-logging = { module = "io.ktor:ktor-server-call-logging", version.ref = "ktorServerCallLogging" }
-ktor-server-cio = { module = "io.ktor:ktor-server-cio", version.ref = "ktorServerCio" }
-ktor-server-content-negotiation = { module = "io.ktor:ktor-server-content-negotiation", version.ref = "ktorServerContentNegotiation" }
-ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktorServerCore" }
-ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktorServerNetty" }
 bouncycastle-prov = { group = "org.bouncycastle", name = "bcprov-jdk15to18", version = "1.73" }
 bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk15to18", version = "1.73" }
 
 [bundles]
 bouncycastle = ["bouncycastle-prov", "bouncycastle-pkix"]
-
-
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
