@@ -66,8 +66,8 @@ dependencies {
     implementation(libs.ktor.server.call.logging)
     implementation(libs.ktor.serialization.kotlinx.json)
 
-    // Netty server engine
-    implementation(libs.ktor.server.netty)
+    implementation("io.ktor:ktor-server-cio:2.3.7")
+
 
     // JSON
     implementation(libs.kotlinx.serialization.json)
