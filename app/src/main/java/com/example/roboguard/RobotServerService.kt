@@ -1,39 +1,56 @@
 package com.example.roboguard
 
+// Ktor 2.3.12 Imports
+
+// QR Code
+
+// Serialization
+
+// Security
+
+// Für die Keystore-Korrektur (Signatur-Details)
 import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.net.ConnectivityManager
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
-
-// Ktor 2.3.12 Imports
-import io.ktor.server.engine.*
-import io.ktor.server.cio.*
-import io.ktor.server.application.*
-import io.ktor.server.routing.*
-import io.ktor.server.response.*
-import io.ktor.server.request.*
-import io.ktor.http.HttpStatusCode
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.util.pipeline.PipelineContext
-import io.ktor.server.jetty.*
-
-// QR Code
+import android.view.Gravity
+import android.view.WindowManager
+import android.widget.TextView
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.MultiFormatWriter
 import com.journeyapps.barcodescanner.BarcodeEncoder
-
-// Serialization
+import io.ktor.http.HttpStatusCode
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.call
+import io.ktor.server.application.install
+import io.ktor.server.engine.EngineConnectorConfig
+import io.ktor.server.engine.EngineSSLConnectorBuilder
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.jetty.Jetty
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.request.receiveText
+import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.Route
+import io.ktor.server.routing.get
+import io.ktor.server.routing.post
+import io.ktor.server.routing.routing
+import io.ktor.util.pipeline.PipelineContext
 import kotlinx.serialization.Serializable
-
-// Security
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -42,9 +59,12 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.math.BigInteger
-import java.security.*
+import java.security.KeyPairGenerator
+import java.security.KeyStore
+import java.security.SecureRandom
+import java.security.Security
 import java.security.cert.X509Certificate
-import java.util.*
+import java.util.Date
 import javax.net.ssl.KeyManagerFactory
 import javax.security.auth.x500.X500Principal
 
@@ -121,6 +141,23 @@ class RobotServerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+
+        val CHANNEL_ID = "robot_server_channel"
+
+        // Notification Channel ist ab Android 8 (API 26) Pflicht!
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "RoboGuard Server Service",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(channel)
+
+        val notification = Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("RoboGuard Server")
+            .setContentText("Server läuft im Hintergrund...")
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .build()
 
         if (Security.getProvider("BC") == null) {
             Security.addProvider(BouncyCastleProvider())
@@ -206,7 +243,8 @@ class RobotServerService : Service() {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
 
         if (ks.containsAlias(alias)) {
-            return ks.getCertificate(alias) as X509Certificate
+            val cert = ks.getCertificate(alias) as X509Certificate
+            return cert
         }
 
         val kpg = KeyPairGenerator.getInstance(
@@ -216,29 +254,35 @@ class RobotServerService : Service() {
 
         val spec = KeyGenParameterSpec.Builder(
             alias,
-            KeyProperties.PURPOSE_SIGN
+            KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
         )
             .setKeySize(2048)
             .setDigests(KeyProperties.DIGEST_SHA256)
+            .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
             .build()
 
         kpg.initialize(spec)
         val kp = kpg.generateKeyPair()
 
+        // Zertifikat erstellen
         val now = Date()
-        val cert = JcaX509v3CertificateBuilder(
+        val validity = Date(now.time + 365L * 24 * 60 * 60 * 1000)
+
+        // WICHTIG: Hier keinen Provider "BC" für das Signing erzwingen!
+        // Der AndroidKeyStore Key muss von seinem eigenen Provider signiert werden.
+        val signer = JcaContentSignerBuilder("SHA256withRSA").build(kp.private)
+
+        val certHolder = JcaX509v3CertificateBuilder(
             X500Principal("CN=RoboGuard Auth"),
-            BigInteger(64, SecureRandom()),
+            BigInteger.valueOf(System.currentTimeMillis()),
             now,
-            Date(now.time + 365L * 24 * 60 * 60 * 1000),
+            validity,
             X500Principal("CN=RoboGuard Auth"),
             kp.public
-        ).build(JcaContentSignerBuilder("SHA256withRSA").build(kp.private))
+        ).build(signer)
 
-        // Korrektur: Kein .setProvider("BC"), damit Android Standard-Provider nutzt
-        return JcaX509CertificateConverter().getCertificate(cert)
+        return JcaX509CertificateConverter().getCertificate(certHolder)
     }
-
     /* ---------- HTTPS PKCS12 ---------- */
 
     private fun loadHttpsKeyStore(context: Context): Pair<KeyStore, CharArray> {
@@ -323,5 +367,46 @@ class RobotServerService : Service() {
     override fun onDestroy() {
         server?.stop(1000, 2000)
         super.onDestroy()
+    }
+    fun showPopup(message: String) {
+        // UI-Operationen müssen auf dem Main-Looper laufen
+        Handler(Looper.getMainLooper()).post {
+            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, // Korrekt für Android 8+
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                y = 100 // Abstand von oben
+            }
+
+            val textView = TextView(this).apply {
+                text = message
+                setTextColor(Color.BLACK)
+                setBackgroundColor(Color.WHITE)
+                setPadding(40, 20, 40, 20)
+                elevation = 10f
+            }
+
+            try {
+                windowManager.addView(textView, params)
+
+                // Nach 5 Sekunden automatisch entfernen
+                Handler(Looper.getMainLooper()).postDelayed({
+                    try {
+                        windowManager.removeView(textView)
+                    } catch (e: Exception) {
+                        Log.e("Popup", "Fehler beim Entfernen: ${e.message}")
+                    }
+                }, 5000)
+
+            } catch (e: Exception) {
+                Log.e("Popup", "Konnte Fenster nicht hinzufügen: ${e.message}")
+            }
+        }
     }
 }

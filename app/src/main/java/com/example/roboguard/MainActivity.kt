@@ -1,10 +1,13 @@
 package com.example.roboguard
 
-import android.util.Base64
-
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.os.IBinder
+import android.util.Base64
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,12 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -31,10 +29,10 @@ import com.example.roboguard.ui.theme.RoboGuardTheme
 import java.security.KeyStore
 import java.security.cert.X509Certificate
 
-
 class MainActivity : ComponentActivity() {
 
-    private var serviceConnection: android.content.ServiceConnection? = null
+    private var serviceConnection: ServiceConnection? = null
+    private var isBound = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,37 +40,41 @@ class MainActivity : ComponentActivity() {
         setContent {
             RoboGuardTheme {
                 Scaffold { paddingValues ->
+                    val (robotService, setRobotService) = remember { mutableStateOf<RobotServerService?>(null) }
+
+                    LaunchedEffect(Unit) {
+                        val intent = Intent(this@MainActivity, RobotServerService::class.java)
+
+                        // 1. Service starten (für Android 8+ startForegroundService)
+                        startForegroundService(intent)
+
+                        // 2. Connection definieren
+                        serviceConnection = object : ServiceConnection {
+                            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+                                val binder = service as RobotServerService.LocalBinder
+                                setRobotService(binder.getService())
+                                isBound = true
+                                Log.d("MainActivity", "Service verbunden")
+                            }
+
+                            override fun onServiceDisconnected(name: ComponentName?) {
+                                setRobotService(null)
+                                isBound = false
+                            }
+                        }
+
+                        // 3. Binden für UI-Kommunikation
+                        bindService(intent, serviceConnection!!, Context.BIND_AUTO_CREATE)
+                    }
+
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues)
                     ) {
-                        val (robotService, setRobotService) = remember { mutableStateOf<RobotServerService?>(null) }
-
-                        // BindService nur einmal starten
-                        LaunchedEffect(Unit) {
-                            val intent = android.content.Intent(this@MainActivity, RobotServerService::class.java)
-                            startService(intent)
-
-                            serviceConnection = object : android.content.ServiceConnection {
-                                override fun onServiceConnected(
-                                    name: android.content.ComponentName?,
-                                    service: android.os.IBinder?
-                                ) {
-                                    val binder = service as RobotServerService.LocalBinder
-                                    setRobotService(binder.getService())
-                                }
-
-                                override fun onServiceDisconnected(name: android.content.ComponentName?) {
-                                    setRobotService(null)
-                                }
-                            }
-
-                            bindService(intent, serviceConnection!!, Context.BIND_AUTO_CREATE)
-                        }
-
-                        // QR-Code anzeigen, sobald Service verfügbar
-                        robotService?.let { QRCodeScreen(it) } ?: Text("Starting server...")
+                        robotService?.let {
+                            QRCodeScreen(it)
+                        } ?: Text("Warte auf Server...")
                     }
                 }
             }
@@ -81,9 +83,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        serviceConnection?.let { unbindService(it) }
+        // Sicherer Unbind
+        if (isBound && serviceConnection != null) {
+            try {
+                unbindService(serviceConnection!!)
+                isBound = false
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Fehler beim Unbind: ${e.message}")
+            }
+        }
     }
 }
+
+/* ---------- UI Komponenten ---------- */
 
 @Composable
 fun QRCodeScreen(serverService: RobotServerService) {
@@ -91,8 +103,8 @@ fun QRCodeScreen(serverService: RobotServerService) {
 
     // QR-Code generieren, wenn Authentification verfügbar ist
     LaunchedEffect(serverService) {
-        serverService.authentification?.let {
-            qrBitmap = generateQRCode(it.createAuthMessage())
+        serverService.authentification?.let { auth ->
+            qrBitmap = generateQRCode(auth.createAuthMessage())
         }
     }
 
@@ -107,8 +119,7 @@ fun QRCodeScreen(serverService: RobotServerService) {
     }
 }
 
-// --- Helper functions ---
-
+/* ---------- Helper functions ---------- */
 
 fun generateQRCode(json: String, size: Int = 1024): Bitmap {
     val bitMatrix = com.google.zxing.MultiFormatWriter().encode(
@@ -124,7 +135,7 @@ fun generateQRCode(json: String, size: Int = 1024): Bitmap {
 
 fun getServerCertificatePem(): String {
     val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-    val cert = keyStore.getCertificate("serverKey") as X509Certificate
+    val cert = keyStore.getCertificate("serverAuthKey") as X509Certificate // Alias angepasst auf deinen Service
 
     val base64 = Base64.encodeToString(cert.encoded, Base64.NO_WRAP)
 
@@ -134,4 +145,3 @@ fun getServerCertificatePem(): String {
         -----END CERTIFICATE-----
     """.trimIndent()
 }
-
