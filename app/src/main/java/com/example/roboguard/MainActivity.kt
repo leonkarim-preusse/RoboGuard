@@ -36,6 +36,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val permissions = arrayOf(
+            android.Manifest.permission.READ_EXTERNAL_STORAGE,
+            android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+        )
+
+        if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(permissions, 100)
+        }
         enableEdgeToEdge()
         setContent {
             RoboGuardTheme {
@@ -54,7 +62,7 @@ class MainActivity : ComponentActivity() {
                                 val binder = service as RobotServerService.LocalBinder
                                 setRobotService(binder.getService())
                                 isBound = true
-                                Log.d("MainActivity", "Service verbunden")
+                                Log.d("MainActivity", "Service connected")
                             }
 
                             override fun onServiceDisconnected(name: ComponentName?) {
@@ -74,7 +82,7 @@ class MainActivity : ComponentActivity() {
                     ) {
                         robotService?.let {
                             QRCodeScreen(it)
-                        } ?: Text("Warte auf Server...")
+                        } ?: Text("Waiting for Server...")
                     }
                 }
             }
@@ -89,7 +97,7 @@ class MainActivity : ComponentActivity() {
                 unbindService(serviceConnection!!)
                 isBound = false
             } catch (e: Exception) {
-                Log.e("MainActivity", "Fehler beim Unbind: ${e.message}")
+                Log.e("MainActivity", "Error unbinding: ${e.message}")
             }
         }
     }

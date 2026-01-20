@@ -50,6 +50,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.util.pipeline.PipelineContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -154,7 +155,7 @@ class RobotServerService : Service() {
 
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("RoboGuard Server")
-            .setContentText("Server läuft im Hintergrund...")
+            .setContentText("Server running in background...")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .build()
 
@@ -177,7 +178,7 @@ class RobotServerService : Service() {
     private fun startKtorServer() {
         val (loadedKeyStore, passwordCharArray) = loadHttpsKeyStore(applicationContext)
 
-        // Hier Jetty statt CIO oder Netty nutzen
+        // Jetty
         val srv = embeddedServer(Jetty, port = 8443, host = "0.0.0.0") {
             install(ContentNegotiation) {
                 json()
@@ -213,18 +214,26 @@ class RobotServerService : Service() {
                 securePost("/save", applicationContext) {
                     val jsonString = call.receiveText()
 
-                    // Pfad: /sdcard/Documents/RoboSettings/settings.json
-                    val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "RoboSettings")
-                    if (!directory.exists()) directory.mkdirs()
-
-                    val configFile = File(directory, "privacy_settings.json")
-
                     try {
+                        val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "RoboSettings")
+                        if (!directory.exists()) directory.mkdirs()
+
+                        val configFile = File(directory, "privacy_settings.json")
+
+                        val oldJson = if (configFile.exists()) configFile.readText() else null
+
+                        val displayMessage = getChangedSettings(oldJson, jsonString)
+
+
                         configFile.writeText(jsonString)
+
+                        showPopup(displayMessage, 300000)
                         Log.d("Settings", "Saved to: ${configFile.absolutePath}")
                         call.respondText("OK")
                     } catch (e: Exception) {
                         call.respond(HttpStatusCode.InternalServerError, "Could not save settings: ${e.message}")
+                        showPopup("Error: Missing Permissions (Storage). Please open the App and/or adjust app permissions")
+
                     }
                 }
             }
@@ -248,12 +257,6 @@ class RobotServerService : Service() {
         srv.start(wait = false)
 
         Log.i("Server", "Ktor is running on 8443")
-    }
-
-    /* ---------- Helpers ---------- */
-
-    private fun saveToFile(data: String) {
-        File(filesDir, "robot_data.txt").appendText("$data\n")
     }
 
     /* ---------- AndroidKeyStore RSA (Auth / QR only) ---------- */
@@ -287,8 +290,6 @@ class RobotServerService : Service() {
         val now = Date()
         val validity = Date(now.time + 365L * 24 * 60 * 60 * 1000)
 
-        // WICHTIG: Hier keinen Provider "BC" für das Signing erzwingen!
-        // Der AndroidKeyStore Key muss von seinem eigenen Provider signiert werden.
         val signer = JcaContentSignerBuilder("SHA256withRSA").build(kp.private)
 
         val certHolder = JcaX509v3CertificateBuilder(
@@ -389,7 +390,7 @@ class RobotServerService : Service() {
         server?.stop(1000, 2000)
         super.onDestroy()
     }
-    fun showPopup(message: String) {
+    fun showPopup(message: String, durationMS: Long = 5000) {
         // UI-Operationen müssen auf dem Main-Looper laufen
         Handler(Looper.getMainLooper()).post {
             val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -416,18 +417,44 @@ class RobotServerService : Service() {
             try {
                 windowManager.addView(textView, params)
 
-                // Nach 5 Sekunden automatisch entfernen
                 Handler(Looper.getMainLooper()).postDelayed({
                     try {
                         windowManager.removeView(textView)
                     } catch (e: Exception) {
                         Log.e("Popup", "Fehler beim Entfernen: ${e.message}")
                     }
-                }, 5000)
+                }, durationMS)
 
             } catch (e: Exception) {
                 Log.e("Popup", "Konnte Fenster nicht hinzufügen: ${e.message}")
             }
+        }
+    }
+
+    private fun getChangedSettings(oldJson: String?, newJson: String): String {
+        if (oldJson == null) return "New Settings:\n$newJson"
+
+        return try {
+            val oldData = Json.decodeFromString<ConfigRequest>(oldJson)
+            val newData = Json.decodeFromString<ConfigRequest>(newJson)
+            val changes = mutableListOf<String>()
+
+            // compare
+            newData.sensors.forEach { (key, value) ->
+                if (oldData.sensors[key] != value) {
+                    changes.add("$key: ${oldData.sensors[key]} -> $value")
+                }
+            }
+
+            // Situational Settings
+            if (oldData.situationalSettings != newData.situationalSettings) {
+                changes.add("Situations-Modus geändert")
+            }
+
+            if (changes.isEmpty()) "No changes"
+            else "Changes:\n" + changes.joinToString("\n")
+        } catch (e: Exception) {
+            "Settings were adjusted, but Format was not recognized"
         }
     }
 }
