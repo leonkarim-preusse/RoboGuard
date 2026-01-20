@@ -8,7 +8,7 @@ plugins {
 
 android {
     namespace = "com.example.roboguard"
-    compileSdk = 36
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.example.roboguard"
