@@ -106,30 +106,41 @@ class Authentification(var publickey: String, var ip: String?) {
         internal suspend fun authenticate(
             context: Context,
             clientId: Int,
-            sharedSecretClientBase64: String
+            receivedSignatureBase64: String, // Vom Handy gesendet
+            payload: String                  // Das JSON
         ): Boolean {
 
-            val passphrase = PasswordManager.loadPassword(context)
-                ?: return false
-
+            val passphrase = PasswordManager.loadPassword(context) ?: return false
             val db = ClientDatabase.getDatabase(context, passphrase)
-            val client = db.clientDao().getClientById(clientId)
-                ?: return false
+            val client = db.clientDao().getClientById(clientId) ?: return false
 
-            val clientSecretBytes = try {
-                Base64.getDecoder().decode(sharedSecretClientBase64)
-            } catch (e: IllegalArgumentException) {
+            // get secret
+            val storedSecretBase64 = client.sharedSecret
+
+            // HMAC
+            val expectedSignature = try {
+                createHmacSignature(payload, storedSecretBase64)
+            } catch (e: Exception) {
+                Log.e("Auth", "Fehler bei HMAC Berechnung: ${e.message}")
                 return false
             }
 
-            val storedSecretBytes = try {
-                Base64.getDecoder().decode(client.sharedSecret)
-            } catch (e: IllegalArgumentException) {
-                return false
-            }
-
-            return storedSecretBytes.contentEquals(clientSecretBytes)
+            // verify hmac
+            return receivedSignatureBase64.trim() == expectedSignature.trim()
         }
-    }
+
+        private fun createHmacSignature(payload: String, secretBase64: String): String {
+
+            val secretBytes = java.util.Base64.getDecoder().decode(secretBase64)
+            val hmacKey = javax.crypto.spec.SecretKeySpec(secretBytes, "HmacSHA256")
+
+            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac.init(hmacKey)
+
+            val resultBytes = mac.doFinal(payload.toByteArray(Charsets.UTF_8))
+
+            return java.util.Base64.getEncoder().encodeToString(resultBytes)
+        }
+}
 }
 

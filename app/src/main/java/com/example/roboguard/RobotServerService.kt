@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.ConnectivityManager
+import android.os.Environment
 import android.os.IBinder
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -155,21 +156,40 @@ class RobotServerService : Service() {
                         call.respond(HttpStatusCode.BadRequest)
                         return@post
                     }
+                    try {
+                        val id = authentification.authHandshake(otp, clientName, applicationContext)
+                        val secretBytes = Authentification.getSharedSecret(id.toInt(), applicationContext)
+                        val secret = Base64.encodeToString(secretBytes, Base64.NO_WRAP)
 
-                    val id = authentification.authHandshake(otp, clientName, applicationContext)
-                    val secretBytes = Authentification.getSharedSecret(id.toInt(), applicationContext)
-                    val secret = Base64.encodeToString(secretBytes, Base64.NO_WRAP)
+                        call.respond(HttpStatusCode.OK, AuthCred(id, secret))
+                    }catch(e: SecurityException){
+                        Log.w("Security", "Bad OTP, Access denied")
+                        call.respond(HttpStatusCode.Unauthorized)
+                        return@post
 
-                    call.respond(HttpStatusCode.OK, AuthCred(id, secret))
+                    }
+
                 }
 
                 get("/ping") {
                     call.respondText("alive")
                 }
-
                 securePost("/save", applicationContext) {
-                    saveToFile(call.receiveText())
-                    call.respondText("OK")
+                    val jsonString = call.receiveText()
+
+                    // Pfad: /sdcard/Documents/RoboSettings/settings.json
+                    val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "RoboSettings")
+                    if (!directory.exists()) directory.mkdirs()
+
+                    val configFile = File(directory, "privacy_settings.json")
+
+                    try {
+                        configFile.writeText(jsonString)
+                        Log.d("Settings", "Saved to: ${configFile.absolutePath}")
+                        call.respondText("OK")
+                    } catch (e: Exception) {
+                        call.respond(HttpStatusCode.InternalServerError, "Could not save settings: ${e.message}")
+                    }
                 }
             }
         }
@@ -286,24 +306,25 @@ class RobotServerService : Service() {
     private fun Route.securePost(
         path: String,
         context: Context,
-        body: suspend PipelineContext<Unit, ApplicationCall>.(Unit) -> Unit
+        body: suspend PipelineContext<Unit, ApplicationCall>.(String) -> Unit
     ) {
         post(path) {
-            if (!call.requireClientAuth(context)) return@post
-            body(Unit)
+            val payload = call.receiveText()
+            if (!call.requireClientAuth(context, payload)) return@post
+            body(payload)
         }
     }
 
-    private suspend fun ApplicationCall.requireClientAuth(context: Context): Boolean {
+    private suspend fun ApplicationCall.requireClientAuth(context: Context, payload: String): Boolean {
         val id = request.headers["X-Client-Id"]?.toIntOrNull()
-        val secret = request.headers["X-Client-Secret"]
+        val signature = request.headers["X-Client-Secret"]
 
-        if (id == null || secret == null) {
+        if (id == null || signature == null) {
             respond(HttpStatusCode.Unauthorized)
             return false
         }
 
-        if (!Authentification.authenticate(context, id, secret)) {
+        if (!Authentification.authenticate(context, id, signature, payload)) {
             respond(HttpStatusCode.Unauthorized)
             return false
         }
