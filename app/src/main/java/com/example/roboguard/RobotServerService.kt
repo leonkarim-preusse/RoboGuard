@@ -211,7 +211,7 @@ class RobotServerService : Service() {
         this.server = srv
         srv.start(wait = false)
 
-        Log.i("Server", "Ktor 2.3.12 läuft stabil auf Port 8443")
+        Log.i("Server", "Ktor is running on 8443")
     }
 
     /* ---------- Helpers ---------- */
