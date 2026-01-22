@@ -63,7 +63,6 @@ dependencies {
 
     // Ktor Server 2.3.12 - Hier die harten Versionen statt 3.3.3
     val ktorVersion = "2.3.12"
-    implementation("io.ktor:ktor-server-jetty:$ktorVersion")
     implementation("io.ktor:ktor-server-core:$ktorVersion")
     implementation("io.ktor:ktor-server-cio:$ktorVersion")
     implementation("io.ktor:ktor-server-host-common:$ktorVersion")
@@ -72,6 +71,9 @@ dependencies {
     implementation("io.ktor:ktor-server-auth:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
     implementation("io.ktor:ktor-network-tls:$ktorVersion")
+    implementation("io.ktor:ktor-server-netty:2.3.12")
+
+    implementation("io.ktor:ktor-network-tls-certificates:${ktorVersion}")
 
     // JSON (Achte darauf, dass dies zu Ktor 2 passt, meist 1.6.3)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")

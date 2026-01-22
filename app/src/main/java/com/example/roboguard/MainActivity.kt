@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import com.example.roboguard.ui.theme.RoboGuardTheme
+import kotlinx.coroutines.delay
 import java.security.KeyStore
 import java.security.cert.X509Certificate
 
@@ -53,10 +54,10 @@ class MainActivity : ComponentActivity() {
                     LaunchedEffect(Unit) {
                         val intent = Intent(this@MainActivity, RobotServerService::class.java)
 
-                        // 1. Service starten (für Android 8+ startForegroundService)
+                        // Foregroundservice start
                         startForegroundService(intent)
 
-                        // 2. Connection definieren
+                        // Connection
                         serviceConnection = object : ServiceConnection {
                             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
                                 val binder = service as RobotServerService.LocalBinder
@@ -71,7 +72,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        // 3. Binden für UI-Kommunikation
+                        // UI communication binder
                         bindService(intent, serviceConnection!!, Context.BIND_AUTO_CREATE)
                     }
 
@@ -91,7 +92,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // Sicherer Unbind
         if (isBound && serviceConnection != null) {
             try {
                 unbindService(serviceConnection!!)
@@ -112,8 +112,19 @@ fun QRCodeScreen(serverService: RobotServerService) {
     // QR-Code generieren, wenn Authentification verfügbar ist
     LaunchedEffect(serverService) {
         serverService.authentification?.let { auth ->
-            qrBitmap = generateQRCode(auth.createAuthMessage())
+            qrBitmap= generateQRCode(auth.createAuthMessage())
         }
+        var curr_otp = serverService.authentification.otp
+        while(true){
+            if (serverService.authentification.otp != curr_otp){
+                serverService.authentification?.let { auth ->
+                    qrBitmap= generateQRCode(auth.createAuthMessage())
+                    curr_otp = serverService.authentification.otp
+                }
+            }
+            delay(1000)
+        }
+
     }
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

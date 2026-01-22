@@ -10,21 +10,25 @@ import kotlinx.serialization.json.Json
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.UUID
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 
 @SuppressLint("UnsafeOptInUsageError")
 @Serializable
 class Authentification(var publickey: String, var ip: String?) {
 
-    protected var otp = createOTP()
+    var otp = createOTP()
 
     @Transient
     private val validityDuration = 300
 
     @Transient
-    private val createdAt: Long = System.currentTimeMillis()
+    private var createdAt: Long = System.currentTimeMillis()
+
 
 
     protected fun createOTP(): String {
+        createdAt=System.currentTimeMillis()
         return UUID.randomUUID().toString()
 
     }
@@ -124,7 +128,7 @@ class Authentification(var publickey: String, var ip: String?) {
                 Log.e("Auth", "Fehler bei HMAC Berechnung: ${e.message}")
                 return false
             }
-
+            Log.i("Auth", "Expected Signature: $expectedSignature, Base64_signature: $receivedSignatureBase64  \n ")
             // verify hmac
             return receivedSignatureBase64.trim() == expectedSignature.trim()
         }

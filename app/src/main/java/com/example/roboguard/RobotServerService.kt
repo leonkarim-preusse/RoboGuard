@@ -1,75 +1,54 @@
-    package com.example.roboguard
+package com.example.roboguard
 
-    // Ktor 2.3.12 Imports
+import android.annotation.SuppressLint
+import android.app.*
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.os.*
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import android.util.Log
+import android.view.Gravity
+import android.view.WindowManager
+import android.widget.TextView
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.MultiFormatWriter
+import com.journeyapps.barcodescanner.BarcodeEncoder
+import io.ktor.http.*
+import io.ktor.serialization.kotlinx.json.*
+import io.ktor.server.application.*
+import io.ktor.server.engine.*
+import io.ktor.server.netty.*
+import io.ktor.server.engine.*
+import io.ktor.server.application.*
+import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.server.request.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
+import io.ktor.util.pipeline.*
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import org.bouncycastle.asn1.x509.Extension
+import org.bouncycastle.asn1.x509.GeneralName
+import org.bouncycastle.asn1.x509.GeneralNames
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
+import org.bouncycastle.jce.provider.BouncyCastleProvider
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileNotFoundException
+import java.math.BigInteger
+import java.security.*
+import java.security.cert.X509Certificate
+import java.util.*
+import javax.net.ssl.KeyManagerFactory
+import javax.security.auth.x500.X500Principal
 
-    // QR Code
-    // Serialization
-
-
-    // Security
-    import android.annotation.SuppressLint
-    import android.app.Notification
-    import android.app.NotificationChannel
-    import android.app.NotificationManager
-    import android.app.Service
-    import android.content.Context
-    import android.content.Intent
-    import android.graphics.Bitmap
-    import android.graphics.Color
-    import android.graphics.PixelFormat
-    import android.os.Environment
-    import android.os.Handler
-    import android.os.IBinder
-    import android.os.Looper
-    import android.security.keystore.KeyGenParameterSpec
-    import android.security.keystore.KeyProperties
-    import android.util.Base64
-    import android.util.Log
-    import android.view.Gravity
-    import android.view.WindowManager
-    import android.widget.TextView
-    import com.google.zxing.BarcodeFormat
-    import com.google.zxing.MultiFormatWriter
-    import com.journeyapps.barcodescanner.BarcodeEncoder
-    import io.ktor.http.HttpStatusCode
-    import io.ktor.serialization.kotlinx.json.json
-    import io.ktor.server.application.ApplicationCall
-    import io.ktor.server.application.call
-    import io.ktor.server.application.install
-    import io.ktor.server.engine.EngineConnectorConfig
-    import io.ktor.server.engine.EngineSSLConnectorBuilder
-    import io.ktor.server.engine.embeddedServer
-    import io.ktor.server.jetty.Jetty
-    import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-    import io.ktor.server.request.receiveText
-    import io.ktor.server.response.respond
-    import io.ktor.server.response.respondText
-    import io.ktor.server.routing.Route
-    import io.ktor.server.routing.get
-    import io.ktor.server.routing.post
-    import io.ktor.server.routing.routing
-    import io.ktor.util.pipeline.PipelineContext
-    import kotlinx.serialization.Serializable
-    import kotlinx.serialization.json.Json
-    import org.bouncycastle.asn1.x509.Extension
-    import org.bouncycastle.asn1.x509.GeneralName
-    import org.bouncycastle.asn1.x509.GeneralNames
-    import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
-    import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
-    import org.bouncycastle.jce.provider.BouncyCastleProvider
-    import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
-    import java.io.File
-    import java.io.FileInputStream
-    import java.io.FileNotFoundException
-    import java.math.BigInteger
-    import java.security.KeyPairGenerator
-    import java.security.KeyStore
-    import java.security.SecureRandom
-    import java.security.Security
-    import java.security.cert.X509Certificate
-    import java.util.Date
-    import javax.net.ssl.KeyManagerFactory
-    import javax.security.auth.x500.X500Principal
 
     /* ---------- DTOs ---------- */
 
@@ -147,7 +126,6 @@
 
             val CHANNEL_ID = "robot_server_channel"
 
-            // Notification Channel ist ab Android 8 (API 26) Pflicht!
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "RoboGuard Server Service",
@@ -166,10 +144,13 @@
                 Security.addProvider(BouncyCastleProvider())
             }
 
-            val cert = createOrGetAuthCertificate()
-            val pub = Base64.encodeToString(cert.encoded, Base64.NO_WRAP)
+            val (httpsKS, password) = loadHttpsKeyStore(applicationContext)
 
-            authentification = Authentification(pub, getIP())
+            val cert = httpsKS.getCertificate(HTTPS_KEY_ALIAS) as X509Certificate
+            val pubKeyBase64 = Base64.encodeToString(cert.encoded, Base64.NO_WRAP)
+
+            authentification = Authentification(pubKeyBase64, getIP())
+
             startKtorServer()
             startForeground(1, notification)
         }
@@ -177,105 +158,84 @@
         override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
             START_STICKY
 
-        /* ---------- Ktor HTTPS Server (CIO) ---------- */
+        /* ---------- Ktor HTTPS Server  ---------- */
 
         private fun startKtorServer() {
-            val (loadedKeyStore, passwordCharArray) = loadHttpsKeyStore(applicationContext)
-            Log.d("Server", "Keystore erfolgreich geladen. Typ: ${loadedKeyStore.type}")
+            try {
+                val (loadedKeyStore, passwordCharArray) = loadHttpsKeyStore(applicationContext)
+                Log.d("Server", "Starte Netty Engine auf Port 8443...")
 
-            // Jetty
-            val srv = embeddedServer(Jetty, port = 8443, host = "0.0.0.0") {
-                install(ContentNegotiation) {
-                    json()
-                }
-                routing {
-                    post("/otp_auth") {
-                        val otp = call.request.headers["X-Client-otp"]
-                        val clientName = call.request.headers["X-Client-name"]
-
-                        if (otp.isNullOrBlank() || clientName.isNullOrBlank()) {
-                            call.respond(HttpStatusCode.BadRequest)
-                            return@post
-                        }
-                        try {
-                            val id = authentification.authHandshake(otp, clientName, applicationContext)
-                            val secretBytes = Authentification.getSharedSecret(id.toInt(), applicationContext)
-                            val secret = Base64.encodeToString(secretBytes, Base64.NO_WRAP)
-
-                            call.respond(HttpStatusCode.OK, AuthCred(id, secret))
-                        }catch(e: SecurityException){
-                            Log.w("Security", "Bad OTP, Access denied")
-                            call.respond(HttpStatusCode.Unauthorized)
-                            return@post
-
-                        }
-
+                val env = applicationEngineEnvironment {
+                    log = org.slf4j.LoggerFactory.getLogger("ktor.application")
+                    sslConnector(
+                        keyStore = loadedKeyStore,
+                        keyAlias = HTTPS_KEY_ALIAS,
+                        keyStorePassword = { passwordCharArray },
+                        privateKeyPassword = { passwordCharArray }
+                    ) {
+                        port = 8443
+                        host = "0.0.0.0"
                     }
 
-                    get("/ping") {
-                        call.respondText("alive")
-                    }
+                    module {
+                        install(ContentNegotiation) { json() }
 
-                    securePost("/save", applicationContext) {
-                        val jsonString = call.receiveText()
+                        routing {
+                            get("/ping") { call.respondText("alive") }
 
-                        try {
-                            val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "RoboSettings")
-                            if (!directory.exists()) directory.mkdirs()
+                            post("/otp_auth") {
+                                val otp = call.request.headers["X-Client-otp"]
+                                val clientName = call.request.headers["X-Client-name"]
+                                Log.d("Auth", "Handshake attempt from $clientName with OTP $otp")
+                                if (otp.isNullOrBlank() || clientName.isNullOrBlank()) {
+                                    call.respond(HttpStatusCode.BadRequest)
+                                    return@post
+                                }
+                                try {
+                                    val id = authentification.authHandshake(otp, clientName, applicationContext)
+                                    val secretBytes = Authentification.getSharedSecret(id.toInt(), applicationContext)
+                                    val secret = Base64.encodeToString(secretBytes, Base64.NO_WRAP)
+                                    call.respond(HttpStatusCode.OK, AuthCred(id, secret))
+                                } catch (e: SecurityException) {
+                                    Log.e("Auth", "Handshake failed: ${e.message}")
+                                    call.respond(HttpStatusCode.Unauthorized)
+                                }
+                            }
 
-                            val configFile = File(directory, "privacy_settings.json")
-
-                            val oldJson = if (configFile.exists()) configFile.readText() else null
-
-                            val displayMessage = getChangedSettings(oldJson, jsonString)
-
-
-                            configFile.writeText(jsonString)
-
-                            showPopup(displayMessage, 300000)
-                            Log.d("Settings", "Saved to: ${configFile.absolutePath}")
-                            call.respondText("OK")
-                        } catch (e: Exception) {
-                            call.respond(HttpStatusCode.InternalServerError, "Could not save settings: ${e.message}")
-                            showPopup("Error: Missing Permissions (Storage). Please open the App and/or adjust app permissions")
-
+                            securePost("/save", applicationContext) { payload ->
+                                try {
+                                    val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "RoboSettings")
+                                    if (!directory.exists()) directory.mkdirs()
+                                    val configFile = File(directory, "privacy_settings.json")
+                                    configFile.writeText(payload)
+                                    showPopup(payload, 20000)
+                                    Log.i("Server ","Saved Settings: $payload")
+                                    call.respondText("OK")
+                                } catch (e: Exception) {
+                                    Log.e("Server", "Failed to save Privacy settings: $e")
+                                    call.respond(HttpStatusCode.InternalServerError, "Error: ${e.message}")
+                                }
+                            }
                         }
                     }
                 }
+                this.server = embeddedServer(Netty, env) {
+                    // Hier werden die Werte direkt zugewiesen, ohne "configure"
+                    requestQueueLimit = 16
+                    runningLimit = 10
+                    shareWorkGroup = true
+
+                    // Falls du Zugriff auf die Netty-Pipeline brauchst:
+                    // (Auf OrionStar oft besser, die Standardwerte zu lassen)
+                }.start(wait = false)
+
+                Log.i("Server", "Netty Server aktiv")
+
+            } catch (e: Exception) {
+                Log.e("Server", "Netty Start fehlgeschlagen: ${e.message}")
+                e.printStackTrace()
             }
-
-            val sslConnector = EngineSSLConnectorBuilder(
-                keyStore = loadedKeyStore,
-                keyAlias = HTTPS_KEY_ALIAS,
-                keyStorePassword = { passwordCharArray },
-                privateKeyPassword = { passwordCharArray }
-            ).apply {
-                this.port = 8443
-                this.host = "0.0.0.0"
-            }
-
-            val connectorList = srv.environment.connectors as MutableList<EngineConnectorConfig>
-            connectorList.clear()
-            connectorList.add(sslConnector)
-
-            this.server = srv
-            srv.start(wait = false)
-            val activeConnectors = srv.environment.connectors
-            activeConnectors.forEach {
-                Log.i("ServerCheck", "Server lauscht auf: ${it.host}:${it.port} (Typ: ${it::class.java.simpleName})")
-            }
-            srv.environment.connectors.forEach { connector ->
-                val isSSL = connector is EngineSSLConnectorBuilder
-                Log.i("Server", "AKTIVER CONNECTOR: Port ${connector.port}, SSL aktiv: $isSSL")
-
-                if (!isSSL) {
-                    Log.e("Server", "WARNUNG: Server läuft im unsicheren Modus auf Port ${connector.port}!")
-                }
-            }
-
-            Log.i("Server", "Ktor is running on 8443")
         }
-
         /* ---------- AndroidKeyStore RSA (Auth / QR only) ---------- */
 
         fun createOrGetAuthCertificate(alias: String = "serverAuthKey"): X509Certificate {
@@ -307,7 +267,9 @@
             val now = Date()
             val validity = Date(now.time + 365L * 24 * 60 * 60 * 1000)
 
-            val signer = JcaContentSignerBuilder("SHA256withRSA").build(kp.private)
+            val signer = JcaContentSignerBuilder("SHA256withRSA")
+                .setProvider(java.security.Security.getProvider("AndroidOpenSSL") ?: java.security.Security.getProvider("AndroidKeyStoreBCWorkaround"))
+                .build(kp.private)
 
             val ip = getIP() ?: "127.0.0.1"
             val subjectAltNames = GeneralNames(GeneralName(GeneralName.iPAddress, ip))
@@ -368,7 +330,6 @@
                 keyPair.public
             )
 
-            // WICHTIG: SAN hinzufügen, sonst blockt GrapheneOS!
             val san = org.bouncycastle.asn1.x509.GeneralNames(
                 org.bouncycastle.asn1.x509.GeneralName(
                     org.bouncycastle.asn1.x509.GeneralName.iPAddress,
@@ -377,8 +338,9 @@
             )
             certBuilder.addExtension(org.bouncycastle.asn1.x509.Extension.subjectAlternativeName, false, san)
 
-            // Signer ohne expliziten String "BC" bauen
+            // Den Signer so bauen, dass er NICHT den BC-Provider erzwingt
             val signer = org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withRSA")
+                .setProvider(java.security.Security.getProvider("AndroidOpenSSL") ?: java.security.Security.getProvider("AndroidKeyStoreBCWorkaround"))
                 .build(keyPair.private)
 
             val x509Cert = org.bouncycastle.cert.jcajce.JcaX509CertificateConverter()
@@ -405,7 +367,11 @@
         ) {
             post(path) {
                 val payload = call.receiveText()
-                if (!call.requireClientAuth(context, payload)) return@post
+                Log.i("Server", "Received payload: $payload")
+                if (!call.requireClientAuth(context, payload)) {
+                    Log.e("Server", "Unable to authenticate client, rejecting")
+                    return@post
+                }
                 body(payload)
             }
         }
@@ -413,6 +379,8 @@
         private suspend fun ApplicationCall.requireClientAuth(context: Context, payload: String): Boolean {
             val id = request.headers["X-Client-Id"]?.toIntOrNull()
             val signature = request.headers["X-Client-Secret"]
+
+            Log.i("Server", "Received Signature: $signature")
 
             if (id == null || signature == null) {
                 respond(HttpStatusCode.Unauthorized)
