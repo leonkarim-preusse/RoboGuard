@@ -7,6 +7,8 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.os.*
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -107,53 +109,83 @@ import javax.security.auth.x500.X500Principal
 
     /* ---------- Service ---------- */
 
-    class RobotServerService : Service() {
+class RobotServerService : Service() {
 
-        inner class LocalBinder : android.os.Binder() {
-            fun getService(): RobotServerService = this@RobotServerService
+    private var nsdManager: NsdManager? = null
+    private var registrationListener: NsdManager.RegistrationListener? = null
+    private var robotHostname: String = ""
+
+    inner class LocalBinder : android.os.Binder() {
+        fun getService(): RobotServerService = this@RobotServerService
+    }
+
+    private val binder = LocalBinder()
+    private val HTTPS_KEY_ALIAS = "https"
+
+    private var server: io.ktor.server.engine.ApplicationEngine? = null
+    lateinit var authentification: Authentification
+
+    override fun onBind(intent: Intent?): IBinder = binder
+
+    override fun onCreate() {
+        super.onCreate()
+
+        // 1. mDNS Setup: load identifier
+        val sharedPrefs = getSharedPreferences("robot_prefs", Context.MODE_PRIVATE)
+        var robotId = sharedPrefs.getString("robot_id", null)
+        if (robotId == null) {
+            robotId = (1..12).map { (0..9).random() }.joinToString("")
+            sharedPrefs.edit().putString("robot_id", robotId).apply()
+        }
+        robotHostname = "robot-$robotId"
+
+        val CHANNEL_ID = "robot_server_channel"
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "RoboGuard Server", NotificationManager.IMPORTANCE_LOW))
+
+        val notification = Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("RoboGuard Server")
+            .setContentText("Host: $robotHostname.local")
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .build()
+
+        if (Security.getProvider("BC") == null) {
+            Security.addProvider(BouncyCastleProvider())
         }
 
-        private val binder = LocalBinder()
-        private val HTTPS_KEY_ALIAS = "https"
+        // load certificate
+        val (httpsKS, _) = loadHttpsKeyStore(applicationContext)
+        val cert = httpsKS.getCertificate(HTTPS_KEY_ALIAS) as X509Certificate
+        val pubKeyBase64 = Base64.encodeToString(cert.encoded, Base64.NO_WRAP)
 
-        private var server: io.ktor.server.engine.ApplicationEngine? = null
-        lateinit var authentification: Authentification
+        // Authentification uses hostname for QR
+        authentification = Authentification(pubKeyBase64, "$robotHostname.local")
 
-        override fun onBind(intent: Intent?): IBinder = binder
+        registerMdnsService(8443)
+        startKtorServer()
+        startForeground(1, notification)
+    }
 
-        override fun onCreate() {
-            super.onCreate()
+    private fun registerMdnsService(port: Int) {
+        nsdManager = getSystemService(Context.NSD_SERVICE) as NsdManager
+        val serviceInfo = NsdServiceInfo().apply {
+            serviceType = "_http._tcp."
+            serviceName = robotHostname
+            setPort(port)
+        }
 
-            val CHANNEL_ID = "robot_server_channel"
-
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "RoboGuard Server Service",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
-
-            val notification = Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("RoboGuard Server")
-                .setContentText("Server running in background...")
-                .setSmallIcon(android.R.drawable.stat_notify_sync)
-                .build()
-
-            if (Security.getProvider("BC") == null) {
-                Security.addProvider(BouncyCastleProvider())
+        registrationListener = object : NsdManager.RegistrationListener {
+            override fun onServiceRegistered(info: NsdServiceInfo) {
+                Log.i("NSD", "Registered mDNS: ${info.serviceName}.local")
             }
-
-            val (httpsKS, password) = loadHttpsKeyStore(applicationContext)
-
-            val cert = httpsKS.getCertificate(HTTPS_KEY_ALIAS) as X509Certificate
-            val pubKeyBase64 = Base64.encodeToString(cert.encoded, Base64.NO_WRAP)
-
-            authentification = Authentification(pubKeyBase64, getIP())
-
-            startKtorServer()
-            startForeground(1, notification)
+            override fun onRegistrationFailed(info: NsdServiceInfo, err: Int) {
+                Log.e("NSD", "mDNS Failed: $err")
+            }
+            override fun onServiceUnregistered(info: NsdServiceInfo) {}
+            override fun onUnregistrationFailed(info: NsdServiceInfo, err: Int) {}
         }
+        nsdManager?.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
+    }
 
         override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
             START_STICKY
@@ -163,7 +195,7 @@ import javax.security.auth.x500.X500Principal
         private fun startKtorServer() {
             try {
                 val (loadedKeyStore, passwordCharArray) = loadHttpsKeyStore(applicationContext)
-                Log.d("Server", "Starte Netty Engine auf Port 8443...")
+                Log.d("Server", "Starting Netty Engine on Port 8443...")
 
                 val env = applicationEngineEnvironment {
                     log = org.slf4j.LoggerFactory.getLogger("ktor.application")
@@ -208,7 +240,9 @@ import javax.security.auth.x500.X500Principal
                                     if (!directory.exists()) directory.mkdirs()
                                     val configFile = File(directory, "privacy_settings.json")
                                     configFile.writeText(payload)
-                                    showPopup(payload, 20000)
+                                    this@RobotServerService.notification(payload)
+                                    this@RobotServerService.showPopup(payload, 20000)
+
                                     Log.i("Server ","Saved Settings: $payload")
                                     call.respondText("OK")
                                 } catch (e: Exception) {
@@ -220,19 +254,16 @@ import javax.security.auth.x500.X500Principal
                     }
                 }
                 this.server = embeddedServer(Netty, env) {
-                    // Hier werden die Werte direkt zugewiesen, ohne "configure"
                     requestQueueLimit = 16
                     runningLimit = 10
                     shareWorkGroup = true
 
-                    // Falls du Zugriff auf die Netty-Pipeline brauchst:
-                    // (Auf OrionStar oft besser, die Standardwerte zu lassen)
                 }.start(wait = false)
 
-                Log.i("Server", "Netty Server aktiv")
+                Log.i("Server", "Netty Server activ")
 
             } catch (e: Exception) {
-                Log.e("Server", "Netty Start fehlgeschlagen: ${e.message}")
+                Log.e("Server", "Netty start failed: ${e.message}")
                 e.printStackTrace()
             }
         }
@@ -262,8 +293,6 @@ import javax.security.auth.x500.X500Principal
 
             kpg.initialize(spec)
             val kp = kpg.generateKeyPair()
-
-            // Zertifikat erstellen
             val now = Date()
             val validity = Date(now.time + 365L * 24 * 60 * 60 * 1000)
 
@@ -290,73 +319,55 @@ import javax.security.auth.x500.X500Principal
 
         /* ---------- HTTPS PKCS12 ---------- */
 
-        private fun loadHttpsKeyStore(context: Context): Pair<KeyStore, CharArray> {
-            // Sicherstellen, dass BC als Provider registriert ist, falls noch nicht geschehen
-            if (java.security.Security.getProvider("BC") == null) {
-                java.security.Security.addProvider(org.bouncycastle.jce.provider.BouncyCastleProvider())
-            }
-
-            val passwordBytes = PasswordManager.loadPassword(context)
-                ?: ByteArray(32).also {
-                    java.security.SecureRandom().nextBytes(it)
-                    PasswordManager.savePassword(it, context)
-                }
-
-            val password = android.util.Base64.encodeToString(passwordBytes, android.util.Base64.NO_WRAP).toCharArray()
-            val ksFile = java.io.File(context.filesDir, "https_keystore.p12")
-            val keyStore = java.security.KeyStore.getInstance("PKCS12")
-
-            if (ksFile.exists()) {
-                try {
-                    ksFile.inputStream().use { keyStore.load(it, password) }
-                    return keyStore to password
-                } catch (e: Exception) {
-                    ksFile.delete() // Falls korrupt, neu erstellen
-                }
-            }
-
-            val keyPair = java.security.KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
-            val now = java.util.Date()
-            val expiry = java.util.Date(now.time + 365L * 24 * 60 * 60 * 1000)
-            val serial = java.math.BigInteger(64, java.security.SecureRandom())
-            val robotIP = getIP() ?: "127.0.0.1"
-
-            val certBuilder = org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder(
-                javax.security.auth.x500.X500Principal("CN=RoboGuard"),
-                serial,
-                now,
-                expiry,
-                javax.security.auth.x500.X500Principal("CN=RoboGuard"),
-                keyPair.public
-            )
-
-            val san = org.bouncycastle.asn1.x509.GeneralNames(
-                org.bouncycastle.asn1.x509.GeneralName(
-                    org.bouncycastle.asn1.x509.GeneralName.iPAddress,
-                    robotIP
-                )
-            )
-            certBuilder.addExtension(org.bouncycastle.asn1.x509.Extension.subjectAlternativeName, false, san)
-
-            // Den Signer so bauen, dass er NICHT den BC-Provider erzwingt
-            val signer = org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withRSA")
-                .setProvider(java.security.Security.getProvider("AndroidOpenSSL") ?: java.security.Security.getProvider("AndroidKeyStoreBCWorkaround"))
-                .build(keyPair.private)
-
-            val x509Cert = org.bouncycastle.cert.jcajce.JcaX509CertificateConverter()
-                .getCertificate(certBuilder.build(signer))
-
-            keyStore.load(null, null)
-            keyStore.setKeyEntry(
-                HTTPS_KEY_ALIAS,
-                keyPair.private,
-                password,
-                arrayOf(x509Cert)
-            )
-
-            ksFile.outputStream().use { keyStore.store(it, password) }
-            return keyStore to password
+    private fun loadHttpsKeyStore(context: Context): Pair<KeyStore, CharArray> {
+        val passwordBytes = PasswordManager.loadPassword(context) ?: ByteArray(32).also {
+            SecureRandom().nextBytes(it)
+            PasswordManager.savePassword(it, context)
         }
+        val password = Base64.encodeToString(passwordBytes, Base64.NO_WRAP).toCharArray()
+        val ksFile = File(context.filesDir, "https_keystore.p12")
+        val keyStore = KeyStore.getInstance("PKCS12")
+
+        if (ksFile.exists()) {
+            try {
+                ksFile.inputStream().use { keyStore.load(it, password) }
+                return keyStore to password
+            } catch (e: Exception) { ksFile.delete() }
+        }
+
+        // Neues Zertifikat mit SAN (IP + mDNS Hostname)
+        val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+        val robotIP = getIP() ?: "127.0.0.1"
+
+        val certBuilder = JcaX509v3CertificateBuilder(
+            X500Principal("CN=RoboGuard"),
+            BigInteger.valueOf(System.currentTimeMillis()),
+            Date(),
+            Date(System.currentTimeMillis() + 365L * 24 * 60 * 60 * 1000),
+            X500Principal("CN=RoboGuard"),
+            keyPair.public
+        )
+
+        // SAN: Sowohl IP als auch DNS Name hinzufügen, damit HTTPS nicht meckert
+        val sanList = mutableListOf<GeneralName>()
+        sanList.add(GeneralName(GeneralName.iPAddress, robotIP))
+        sanList.add(GeneralName(GeneralName.dNSName, "$robotHostname.local"))
+
+        val san = GeneralNames(sanList.toTypedArray())
+        certBuilder.addExtension(Extension.subjectAlternativeName, false, san)
+
+        val signer = JcaContentSignerBuilder("SHA256withRSA")
+            .setProvider(Security.getProvider("AndroidOpenSSL") ?: Security.getProvider("BC"))
+            .build(keyPair.private)
+
+        val x509Cert = JcaX509CertificateConverter().getCertificate(certBuilder.build(signer))
+
+        keyStore.load(null, null)
+        keyStore.setKeyEntry(HTTPS_KEY_ALIAS, keyPair.private, password, arrayOf(x509Cert))
+        ksFile.outputStream().use { keyStore.store(it, password) }
+
+        return keyStore to password
+    }
 
         /* ---------- Secure Routing ---------- */
 
@@ -409,7 +420,6 @@ import javax.security.auth.x500.X500Principal
             super.onDestroy()
         }
         fun showPopup(message: String, durationMS: Long = 5000) {
-            // UI-Operationen müssen auf dem Main-Looper laufen
             Handler(Looper.getMainLooper()).post {
                 val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
@@ -486,8 +496,35 @@ import javax.security.auth.x500.X500Principal
                     }
                 }
             } catch (e: Exception) {
-                Log.e("IP", "Fehler beim Abrufen der IP", e)
+                Log.e("IP", "could not get IP", e)
             }
             return null
+        }
+
+        private fun notification(message: String) {
+            Log.i("Server", "Notification-Trigger für: $message")
+
+            Handler(Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(applicationContext, "Received Data", android.widget.Toast.LENGTH_LONG).show()
+            }
+            val channelId = "robot_status_channel"
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    channelId, "RoboGuard Status",
+                    NotificationManager.IMPORTANCE_HIGH
+                )
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            val builder = Notification.Builder(this, channelId)
+                .setContentTitle("RoboGuard")
+                .setContentText("Einstellungen gespeichert")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setPriority(Notification.PRIORITY_HIGH)
+                .setAutoCancel(true)
+
+            notificationManager.notify(System.currentTimeMillis().toInt(), builder.build())
         }
     }
