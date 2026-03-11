@@ -8,7 +8,7 @@ espressoCore = "3.5.1"
 lifecycleRuntimeKtx = "2.6.1"
 activityCompose = "1.8.0"
 composeBom = "2024.09.00"
-ksp = "2.1.0-1.0.29"
+ksp = "2.1.0-1.0.28"
 
 # Ktor 2.x für Android 8 Stabilität
 ktor = "2.3.12"

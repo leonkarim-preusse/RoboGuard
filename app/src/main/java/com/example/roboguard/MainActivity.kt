@@ -7,28 +7,26 @@ import android.content.ServiceConnection
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.IBinder
-import android.util.Base64
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.roboguard.ui.theme.RoboGuardTheme
 import kotlinx.coroutines.delay
-import java.security.KeyStore
-import java.security.cert.X509Certificate
 
 class MainActivity : ComponentActivity() {
 
@@ -37,33 +35,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val permissions = arrayOf(
-            android.Manifest.permission.READ_EXTERNAL_STORAGE,
-            android.Manifest.permission.WRITE_EXTERNAL_STORAGE
-        )
-
-        if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(permissions, 100)
-        }
         enableEdgeToEdge()
         setContent {
             RoboGuardTheme {
-                Scaffold { paddingValues ->
+                Scaffold(modifier = Modifier.fillMaxSize()) { paddingValues ->
                     val (robotService, setRobotService) = remember { mutableStateOf<RobotServerService?>(null) }
+                    var showSettings by remember { mutableStateOf(false) }
 
                     LaunchedEffect(Unit) {
                         val intent = Intent(this@MainActivity, RobotServerService::class.java)
-
-                        // Foregroundservice start
                         startForegroundService(intent)
 
-                        // Connection
                         serviceConnection = object : ServiceConnection {
                             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
                                 val binder = service as RobotServerService.LocalBinder
                                 setRobotService(binder.getService())
                                 isBound = true
-                                Log.d("MainActivity", "Service connected")
                             }
 
                             override fun onServiceDisconnected(name: ComponentName?) {
@@ -71,19 +58,53 @@ class MainActivity : ComponentActivity() {
                                 isBound = false
                             }
                         }
-
-                        // UI communication binder
                         bindService(intent, serviceConnection!!, Context.BIND_AUTO_CREATE)
                     }
 
-                    Column(
+                    Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues)
                     ) {
-                        robotService?.let {
-                            QRCodeScreen(it)
-                        } ?: Text("Waiting for Server...")
+                        robotService?.let { service ->
+                            if (showSettings) {
+                                SettingsListScreen(service) { showSettings = false }
+                            } else {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "Scan with the RoboGuard App on your phone to copple!",
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(top = 8.dp, bottom = 8.dp).widthIn(max = 400.dp)
+                                    )
+
+                                    // Moved weight here to ensure it's in ColumnScope
+                                    Box(
+                                        modifier = Modifier.weight(1f),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        QRCodeDisplay(service)
+                                    }
+
+                                    Button(
+                                        onClick = { showSettings = true },
+                                        modifier = Modifier
+                                            .fillMaxWidth(0.8f)
+                                            .padding(bottom = 16.dp)
+                                    ) {
+                                        Text("Show Current Settings", fontSize = 16.sp)
+                                    }
+                                }
+                            }
+                        } ?: Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("Waiting for Server...")
+                        }
                     }
                 }
             }
@@ -106,39 +127,116 @@ class MainActivity : ComponentActivity() {
 /* ---------- UI Komponenten ---------- */
 
 @Composable
-fun QRCodeScreen(serverService: RobotServerService) {
+fun QRCodeDisplay(service: RobotServerService) {
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    // QR-Code generieren, wenn Authentification verfügbar ist
-    LaunchedEffect(serverService) {
-        serverService.authentification?.let { auth ->
-            qrBitmap= generateQRCode(auth.createAuthMessage())
-        }
-        var curr_otp = serverService.authentification.otp
-        while(true){
-            if (serverService.authentification.otp != curr_otp){
-                serverService.authentification?.let { auth ->
-                    qrBitmap= generateQRCode(auth.createAuthMessage())
-                    curr_otp = serverService.authentification.otp
-                }
+    LaunchedEffect(service) {
+        val auth = service.authentification
+        qrBitmap = generateQRCode(auth.createAuthMessage())
+        var currOtp = auth.otp
+        while (true) {
+            if (auth.otp != currOtp) {
+                qrBitmap = generateQRCode(auth.createAuthMessage())
+                currOtp = auth.otp
             }
             delay(1000)
         }
-
     }
 
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Box(
+        modifier = Modifier
+            .padding(8.dp)
+            .aspectRatio(1f)
+            .sizeIn(maxWidth = 450.dp, maxHeight = 450.dp),
+        contentAlignment = Alignment.Center
+    ) {
         qrBitmap?.let { bitmap ->
             Image(
                 bitmap = bitmap.asImageBitmap(),
                 contentDescription = "QR Code",
-                modifier = Modifier.size(500.dp)
+                modifier = Modifier.fillMaxSize()
             )
-        } ?: Text("Generating QR code...")
+        } ?: CircularProgressIndicator()
     }
 }
 
-/* ---------- Helper functions ---------- */
+@Composable
+fun SettingsListScreen(service: RobotServerService, onBack: () -> Unit) {
+    val settings = service.getCurrentSettings()
+
+    Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = onBack) { Text("Back") }
+            Spacer(modifier = Modifier.width(12.dp))
+            Text("Robot Privacy Settings", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            item {
+                Text("General", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                SettingRow(name = "Sleep Timer", value = settings.sleepTime)
+            }
+
+            item { Spacer(modifier = Modifier.height(12.dp)) }
+
+            item {
+                Text("Global Sensors", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            }
+            items(settings.sensors.toList()) { (sensor, enabled) ->
+                SettingRow(name = sensor, value = if (enabled) "ON" else "OFF")
+            }
+
+            item { Spacer(modifier = Modifier.height(12.dp)) }
+
+            item {
+                Text("Situational Settings", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            }
+            items(settings.situationalSettings.toList()) { (setting, enabled) ->
+                SettingRow(name = setting, value = if (enabled) "ON" else "OFF")
+            }
+
+            item { Spacer(modifier = Modifier.height(12.dp)) }
+
+            item {
+                Text("Room Constraints", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            }
+            settings.rooms.forEach { room ->
+                item {
+                    Text(room.name, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
+                    room.sensors.forEach { (sensor, enabled) ->
+                        SettingRow(name = "  $sensor", value = if (enabled) "ALLOWED" else "BLOCKED", isSmall = true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingRow(name: String, value: String, isSmall: Boolean = false) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp, horizontal = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(text = name, fontSize = if (isSmall) 14.sp else 16.sp)
+        Text(
+            text = value,
+            fontSize = if (isSmall) 14.sp else 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = when(value) {
+                "ON", "ALLOWED" -> Color(0xFF4CAF50)
+                "OFF", "BLOCKED" -> Color.Red
+                else -> Color.Black
+            }
+        )
+    }
+}
 
 fun generateQRCode(json: String, size: Int = 1024): Bitmap {
     val bitMatrix = com.google.zxing.MultiFormatWriter().encode(
@@ -150,17 +248,4 @@ fun generateQRCode(json: String, size: Int = 1024): Bitmap {
     val barcodeEncoder = com.journeyapps.barcodescanner.BarcodeEncoder()
     Log.i("Certificate", "Generated QR code")
     return barcodeEncoder.createBitmap(bitMatrix)
-}
-
-fun getServerCertificatePem(): String {
-    val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-    val cert = keyStore.getCertificate("serverAuthKey") as X509Certificate // Alias angepasst auf deinen Service
-
-    val base64 = Base64.encodeToString(cert.encoded, Base64.NO_WRAP)
-
-    return """
-        -----BEGIN CERTIFICATE-----
-        $base64
-        -----END CERTIFICATE-----
-    """.trimIndent()
 }
