@@ -54,6 +54,9 @@ import javax.security.auth.x500.X500Principal
 
     /* ---------- DTOs ---------- */
 
+
+
+
     @SuppressLint("UnsafeOptInUsageError")
     @Serializable
     data class ConfigRequest(
@@ -62,6 +65,21 @@ import javax.security.auth.x500.X500Principal
         val situationalSettings: SituationalSettings,
         val sleepTime: String
     )
+
+    @SuppressLint("UnsafeOptInUsageError")
+    @Serializable
+    data class RobotCapabilities(
+        val sensors: List<String>,
+        val rooms: List<String>,
+        val situational: List<String>
+    )
+
+    // Helper to manage the file location
+    private fun getCapabilitiesFile(context: Context): File {
+        val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "RoboSettings")
+        if (!directory.exists()) directory.mkdirs()
+        return File(directory, "capabilities.json")
+    }
 
     @SuppressLint("UnsafeOptInUsageError")
     @Serializable
@@ -228,9 +246,53 @@ class RobotServerService : Service() {
                                     val secretBytes = Authentification.getSharedSecret(id.toInt(), applicationContext)
                                     val secret = Base64.encodeToString(secretBytes, Base64.NO_WRAP)
                                     call.respond(HttpStatusCode.OK, AuthCred(id, secret))
+
                                 } catch (e: SecurityException) {
                                     Log.e("Auth", "Handshake failed: ${e.message}")
                                     call.respond(HttpStatusCode.Unauthorized)
+                                }
+                            }
+
+                            secureGet("/capabilities", applicationContext) {
+                                val file = getCapabilitiesFile(applicationContext)
+                                if (file.exists()) {
+                                    call.respondText(file.readText(), ContentType.Application.Json)
+                                } else {
+                                    // Default fallback if no other app has configured the robot yet
+                                    val default = RobotCapabilities(
+                                        sensors = listOf("Camera", "LIDAR", "Ultrasonic"),
+                                        rooms = listOf("Living Room", "Kitchen"),
+                                        situational = listOf("Discretion Mode", "pixelate objects")
+                                    )
+                                    call.respond(default)
+                                }
+                            }
+
+                            // --- 2. POST: Update Capabilities (Local Only - NO AUTH) ---
+                            // This allows other apps ON THE ROBOT to change the lists
+                            post("/update_capabilities") {
+                                // Security check: Only allow if the request comes from the robot itself (127.0.0.1)
+                                val remoteHost = call.request.local.remoteHost
+                                if (remoteHost != "127.0.0.1" && remoteHost != "localhost") {
+                                    Log.w("Server", "Blocked external attempt to update capabilities from $remoteHost")
+                                    call.respond(HttpStatusCode.Forbidden, "Updates allowed from local applications only.")
+                                    return@post
+                                }
+
+                                try {
+                                    val payload = call.receiveText()
+                                    // Validate JSON structure
+                                    Json.decodeFromString<RobotCapabilities>(payload)
+
+                                    val directory = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "RoboSettings")
+                                    if (!directory.exists()) directory.mkdirs()
+
+                                    File(directory, "capabilities.json").writeText(payload)
+
+                                    Log.i("Server", "Capabilities updated by local robot application")
+                                    call.respond(HttpStatusCode.OK, "Capabilities Updated Successfully")
+                                } catch (e: Exception) {
+                                    call.respond(HttpStatusCode.BadRequest, "Invalid Capability Format")
                                 }
                             }
 
@@ -384,6 +446,21 @@ class RobotServerService : Service() {
                     return@post
                 }
                 body(payload)
+            }
+        }
+
+        private fun Route.secureGet(
+            path: String,
+            context: Context,
+            body: suspend PipelineContext<Unit, ApplicationCall>.() -> Unit
+        ) {
+            get(path) {
+                // For GET requests, the signature is calculated against an empty string ""
+                if (!call.requireClientAuth(context, "")) {
+                    Log.e("Server", "Unable to authenticate client, rejecting")
+                    return@get
+                }
+                body()
             }
         }
 
