@@ -77,7 +77,7 @@ class MainActivity : ComponentActivity() {
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
                                     Text(
-                                        text = "Scan with the RoboGuard App on your phone to copple!",
+                                        text = "Scan with the RoboGuard App to copple!",
                                         fontSize = 18.sp,
                                         fontWeight = FontWeight.Bold,
                                         textAlign = TextAlign.Center,

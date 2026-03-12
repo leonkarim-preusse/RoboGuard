@@ -219,7 +219,7 @@ class RobotServerService : Service() {
                                 val default = RobotCapabilities(
                                     sensors = listOf("Camera", "LIDAR", "Ultrasonic", "Collision", "Microphone"),
                                     rooms = listOf("Living Room", "Kitchen", "Bedroom", "Bath", "Other"),
-                                    situational = listOf("Discretion Mode", "pixelate objects")
+                                    situational = listOf("Discretion Mode", "Pixelate Objects")
                                 )
                                 call.respond(default)
                             }
@@ -245,8 +245,8 @@ class RobotServerService : Service() {
                             try {
                                 jsonConfig.decodeFromString<AppSettings>(payload)
                                 getSettingsFile(applicationContext).writeText(payload)
-                                this@RobotServerService.notification("Settings Saved")
-                                this@RobotServerService.showPopup("Privacy Settings Saved", 10000)
+                                this@RobotServerService.notification("Settings Saved, check RoboGuard App for details!")
+                                this@RobotServerService.showPopup("Privacy Settings Saved")
                                 call.respondText("OK")
                             } catch (e: Exception) {
                                 Log.e("Server", "Failed to save settings: $e")
@@ -376,7 +376,7 @@ class RobotServerService : Service() {
         super.onDestroy()
     }
 
-    fun showPopup(message: String, durationMS: Long = 5000) {
+    /*fun showPopup(message: String, durationMS: Long = 5000) {
         Handler(Looper.getMainLooper()).post {
             val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val params = WindowManager.LayoutParams(
@@ -404,7 +404,14 @@ class RobotServerService : Service() {
             } catch (e: Exception) {}
         }
     }
-
+    */
+    fun showPopup(message: String) {
+        val intent = Intent(this, PopupActivity::class.java).apply {
+            putExtra("message", message)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }
     private fun getIP(): String? {
         try {
             val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
