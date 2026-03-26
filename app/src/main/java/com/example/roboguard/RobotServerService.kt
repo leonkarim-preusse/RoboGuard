@@ -46,6 +46,11 @@ import javax.security.auth.x500.X500Principal
 
 /* ---------- Serializable DTOs matching Phone App ---------- */
 
+/**
+ * Settings for a specific room.
+ * @property name Name of the room.
+ * @property sensors Map of sensor names to their enabled status.
+ */
 @OptIn(InternalSerializationApi::class)
 @Serializable
 data class RoomSettings(
@@ -53,6 +58,13 @@ data class RoomSettings(
     val sensors: Map<String, Boolean>
 )
 
+/**
+ * Global application and robot settings.
+ * @property sensors Global sensor status.
+ * @property rooms List of per-room settings.
+ * @property situationalSettings Toggles for specific modes (e.g., Pixelate Objects).
+ * @property sleepTime Configuration for the sleep timer.
+ */
 @OptIn(InternalSerializationApi::class)
 @Serializable
 data class AppSettings(
@@ -62,6 +74,9 @@ data class AppSettings(
     val sleepTime: String
 )
 
+/**
+ * Defines the physical and logical capabilities of the robot.
+ */
 @OptIn(InternalSerializationApi::class)
 @Serializable
 data class RobotCapabilities(
@@ -70,18 +85,27 @@ data class RobotCapabilities(
     val situational: List<String>
 )
 
+/**
+ * Data transfer object for authentication credentials returned to the client.
+ */
 @OptIn(InternalSerializationApi::class)
 @Serializable
 data class AuthCred(val id: Long, val secret: String)
 
 /* ---------- File Helpers ---------- */
 
+/**
+ * Returns the file location for storing robot capabilities.
+ */
 internal fun getCapabilitiesFile(context: Context): File {
     val directory = File(context.filesDir, "RoboSettings")
     if (!directory.exists()) directory.mkdirs()
     return File(directory, "capabilities.json")
 }
 
+/**
+ * Returns the file location for storing privacy settings.
+ */
 internal fun getSettingsFile(context: Context): File {
     val directory = File(context.filesDir, "RoboSettings")
     if (!directory.exists()) directory.mkdirs()
@@ -90,12 +114,17 @@ internal fun getSettingsFile(context: Context): File {
 
 /* ---------- Robot Server Service ---------- */
 
+/**
+ * The core background service that runs the RoboGuard HTTPS server and handles NSD.
+ * This service runs as a foreground service to ensure it remains active.
+ */
 class RobotServerService : Service() {
 
     private var nsdManager: NsdManager? = null
     private var registrationListener: NsdManager.RegistrationListener? = null
     private var robotHostname: String = ""
 
+    /** Binder for local activity communication. */
     inner class LocalBinder : Binder() {
         fun getService(): RobotServerService = this@RobotServerService
     }
@@ -105,6 +134,7 @@ class RobotServerService : Service() {
     private var server: ApplicationEngine? = null
     lateinit var authentification: Authentification
 
+    /** JSON configuration for serialization. */
     private val jsonConfig = Json { 
         ignoreUnknownKeys = true 
         prettyPrint = true
@@ -116,6 +146,7 @@ class RobotServerService : Service() {
     override fun onCreate() {
         super.onCreate()
 
+        // Ensure a unique robot ID exists for hostname generation
         val sharedPrefs = getSharedPreferences("robot_prefs", Context.MODE_PRIVATE)
         var robotId = sharedPrefs.getString("robot_id", null)
         if (robotId == null) {
@@ -124,6 +155,7 @@ class RobotServerService : Service() {
         }
         robotHostname = "robot-$robotId"
 
+        // Setup notification channel for foreground service
         val channelId = "robot_server_channel"
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(NotificationChannel(channelId, "RoboGuard Server", NotificationManager.IMPORTANCE_LOW))
@@ -134,21 +166,28 @@ class RobotServerService : Service() {
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .build()
 
+        // Register BouncyCastle for certificate generation
         if (Security.getProvider("BC") == null) {
             Security.addProvider(BouncyCastleProvider())
         }
 
+        // Initialize HTTPS keystore and authentication module
         val (httpsKS, _) = loadHttpsKeyStore(applicationContext)
         val cert = httpsKS.getCertificate(HTTPS_KEY_ALIAS) as X509Certificate
         val pubKeyBase64 = Base64.encodeToString(cert.encoded, Base64.NO_WRAP)
 
         authentification = Authentification(pubKeyBase64, "$robotHostname.local")
 
+        // Start networking components
         registerMdnsService(8443)
         startKtorServer()
         startForeground(1, notification)
     }
 
+    /**
+     * Registers the robot via mDNS (Network Service Discovery).
+     * Allows clients to find the robot as 'robot-ID.local' without IP addresses.
+     */
     private fun registerMdnsService(port: Int) {
         nsdManager = getSystemService(Context.NSD_SERVICE) as NsdManager
         val serviceInfo = NsdServiceInfo().apply {
@@ -172,6 +211,10 @@ class RobotServerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
+    /**
+     * Initializes and starts the Ktor HTTPS server.
+     * Configures endpoints for authentication, capability discovery, and settings management.
+     */
     private fun startKtorServer() {
         try {
             val (loadedKeyStore, passwordCharArray) = loadHttpsKeyStore(applicationContext)
@@ -192,8 +235,10 @@ class RobotServerService : Service() {
                     install(ContentNegotiation) { json(jsonConfig) }
 
                     routing {
+                        // Health check endpoint
                         get("/ping") { call.respondText("alive") }
 
+                        // Initial pairing endpoint using OTP
                         post("/otp_auth") {
                             val otp = call.request.headers["X-Client-otp"]
                             val clientName = call.request.headers["X-Client-name"]
@@ -211,11 +256,13 @@ class RobotServerService : Service() {
                             }
                         }
 
+                        // Authenticated retrieval of robot capabilities
                         secureGet("/capabilities", applicationContext) {
                             val file = getCapabilitiesFile(applicationContext)
                             if (file.exists()) {
                                 call.respondText(file.readText(), ContentType.Application.Json)
                             } else {
+                                // Provide default capabilities if no file exists
                                 val default = RobotCapabilities(
                                     sensors = listOf("Camera", "LIDAR", "Ultrasonic", "Collision", "Microphone"),
                                     rooms = listOf("Living Room", "Kitchen", "Bedroom", "Bath", "Other"),
@@ -225,6 +272,7 @@ class RobotServerService : Service() {
                             }
                         }
 
+                        // Local-only update of capabilities (intended for robot hardware logic)
                         post("/update_capabilities") {
                             val remoteHost = call.request.local.remoteHost
                             if (remoteHost != "127.0.0.1" && remoteHost != "localhost") {
@@ -241,6 +289,7 @@ class RobotServerService : Service() {
                             }
                         }
 
+                        // Authenticated saving of privacy settings
                         securePost("/save", applicationContext) { payload ->
                             try {
                                 jsonConfig.decodeFromString<AppSettings>(payload)
@@ -266,6 +315,13 @@ class RobotServerService : Service() {
         }
     }
 
+    /**
+     * Loads or generates a PKCS12 keystore for HTTPS.
+     * Uses BouncyCastle to generate a self-signed RSA certificate with SAN (Subject Alternative Name).
+     *
+     * @param context Android context.
+     * @return A Pair containing the KeyStore and its password.
+     */
     private fun loadHttpsKeyStore(context: Context): Pair<KeyStore, CharArray> {
         val passwordBytes = PasswordManager.loadPassword(context) ?: ByteArray(32).also {
             SecureRandom().nextBytes(it)
@@ -282,6 +338,7 @@ class RobotServerService : Service() {
             } catch (e: Exception) { ksFile.delete() }
         }
 
+        // Generate new keypair and certificate if keystore doesn't exist
         val keyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
         val robotIP = getIP() ?: "127.0.0.1"
 
@@ -294,6 +351,7 @@ class RobotServerService : Service() {
             keyPair.public
         )
 
+        // Add IP and DNS SAN for connectivity reliability
         val sanList = mutableListOf<GeneralName>()
         sanList.add(GeneralName(GeneralName.iPAddress, robotIP))
         sanList.add(GeneralName(GeneralName.dNSName, "$robotHostname.local"))
@@ -301,7 +359,6 @@ class RobotServerService : Service() {
         val san = GeneralNames(sanList.toTypedArray())
         certBuilder.addExtension(Extension.subjectAlternativeName, false, san)
 
-        // Fix: System picks best provider to avoid BC SHA256withRSA crash
         val signer = JcaContentSignerBuilder("SHA256withRSA")
             .setProvider(Security.getProvider("AndroidOpenSSL") ?: Security.getProvider("BC"))
             .build(keyPair.private)
@@ -315,6 +372,7 @@ class RobotServerService : Service() {
         return keyStore to password
     }
 
+    /** Helper for defining POST routes that require HMAC authentication. */
     private fun Route.securePost(path: String, context: Context, body: suspend PipelineContext<Unit, ApplicationCall>.(String) -> Unit) {
         post(path) {
             val payload = call.receiveText()
@@ -323,6 +381,7 @@ class RobotServerService : Service() {
         }
     }
 
+    /** Helper for defining GET routes that require HMAC authentication. */
     private fun Route.secureGet(path: String, context: Context, body: suspend PipelineContext<Unit, ApplicationCall>.() -> Unit) {
         get(path) {
             if (!call.requireClientAuth(context, "")) return@get
@@ -330,6 +389,9 @@ class RobotServerService : Service() {
         }
     }
 
+    /**
+     * Extension for verifying client authenticity using HMAC headers.
+     */
     private suspend fun ApplicationCall.requireClientAuth(context: Context, payload: String): Boolean {
         val id = request.headers["X-Client-Id"]?.toIntOrNull()
         val signature = request.headers["X-Client-Secret"]
@@ -344,6 +406,9 @@ class RobotServerService : Service() {
         return true
     }
 
+    /**
+     * Reads current settings from storage or returns defaults if file not found.
+     */
     fun getCurrentSettings(): AppSettings {
         val file = getSettingsFile(applicationContext)
         if (!file.exists()) return getDefaultSettings()
@@ -354,6 +419,9 @@ class RobotServerService : Service() {
         }
     }
 
+    /**
+     * Defines the default privacy profile for the robot.
+     */
     private fun getDefaultSettings(): AppSettings {
         val sensorNames = listOf("Camera", "LIDAR", "Ultrasonic", "Collision", "Microphone")
         val roomNames = listOf("Living Room", "Kitchen", "Bedroom", "Bath", "Other")
@@ -376,35 +444,9 @@ class RobotServerService : Service() {
         super.onDestroy()
     }
 
-    /*fun showPopup(message: String, durationMS: Long = 5000) {
-        Handler(Looper.getMainLooper()).post {
-            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                y = 100
-            }
-            val textView = TextView(this).apply {
-                text = message
-                setTextColor(Color.BLACK)
-                setBackgroundColor(Color.WHITE)
-                setPadding(40, 20, 40, 20)
-                elevation = 10f
-            }
-            try {
-                windowManager.addView(textView, params)
-                Handler(Looper.getMainLooper()).postDelayed({
-                    try { windowManager.removeView(textView) } catch (e: Exception) {}
-                }, durationMS)
-            } catch (e: Exception) {}
-        }
-    }
-    */
+    /**
+     * Launches a PopupActivity to display a transient message to the user.
+     */
     fun showPopup(message: String) {
         val intent = Intent(this, PopupActivity::class.java).apply {
             putExtra("message", message)
@@ -412,6 +454,10 @@ class RobotServerService : Service() {
         }
         startActivity(intent)
     }
+
+    /**
+     * Resolves the device's current IPv4 address.
+     */
     private fun getIP(): String? {
         try {
             val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
@@ -426,6 +472,9 @@ class RobotServerService : Service() {
         return null
     }
 
+    /**
+     * Posts a system notification for robot status updates.
+     */
     private fun notification(message: String) {
         val channelId = "robot_status_channel"
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

@@ -28,6 +28,11 @@ import androidx.compose.ui.unit.sp
 import com.example.roboguard.ui.theme.RoboGuardTheme
 import kotlinx.coroutines.delay
 
+/**
+ * The primary entry point for the RoboGuard Robot application.
+ * This Activity displays the pairing QR code and allows the user to view 
+ * current privacy settings applied to the robot.
+ */
 class MainActivity : ComponentActivity() {
 
     private var serviceConnection: ServiceConnection? = null
@@ -39,9 +44,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             RoboGuardTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { paddingValues ->
+                    // State to hold the reference to the bound service
                     val (robotService, setRobotService) = remember { mutableStateOf<RobotServerService?>(null) }
+                    // State to toggle between the QR code view and settings list
                     var showSettings by remember { mutableStateOf(false) }
 
+                    // Start and bind the RobotServerService on launch
                     LaunchedEffect(Unit) {
                         val intent = Intent(this@MainActivity, RobotServerService::class.java)
                         startForegroundService(intent)
@@ -84,7 +92,7 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.padding(top = 8.dp, bottom = 8.dp).widthIn(max = 400.dp)
                                     )
 
-                                    // Moved weight here to ensure it's in ColumnScope
+                                    // QR Code display area
                                     Box(
                                         modifier = Modifier.weight(1f),
                                         contentAlignment = Alignment.Center
@@ -113,6 +121,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        // Unbind from the service to avoid leaks when activity is stopped
         if (isBound && serviceConnection != null) {
             try {
                 unbindService(serviceConnection!!)
@@ -124,16 +133,23 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/* ---------- UI Komponenten ---------- */
+/* ---------- UI Components ---------- */
 
+/**
+ * Composable that displays a QR code for client pairing.
+ * The QR code content is dynamically refreshed whenever the service's OTP changes.
+ */
 @Composable
 fun QRCodeDisplay(service: RobotServerService) {
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
     LaunchedEffect(service) {
         val auth = service.authentification
+        // Initial QR generation
         qrBitmap = generateQRCode(auth.createAuthMessage())
         var currOtp = auth.otp
+        
+        // Loop to check for OTP updates and refresh the QR code
         while (true) {
             if (auth.otp != currOtp) {
                 qrBitmap = generateQRCode(auth.createAuthMessage())
@@ -160,6 +176,10 @@ fun QRCodeDisplay(service: RobotServerService) {
     }
 }
 
+/**
+ * Screen displaying the robot's current privacy settings.
+ * Shows general settings, global sensor status, situational modes, and room-specific constraints.
+ */
 @Composable
 fun SettingsListScreen(service: RobotServerService, onBack: () -> Unit) {
     val settings = service.getCurrentSettings()
@@ -218,6 +238,9 @@ fun SettingsListScreen(service: RobotServerService, onBack: () -> Unit) {
     }
 }
 
+/**
+ * Simple row component to display a single setting's name and value with status-aware coloring.
+ */
 @Composable
 fun SettingRow(name: String, value: String, isSmall: Boolean = false) {
     Row(
@@ -230,7 +253,7 @@ fun SettingRow(name: String, value: String, isSmall: Boolean = false) {
             fontSize = if (isSmall) 14.sp else 16.sp,
             fontWeight = FontWeight.Bold,
             color = when(value) {
-                "ON", "ALLOWED" -> Color(0xFF4CAF50)
+                "ON", "ALLOWED" -> Color(0xFF4CAF50) // Green
                 "OFF", "BLOCKED" -> Color.Red
                 else -> Color.Black
             }
@@ -238,6 +261,14 @@ fun SettingRow(name: String, value: String, isSmall: Boolean = false) {
     }
 }
 
+/**
+ * Generates a QR code bitmap from a given string.
+ * Uses ZXing for encoding.
+ * 
+ * @param json The string content for the QR code.
+ * @param size The width and height of the resulting bitmap in pixels.
+ * @return A Bitmap object of the generated QR code.
+ */
 fun generateQRCode(json: String, size: Int = 1024): Bitmap {
     val bitMatrix = com.google.zxing.MultiFormatWriter().encode(
         json,
