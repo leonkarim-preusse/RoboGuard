@@ -1,3 +1,4 @@
+This is the source code for the robot application of roboguard. Check [here](https://github.com/leonkarim-preusse/RoboGuardAndroidEnd) for the smartphone application.
 ## Installation (Linux)
 0. Android Studio is recommended, it already intergrates the Android Debugging Bridge
 1. install Android Debugging Bridge ```sudo apt-get install adb```
