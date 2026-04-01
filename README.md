@@ -15,6 +15,6 @@ This is the source code for the robot application of roboguard. Check [here](htt
 2. Connection issues: ```adb kill-server``` ```adb start-server```
 
 ## Documentation
-1. 
-2.. All source code is found under ```~/app/src/main/java/com/example/roboguard``` and documented in the Code
+1. ```Praktikumsbericht_fixed``` contains detailed explanations (in german)
+2. All source code is found under ```~/app/src/main/java/com/example/roboguard``` and documented in the Code
 3. ```Main Activity.kt``` controls the UI and ```RobotServerService``` controls the server therefore they control the application flow
