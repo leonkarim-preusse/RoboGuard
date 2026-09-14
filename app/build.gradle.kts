@@ -51,6 +51,7 @@ android {
 }
 
 dependencies {
+    implementation(files("libs/robotservice_12.3.jar"))
     // Compose & AndroidX (bleiben gleich)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
