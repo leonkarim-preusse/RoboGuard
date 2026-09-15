@@ -48,6 +48,14 @@ android {
             excludes += "META-INF/INDEX.LIST"
         }
     }
+
+    sourceSets {
+        getByName("main") {
+            // robocontrol.vision: ORB reference images. Each file name (without extension) is a class name.
+            // Packaged at the root of the APK's assets.
+            assets.srcDir("src/main/java/com/example/robocontrol/assets")
+        }
+    }
 }
 
 dependencies {
@@ -96,6 +104,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("com.github.tony19:logback-android:3.0.0")
     implementation("org.slf4j:slf4j-api:2.0.7")
+
+    // OpenCV (robocontrol.vision: ORB object re-detection). 4.x on purpose: docs and tutorials target 4.x, 5.0 is a new major.
+    implementation("org.opencv:opencv:4.14.0")
 
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
     implementation("com.google.guava:guava:31.1-android") {
