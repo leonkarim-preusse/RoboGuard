@@ -12,6 +12,11 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <!-- robocontrol.voiceprobe: hardware tests for multi-speaker detection -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="com.ainirobot.coreservice.robotSettingProvider" />
+    <!-- robocontrol.sensorcontrol: mute the microphone via AudioManager.setMicrophoneMute -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
 
     <application
@@ -40,6 +45,38 @@
         </activity>
         <activity android:name=".PopupActivity"
             android:theme="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar" />
+
+        <!-- robocontrol.voiceprobe test screen; exported so it can be started via adb -->
+        <activity
+            android:name="com.example.robocontrol.voiceprobe.VoiceProbeActivity"
+            android:exported="true"
+            android:label="Voice probe" />
+
+        <!-- robocontrol.voiceprobe TTS test screen; exported so it can be started via adb -->
+        <activity
+            android:name="com.example.robocontrol.voiceprobe.TtsProbeActivity"
+            android:exported="true"
+            android:label="TTS probe" />
+
+        <!-- robocontrol.sensorprobe test screen; exported so it can be started via adb -->
+        <activity
+            android:name="com.example.robocontrol.sensorprobe.SensorProbeActivity"
+            android:exported="true"
+            android:label="Sensor probe" />
+
+        <!-- robocontrol.sensorcontrol: device admin used only to disable the camera.
+             Inactive until: adb shell dpm set-active-admin com.example.roboguard/com.example.robocontrol.sensorcontrol.RoboGuardDeviceAdmin -->
+        <receiver
+            android:name="com.example.robocontrol.sensorcontrol.RoboGuardDeviceAdmin"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/robocontrol_device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".RobotServerService"

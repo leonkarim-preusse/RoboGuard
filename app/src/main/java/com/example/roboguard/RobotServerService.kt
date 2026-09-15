@@ -264,7 +264,7 @@ class RobotServerService : Service() {
                             } else {
                                 // Provide default capabilities if no file exists
                                 val default = RobotCapabilities(
-                                    sensors = listOf("Camera", "LIDAR", "Ultrasonic", "Collision", "Microphone"),
+                                    sensors = listOf("Camera", "LIDAR", "Microphone"),
                                     rooms = listOf("Living Room", "Kitchen", "Bedroom", "Bath", "Other"),
                                     situational = listOf("Discretion Mode", "Pixelate Objects")
                                 )
@@ -419,11 +419,15 @@ class RobotServerService : Service() {
         }
     }
 
+     fun getSensors(): Map<String,Boolean> {
+        return getCurrentSettings().sensors
+
+    }
     /**
      * Defines the default privacy profile for the robot.
      */
     private fun getDefaultSettings(): AppSettings {
-        val sensorNames = listOf("Camera", "LIDAR", "Ultrasonic", "Collision", "Microphone")
+        val sensorNames = listOf("Camera", "LIDAR", "Microphone")
         val roomNames = listOf("Living Room", "Kitchen", "Bedroom", "Bath", "Other")
         val situationalNames = listOf("Discretion Mode", "pixelate objects")
 
