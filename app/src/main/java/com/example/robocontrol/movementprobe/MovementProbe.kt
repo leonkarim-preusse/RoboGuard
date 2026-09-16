@@ -589,7 +589,10 @@ class MovementProbe(
         log.i(TAG, "saved places (${poses.size}): " + _places.value.joinToString { "${it.name} ${fmt(it.position)}" })
 
         // RoboGuard's own named locations for this map, followed by any tapped points that already exist.
-        val stored = if (name.isNullOrBlank()) emptyList() else pointStore.load(name)
+        // Unreadable stored locations are only logged here; saving refuses to overwrite them (load fails first).
+        val stored = if (name.isNullOrBlank()) emptyList() else runCatching { pointStore.load(name) }
+            .onFailure { log.i(TAG, "saved locations UNREADABLE: $it / ${it.cause}") }
+            .getOrDefault(emptyList())
         _customPoints.value = stored.map { MapPoint(it.name, it.position, saved = false, persistent = true) } +
             _customPoints.value.filter { !it.persistent }
         log.i(TAG, "my locations (${stored.size}): " + stored.joinToString { "${it.name} ${fmt(it.position)}" })

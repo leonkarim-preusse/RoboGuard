@@ -71,6 +71,12 @@
             </intent-filter>
         </activity>
 
+        <!-- robocontrol.movement: "Navigation and Map" screen, opened from MainActivity (no launcher icon) -->
+        <activity
+            android:name="com.example.robocontrol.movement.MapNavigationActivity"
+            android:exported="false"
+            android:label="Navigation and Map" />
+
         <!-- robocontrol.movementprobe test screen: map, points, driving -->
         <activity
             android:name="com.example.robocontrol.movementprobe.MovementProbeActivity"
