@@ -509,7 +509,74 @@ these beans have not been inspected yet.
    failure (catch block, still HTTP 500) → owner's wording "Einstellungen konnten nicht gespeichert werden, versuchen Sie es
    bitte erneut". `speakGerman` never throws: connects on demand, keeps only the newest pending sentence, logs "ServerTts"
    (not connected after 5 s, onFailed). Speech only works while RoboGuard is the active foreground app. LIDAR=false in a save
-   stops any running navigation (SensorSwitches). Previous note, kept for history: In `/save`,
+   stops any running navigation (SensorSwitches).
+   **First real /save from the phone (robot logcat 22:57:10, VERIFIED):** payload sensors {Camera=false, Microphone=true, LIDAR=true};
+   ServerTts "Speaking: Einstellungen wurden aktualisiert". Camera OFF: setCameraDisabled CONFIRMED and independently
+   `dumpsys device_policy` → RoboGuardDeviceAdmin `disableCamera=true`; stopVision result=1 but message "timeout" (treated as
+   CONFIRMED by SensorSwitches, questionable). Mic ON: setMicrophoneMute(false) CONFIRMED, SDK ASR re-enable FAILED
+   (isRecognizable=false, the known one-way issue). LIDAR ON: updateRadarStatus CONFIRMED (succeed). Switches ran twice
+   (Sensors.init on first get() + update), harmless. Android 9 `dumpsys audio` has no global mic-mute line; stream "Muted"
+   entries are not the mic.
+   **"Robot stopped talking" (robot logcat 23:00–23:01, VERIFIED cause):** 23:00:16 RG Sensor Test launched from the home icon
+   (uid 1000 → active), 23:00:46 Home pressed → RobotOS suspends RoboGuard (`mActiveAppModule : null`). Later saves started
+   PopupActivity from the service (uid 10103, FLAG_ACTIVITY_NEW_TASK), which brought RoboGuard's MainActivity back to the front
+   WITHOUT re-activation (PermissionManager "current : null"). Result: SkillServer "fail to play text … because of the skillType is
+   SUSPEND" (ServerTts still logged "Speaking", since playText returned without error), and RobotApi calls rejected with code -7
+   (startVision, updateRadarStatus). **Being on screen is not enough; only a launch from the home launcher re-activates.** The -7
+   rejections mean Camera ON (SDK part) and LIDAR ON of those saves did not reach RobotOS.
+   **How RobotOS grants control (CoreService.apk from /system/priv-app/CoreService, dexdump, 2026-09-16; code read, NOT tested):**
+   `core.permission.PermissionManager` watches foreground changes. On "app came to foreground" (PermissionHandler
+   onForegroundActivitiesChanged, and onAppChange): (1) if the package is in `mWhiteList` → log "Start white list app" →
+   `SystemServer.startAppControl(pkg)` = SDK control, however the app got to the front (recents, service startActivity, popup);
+   (2) else if NOT launched from recents (`SystemUtils.isLaunchRecent`) and the package is in `mPreActiveApp` (apps active before)
+   → "Recovery pre app"; (3) else "Top activity no control" / "Stop app control". `mWhiteList` = resource array/whiteList
+   [com.ainirobot.videocall, .settings, .moduleapp, .maptool, .inspection] PLUS the RobotSetting **`boot_app_package_name`**
+   (`initWhiteList`; `listenRobotSettingDefaultPackage` re-reads it on change, so no reboot needed). SDK:
+   `RobotSettingApi.getRobotString/setRobotString(Definition.BOOT_APP_PACKAGE_NAME = "boot_app_package_name", …)`; provider
+   `com.ainirobot.coreservice.robotsettingprovider` needs permission robotSettingProvider (RoboGuard has it; adb shell does not).
+   **So: making RoboGuard the robot's default/boot app should give it control whenever it is in the foreground.** Not changed yet
+   (owner: research only).
+   **Option B implemented (owner: "Lets try B", 2026-09-16, compiled + installed, not yet run):** `robocontrol/system/DefaultAppSetting.kt`:
+   `ensureRoboGuardIsDefault(context)` connects RobotApi if needed (RobotSettingApi is served through that binder), reads
+   `boot_app_package_name` (constant is `Definition.BOOT_APP_PACKAGE_NAME`, NOT on RobotSettingApi), writes the package only if
+   different, reads back (setRobotString returns nothing and swallows RemoteException), logs tag `DefaultApp`. The value before the
+   first change is stored in SharedPreferences `robocontrol_default_app` → `restorePrevious(context)` undoes it (no UI calls it yet).
+   Called from `MainActivity.onCreate`. Unverified: whether CoreService accepts the write from a third-party app, and whether the
+   white list then really activates RoboGuard after Home → recents/popup.
+   **First run (robot logcat 23:08, VERIFIED):** the WRITE WORKS: `boot_app_package_name` was "com.example.PRIVATAR" →
+   `Changed(from=com.example.PRIVATAR, to=com.example.roboguard)`; OrionHome's SettingsObserver logged "switch default app:
+   com.example.roboguard". But activation did NOT change yet: after Home + popup from /save, PermissionManager still logged
+   "On app change pre app : [] current : null" → "Top activity no control" (isLaunchRecent false), i.e. CoreService's in-memory
+   mWhiteList does not contain RoboGuard; TTS still SUSPEND. No "add packageName … into whiteList" line (CoreService logs at that
+   second were dropped by chatty, so unknown whether its setting listener fired). Next step: reboot, since initWhiteList runs at
+   CoreService start and reads boot_app_package_name.
+   **After reboot (23:12–23:13, VERIFIED):** booted in ~45 s; RobotSettingManager "boot_app_package_name: get from database
+   com.example.roboguard"; RobotOS auto-started RoboGuard (MainActivity resumed) and `mActiveAppModule : com.example.roboguard`
+   (SDK control without tapping the icon). PermissionManager alternated "Recovery pre app : com.example.roboguard" and "Top
+   activity no control" during start-up. Still no "into whiteList"/"Start white list app" line; the decisive test (Home, then back
+   via recents/popup) is not done yet.
+   **Owner theory "TTS runs before RoboGuard is brought to the front" CHECKED (logcat 23:14, VERIFIED):** 23:14:41 save while in
+   front → played, action=complete. 23:14:46 Home → RobotOS `stopTTS()`, RoboGuard suspended. 23:14:49.369 save: sensor SDK calls
+   (setRecognizeMode/setASREnabled/setRecognizable) and at .373 playText ALL rejected "because of the skillType is SUSPEND" (rejected
+   immediately, not cancelled mid-sentence); .382 PopupActivity started (order in /save: sensors → TTS → popup); CoreService then
+   re-activated RoboGuard via "Recovery pre app : com.example.roboguard" (not via white list) and ~0.7 s after the switch called
+   `stopTTS()` again (RobotOS does this on every app change). 23:14:53 next save while active → played complete. So: theory right
+   in effect (order), mechanism = suspend rejection; SDK sensor switches of the first save after Home fail the same way.
+   Proposed fix (not applied, owner only asked to check): in /save bring RoboGuard to the front FIRST, wait until
+   `RobotApi.isActive()` is true plus ~1 s (past RobotOS's stopTTS on app change), then apply sensors and speak.
+   **Owner then moved showPopup before speakGerman (sensors still first) — still no TTS on the first save from Home
+   (logcat 23:17:33, VERIFIED):** .521 sensor SDK calls rejected SUSPEND; .535 PopupActivity START; .637 playText rejected SUSPEND
+   (only ~100 ms after the start request); 23:17:34.071 RobotOS `stopTTS()` after re-activating RoboGuard. Second save 23:17:40
+   (already active) → played complete. Cause: `startActivity` only queues the start; re-activation ("Recovery pre app") arrives
+   ~0.3–0.5 s later, and RobotOS then calls stopTTS on the app change. Reordering calls cannot fix it; /save must wait for
+   `RobotApi.isActive()` (poll) + a short settle delay (~1 s) before sensors and speech.
+   **Implemented (owner: "yes", compiled + installed, not yet run):** /save = decode → write file → notification + showPopup →
+   `applySettingsWhenInControl(settings)` → respond "OK" immediately. The job (service `CoroutineScope(SupervisorJob()+Default)`,
+   cancelled in onDestroy; a newer save cancels the pending one) runs `waitForSdkControl()`: `Sensors.get()` (starts RobotApi
+   connection), poll `RobotApi.isActive()` (live binder call to IModuleRegistry.isActive) every 100 ms up to 3 s; if control had to
+   be regained, wait 1 s more; then `applySensorSettings` + speakGerman. Timeout → logged "No SDK control after 3000 ms", still
+   applies (Android parts work). Error path: popup "Privacy Settings could not be saved" + `speakWhenInControl(error sentence)`.
+   Also seen in the jar, unexplored: `RobotApi.delegateControl(String): Boolean`. Previous note, kept for history: In `/save`,
    store the parsed settings (`val settings = jsonConfig.decodeFromString<AppSettings>(payload)`) and after
    `writeText(payload)` call `Sensors.get(applicationContext).update(settings)`, plus
    `import com.example.robocontrol.sensorcontrol.Sensors`. Until then nothing calls `update()` automatically.
