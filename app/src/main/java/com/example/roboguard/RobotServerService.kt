@@ -14,6 +14,10 @@ import android.util.Log
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.TextView
+import com.example.robocontrol.audio.OrionStarTts
+import com.example.robocontrol.audio.TtsFailure
+import com.example.robocontrol.audio.TtsListener
+import com.example.robocontrol.sensorcontrol.Sensors
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.MultiFormatWriter
 import com.journeyapps.barcodescanner.BarcodeEncoder
@@ -292,13 +296,23 @@ class RobotServerService : Service() {
                         // Authenticated saving of privacy settings
                         securePost("/save", applicationContext) { payload ->
                             try {
-                                jsonConfig.decodeFromString<AppSettings>(payload)
+                                val settings = jsonConfig.decodeFromString<AppSettings>(payload)
                                 getSettingsFile(applicationContext).writeText(payload)
+                                // Switch the robot's sensors to the general sensor settings (room-specific settings are ignored for now)
+                                val sensorsApplied = applySensorSettings(settings)
+                                speakGerman(
+                                    if (sensorsApplied) "Einstellungen wurden aktualisiert"
+                                    else "Einstellungen konnten nicht gespeichert werden, versuchen Sie es bitte erneut"
+                                )
                                 this@RobotServerService.notification("Settings Saved, check RoboGuard App for details!")
                                 this@RobotServerService.showPopup("Privacy Settings Saved")
                                 call.respondText("OK")
+                                
+
+
                             } catch (e: Exception) {
                                 Log.e("Server", "Failed to save settings: $e")
+                                speakGerman("Einstellungen konnten nicht gespeichert werden, versuchen Sie es bitte erneut")
                                 call.respond(HttpStatusCode.InternalServerError, "Error: ${e.message}")
                             }
                         }
@@ -445,7 +459,85 @@ class RobotServerService : Service() {
 
     override fun onDestroy() {
         server?.stop(1000, 2000)
+        runCatching { tts?.disconnect() }
         super.onDestroy()
+    }
+
+    /* ---------- Sensors and speech (robocontrol) ---------- */
+
+    /**
+     * Applies the general sensor settings (Camera, LIDAR, Microphone) to the robot via [Sensors].
+     * Room-specific sensor settings are not applied yet.
+     *
+     * @return false if switching threw an error. Whether each switch really took effect is reported
+     *         asynchronously in `Sensors.switchReports` (and Logcat tag "SensorSwitches").
+     */
+    private fun applySensorSettings(settings: AppSettings): Boolean =
+        try {
+            Sensors.get(applicationContext).update(settings)
+            Log.i("Server", "Sensor settings applied: ${settings.sensors}")
+            true
+        } catch (e: Exception) {
+            Log.e("Server", "Failed to apply sensor settings: $e", e)
+            false
+        }
+
+    private companion object {
+        /** How long to wait for the speech service before giving up on a sentence. */
+        const val TTS_CONNECT_TIMEOUT_MS = 5_000L
+    }
+
+    /** Created on first use; RobotOS only serves speech while RoboGuard is the active (foreground) app. */
+    private var tts: OrionStarTts? = null
+    private val ttsLock = Any()
+    private var ttsConnecting = false
+
+    /** Sentence waiting for the speech service to connect; only the newest one is kept. */
+    private var pendingSentence: String? = null
+
+    /**
+     * Speaks [sentence] in German. Never throws: every problem (not connected, SDK error, speech rejected)
+     * is logged under the tag "ServerTts" so a failed announcement cannot break a request.
+     */
+    private fun speakGerman(sentence: String) {
+        try {
+            val speech = synchronized(ttsLock) { tts ?: OrionStarTts(applicationContext).also { tts = it } }
+            if (speech.connected.value) {
+                say(speech, sentence)
+                return
+            }
+            val connectNow = synchronized(ttsLock) {
+                pendingSentence = sentence
+                (!ttsConnecting).also { ttsConnecting = true }
+            }
+            if (connectNow) {
+                speech.connect {
+                    val next = synchronized(ttsLock) {
+                        ttsConnecting = false
+                        pendingSentence.also { pendingSentence = null }
+                    }
+                    next?.let { say(speech, it) }
+                }
+                // The SDK gives no callback when it refuses the connection (e.g. RoboGuard not in the foreground).
+                Handler(Looper.getMainLooper()).postDelayed({
+                    val lost = synchronized(ttsLock) {
+                        if (!speech.connected.value) { ttsConnecting = false; pendingSentence.also { pendingSentence = null } } else null
+                    }
+                    lost?.let { Log.w("ServerTts", "Speech service not connected after ${TTS_CONNECT_TIMEOUT_MS} ms, not spoken: \"$it\"") }
+                }, TTS_CONNECT_TIMEOUT_MS)
+            }
+        } catch (e: Exception) {
+            Log.e("ServerTts", "Could not speak \"$sentence\": $e", e)
+        }
+    }
+
+    private fun say(speech: OrionStarTts, sentence: String) {
+        val accepted = speech.speakGerman(sentence, object : TtsListener {
+            override fun onFailed(failure: TtsFailure) {
+                Log.e("ServerTts", "Not spoken: \"$sentence\" ($failure)")
+            }
+        })
+        if (accepted) Log.i("ServerTts", "Speaking: \"$sentence\"")
     }
 
     /**
