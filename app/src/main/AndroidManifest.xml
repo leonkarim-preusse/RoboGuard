@@ -77,6 +77,13 @@
             android:exported="false"
             android:label="Navigation and Map" />
 
+        <!-- robocontrol.movement: popup asking whether the robot may temporarily cross a private area -->
+        <activity
+            android:name="com.example.robocontrol.movement.PrivacyOverrideActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar" />
+
         <!-- robocontrol.movementprobe test screen: map, points, driving -->
         <activity
             android:name="com.example.robocontrol.movementprobe.MovementProbeActivity"

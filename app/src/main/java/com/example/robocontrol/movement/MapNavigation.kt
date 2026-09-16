@@ -45,7 +45,7 @@ class RenderedMap(val map: RobotMapFile, val bitmap: Bitmap, val bounds: CellBou
 enum class SpeedPreset(val label: String, val linear: Double?, val angular: Double?) {
     SLOW("Slow", 0.25, 0.5),
     MEDIUM("Medium", 0.45, 0.8),
-    DEFAULT("Robot default", null, null)
+    DEFAULT("Default", null, null)
 }
 
 /**
@@ -195,6 +195,7 @@ class MapNavigation(
     /** Stops navigation, polling and the SDK connection. Call when the screen closes. */
     fun shutdown() {
         pollJob?.cancel()
+        PrivacyOverridePrompt.cancel()
         runCatching { RobotApi.getInstance().unregisterStatusListener(speedStatus) }
         runCatching { bridge.disconnect() }
         runCatching { tts.disconnect() }
@@ -203,22 +204,54 @@ class MapNavigation(
     // ---- privacy areas ------------------------------------------------------------------
 
     /**
-     * Marks a circular area around the selected point as private ([ZONE_RADIUS_M], polygon with [ZONE_SEGMENTS] corners).
-     * From then on, drives into or through it are refused or aborted, with a spoken German announcement. Saved.
+     * Marks a circular area named [rawName] around the selected point as private ([ZONE_RADIUS_M], polygon with
+     * [ZONE_SEGMENTS] corners). From then on, drives into or through it are refused or aborted, with a spoken German
+     * announcement and a question on the screen. Saved.
+     *
+     * @return null on success, otherwise a message for the name dialog
      */
-    fun makeSelectedAreaPrivate() {
-        val point = _selected.value ?: return log.i(TAG, "select a point first")
-        if (zonesLocked()) return
-        val zone = Zone(
-            // Unique name: tapped points restart at P1 after a restart and must not replace an older saved area.
-            name = uniqueZoneName("Privat: ${point.name}"),
-            polygon = circlePolygon(point.position, ZONE_RADIUS_M, ZONE_SEGMENTS),
-            privacy = PrivacyLevel.PRIVATE
-        )
+    fun makeSelectedAreaPrivate(rawName: String): String? {
+        val point = _selected.value ?: return "Select a point first."
+        lockedMessage()?.let { return it }
+        val name = validateAreaName(rawName).let { (ok, error) -> ok ?: return error }
+        val zone = Zone(name = name, polygon = circlePolygon(point.position, ZONE_RADIUS_M, ZONE_SEGMENTS), privacy = PrivacyLevel.PRIVATE)
         changeZones { it.withZone(zone) }
         idleViolationZone = null
         log.i(TAG, "PRIVATE area \"${zone.name}\": radius $ZONE_RADIUS_M m around ${fmt(point.position)}, " +
             "plus ${guard.margin} m margin → the robot stops about %.1f m from the centre".format(ZONE_RADIUS_M + guard.margin))
+        return null
+    }
+
+    /** Default name for a new area: "Bereich N", counting up from the highest number already used on this map. */
+    fun nextAreaName(): String {
+        val names = guard.zones.zones.map { it.name }
+        var n = (names.mapNotNull { AREA_NUMBER.find(it)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 0) + 1
+        while (names.any { it.equals("Bereich $n", ignoreCase = true) }) n++
+        return "Bereich $n"
+    }
+
+    /** Trimmed name, or an error message: empty, too long, or already used by another area of this map. */
+    private fun validateAreaName(raw: String): Pair<String?, String?> {
+        val name = raw.trim()
+        return when {
+            name.isEmpty() -> null to "Please enter a name."
+            name.length > MAX_NAME_LENGTH -> null to "The name is too long (at most $MAX_NAME_LENGTH characters)."
+            guard.zones.byName(name) != null -> null to "An area named \"$name\" already exists."
+            else -> name to null
+        }
+    }
+
+    /**
+     * Deletes the single private area [name] (also from storage) and ends any temporary permission for it.
+     */
+    fun removePrivateArea(name: String) {
+        if (zonesLocked()) return
+        if (guard.zones.byName(name) == null) return
+        synchronized(controller) { guard.revokeZoneOverride(name, revokedBy = "area deleted on screen") }
+        changeZones { it.withoutZone(name) }
+        refreshOverrides()
+        idleViolationZone = null
+        log.i(TAG, "private area \"$name\" deleted")
     }
 
     // ---- drawing a private area by hand ----------------------------------------------------
@@ -226,8 +259,6 @@ class MapNavigation(
     /** Corners of the area being drawn, in world coordinates; null when not in drawing mode. */
     private val _drawingVertices = MutableStateFlow<List<Point2D>?>(null)
     val drawingVertices: StateFlow<List<Point2D>?> = _drawingVertices.asStateFlow()
-
-    private var drawnAreaCounter = 0
 
     /** A tap on the map: adds a corner while drawing an area, otherwise adds a temporary point. */
     fun handleMapTap(position: Point2D) {
@@ -257,22 +288,25 @@ class MapNavigation(
     }
 
     /**
-     * Turns the drawn corners (at least 3, in drawing order) into a private [Zone], enforced exactly like the circular
-     * areas: refused targets, aborted routes, spoken announcement. The polygon is taken as drawn; a self-crossing outline
-     * still works with the ray-casting test but may not cover the intended region.
+     * Turns the drawn corners (at least 3, in drawing order) into a private [Zone] named [rawName], enforced exactly like
+     * the circular areas. The polygon is taken as drawn; a self-crossing outline still works with the ray-casting test
+     * but may not cover the intended region.
+     *
+     * @return null on success (drawing ends), otherwise a message for the name dialog (drawing stays open)
      */
-    fun finishDrawingArea() {
-        val corners = _drawingVertices.value ?: return
-        if (corners.size < 3) return log.i(TAG, "an area needs at least 3 corners (have ${corners.size})")
-        if (zonesLocked()) return
-        drawnAreaCounter++
-        val zone = Zone(name = uniqueZoneName("Privat: Bereich $drawnAreaCounter"), polygon = corners, privacy = PrivacyLevel.PRIVATE)
+    fun finishDrawingArea(rawName: String): String? {
+        val corners = _drawingVertices.value ?: return "Not drawing an area."
+        if (corners.size < 3) return "An area needs at least 3 corners (have ${corners.size})."
+        lockedMessage()?.let { return it }
+        val name = validateAreaName(rawName).let { (ok, error) -> ok ?: return error }
+        val zone = Zone(name = name, polygon = corners, privacy = PrivacyLevel.PRIVATE)
         changeZones { it.withZone(zone) }
         _drawingVertices.value = null
         idleViolationZone = null
         log.i(TAG, "PRIVATE area \"${zone.name}\" drawn with ${corners.size} corners: " + corners.joinToString { fmt(it) } +
             ", plus ${guard.margin} m margin")
         _pose.value?.let { if (zone.containsWithMargin(it.point, guard.margin)) log.i(TAG, "note: the robot is currently inside this area") }
+        return null
     }
 
     /**
@@ -287,7 +321,8 @@ class MapNavigation(
             _privateZones.value = emptyList()
         }
         idleViolationZone = null
-        drawnAreaCounter = 0
+        synchronized(controller) { guard.activeZoneOverrides().keys.forEach { guard.revokeZoneOverride(it, "areas cleared on screen") } }
+        refreshOverrides()
         val wasUnreadable = _zoneStoreError.value != null
         scope.launch(Dispatchers.IO) {
             synchronized(zoneRegistry) {
@@ -306,14 +341,12 @@ class MapNavigation(
     }
 
     /** True (and logged) while the saved areas are unreadable: editing them now would overwrite what could still be recovered. */
-    private fun zonesLocked(): Boolean {
-        if (!_zonesLoaded.value) {
-            log.i(TAG, "private areas are not loaded yet; try again in a moment")
-            return true
-        }
-        val error = _zoneStoreError.value ?: return false
-        log.i(TAG, "private areas cannot be changed: $error")
-        return true
+    private fun zonesLocked(): Boolean = lockedMessage()?.also { log.i(TAG, it) } != null
+
+    private fun lockedMessage(): String? = when {
+        !_zonesLoaded.value -> "The private areas are not loaded yet; try again in a moment."
+        _zoneStoreError.value != null -> "Private areas cannot be changed: ${_zoneStoreError.value}"
+        else -> null
     }
 
     /** Applies [update] to the zones in force, then saves the result for the current map in the background. */
@@ -345,12 +378,6 @@ class MapNavigation(
         }
     }
 
-    private fun uniqueZoneName(base: String): String {
-        val taken = guard.zones.zones.map { it.name.lowercase() }.toSet()
-        if (base.lowercase() !in taken) return base
-        return generateSequence(2) { it + 1 }.map { "$base ($it)" }.first { it.lowercase() !in taken }
-    }
-
     /**
      * Loads the saved private areas of [map] into the guard. A missing file means none; an unreadable one blocks
      * driving and editing ([zoneStoreError]) instead of silently driving as if nothing were private.
@@ -373,7 +400,6 @@ class MapNavigation(
             }
             _zoneStoreError.value = null
             _zonesLoaded.value = true
-            drawnAreaCounter = zones.zones.mapNotNull { DRAWN_AREA_NUMBER.find(it.name)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 0
             log.i(TAG, "private areas loaded: ${zones.privateZones.size}" +
                 zones.privateZones.joinToString(prefix = if (zones.privateZones.isEmpty()) "" else " (", postfix = if (zones.privateZones.isEmpty()) "" else ")") { it.name })
         }.onFailure { e ->
@@ -411,6 +437,69 @@ class MapNavigation(
                 }
             }.onFailure { log.i(TAG, "turn away threw: $it") }
         }
+    }
+
+    // ---- temporary permission to cross a private area ---------------------------------------
+
+    /** Zone name → expiry time (ms since epoch) of each active temporary permission, for display. */
+    private val _activeOverrides = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val activeOverrides: StateFlow<Map<String, Long>> = _activeOverrides.asStateFlow()
+
+    /** Re-reads the active permissions from the guard (which also drops and audits expired ones). */
+    private fun refreshOverrides() {
+        val current = synchronized(controller) { guard.activeZoneOverrides().mapValues { it.value.expiresAt } }
+        val before = _activeOverrides.value
+        (before.keys - current.keys).forEach { log.i(TAG, "temporary permission for \"$it\" ended") }
+        if (current != before) _activeOverrides.value = current
+    }
+
+    /** Ends the temporary permission for area [name] early. A drive currently inside that area is then stopped. */
+    fun revokeCrossingPermission(name: String) {
+        synchronized(controller) { guard.revokeZoneOverride(name, revokedBy = "revoked on screen") }
+        refreshOverrides()
+        log.i(TAG, "temporary permission for \"$name\" revoked")
+    }
+
+    /**
+     * Asks on the screen (popup [PrivacyOverrideActivity]) whether the robot may temporarily cross [zone] on its way to
+     * [target]. Yes → permission for that one area for the chosen minutes, then the drive to [target] starts again.
+     * No → the robot stays stopped; after a stop on the way it turns away from the area.
+     */
+    private fun askToCross(zone: Zone, target: MapPoint, stoppedOnTheWay: Boolean) {
+        log.i(TAG, "asking on screen: allow crossing \"${zone.name}\"?")
+        PrivacyOverridePrompt.ask(zone.name) { minutes ->
+            // An answer ends the announcement that may still be running, and the robot confirms the answer.
+            runCatching { tts.stop() }
+            speakGerman(
+                if (minutes == null) "Keine Erlaubnis für ${zone.name} erteilt, stoppe Navigation"
+                else "Ich darf ${zone.name} für ${germanMinutes(minutes)} betreten und setze meinen Weg fort"
+            )
+            if (minutes == null) {
+                log.i(TAG, "crossing \"${zone.name}\" NOT allowed; robot stays stopped")
+                _navState.value = "not allowed to cross ${zone.name}"
+                if (stoppedOnTheWay) turnAwayAfterPrivacyStop()
+                return@ask
+            }
+            val granted = runCatching {
+                synchronized(controller) {
+                    guard.grantZoneOverride(zone.name, OverrideReason.UserSummoned, minutes * 60_000L, grantedBy = "person at robot screen")
+                }
+            }
+            granted.onFailure { log.i(TAG, "permission could not be granted: $it") }.onSuccess {
+                refreshOverrides()
+                log.i(TAG, "crossing \"${zone.name}\" ALLOWED for $minutes min; driving on to ${target.name}")
+                driveTo(target)
+            }
+        }
+    }
+
+    private fun germanMinutes(minutes: Int) = if (minutes == 1) "eine Minute" else "$minutes Minuten"
+
+    private fun speakGerman(sentence: String) {
+        log.i(TAG, "saying: \"$sentence\"")
+        tts.speakGerman(sentence, object : TtsListener {
+            override fun onFailed(failure: TtsFailure) = log.i(TAG, "not spoken: $failure")
+        })
     }
 
     /** Says the privacy stop sentence in German and logs it. */
@@ -538,6 +627,10 @@ class MapNavigation(
      */
     fun driveToSelected() {
         val target = _selected.value ?: return log.i(TAG, "select a point first: tap the map or a list entry")
+        driveTo(target)
+    }
+
+    private fun driveTo(target: MapPoint) {
         if (!_zonesLoaded.value) {
             _navState.value = "waiting for private areas to load"
             return log.i(TAG, "DRIVE REFUSED: private areas not loaded yet")
@@ -581,12 +674,13 @@ class MapNavigation(
                         log.i(TAG, "REFUSED: target ${target.name} lies in private area \"${failure.zone.name}\"")
                         _navState.value = "refused: target in ${failure.zone.name}"
                         announcePrivacyStop("target inside ${failure.zone.name}")
+                        askToCross(failure.zone, target, stoppedOnTheWay = false)
                     }
                     is NavFailure.AbortedOnPrivateZoneEntry -> {
                         log.i(TAG, "ABORTED at ${_pose.value?.let { fmt(it.point) }}: route entered private area \"${failure.zone.name}\"")
                         _navState.value = "stopped before ${failure.zone.name}"
                         announcePrivacyStop("route entered ${failure.zone.name}")
-                        turnAwayAfterPrivacyStop()
+                        askToCross(failure.zone, target, stoppedOnTheWay = true)
                     }
                     else -> {
                         log.i(TAG, "FAILED to reach ${target.name}: $failure")
@@ -678,6 +772,7 @@ class MapNavigation(
                 }
             }
             if (tick % STATUS_EVERY_N_POLLS == 0) {
+                refreshOverrides() // expired permissions end here (and are logged)
                 val localized = runCatching { api.isRobotEstimate() }.getOrNull()
                 if (localized != _localized.value) log.i(TAG, "localized: $localized")
                 _localized.value = localized
@@ -740,11 +835,13 @@ class MapNavigation(
         const val ZONE_RADIUS_M = 1.0
         const val ZONE_SEGMENTS = 24
 
-        /** Finds N in "Privat: Bereich N", to continue the numbering after a restart. */
-        val DRAWN_AREA_NUMBER = Regex("""Bereich (\d+)""")
+        /** Finds N in "Bereich N" (also older "Privat: Bereich N"), to continue the default numbering. */
+        val AREA_NUMBER = Regex("""Bereich (\d+)""")
 
         /** Spoken (German) when a drive is refused or stopped because of a private area. Owner's wording. */
-        const val PRIVACY_STOP_SENTENCE = "Weg führt durch privaten Bereich. Ich halte an und fahre nicht weiter."
+        const val PRIVACY_STOP_SENTENCE = "Dieser Weg führt mich durch einen als privat gekennzeichneten Bereich, darum bleibe ich " +
+            "vorerst stehen. Wenn du mir temporär erlauben möchtest den privaten Bereich zu betreten, dann kannst du das an " +
+            "meinem Bildschirm tun."
 
         /** Cell values at or above this are drawn as walls. Seen on the robot: 0, 1, 5267, 8507, 12288, 32767. */
         const val OCCUPIED_VALUE = 8000
