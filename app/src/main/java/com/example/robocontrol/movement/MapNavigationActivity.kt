@@ -2,6 +2,7 @@ package com.example.robocontrol.movement
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -179,6 +180,38 @@ class MapNavigationActivity : ComponentActivity() {
             )
         }
 
+        // ---- private areas: name dialog, delete confirmation, permission popup
+        val activeOverrides by probe.activeOverrides.collectAsState()
+        var nameAreaFor by remember { mutableStateOf<AreaKind?>(null) }
+        nameAreaFor?.let { kind ->
+            AreaNameDialog(kind, onDismiss = { nameAreaFor = null })
+        }
+        var confirmDeleteArea by remember { mutableStateOf<String?>(null) }
+        confirmDeleteArea?.let { name ->
+            AlertDialog(
+                onDismissRequest = { confirmDeleteArea = null },
+                title = { Text("Delete private area \"$name\"?") },
+                text = { Text("The robot may then drive through this area again.") },
+                confirmButton = {
+                    Button(
+                        onClick = { probe.removePrivateArea(name); confirmDeleteArea = null },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White)
+                    ) { Text("Delete") }
+                },
+                dismissButton = { TextButton(onClick = { confirmDeleteArea = null }) { Text("Cancel") } }
+            )
+        }
+        // A drive stopped at a private area asks on the screen: open the popup once per question.
+        LaunchedEffect(Unit) {
+            var shownId = -1L
+            PrivacyOverridePrompt.pending.collect { request ->
+                if (request != null && request.id != shownId) {
+                    shownId = request.id
+                    startActivity(Intent(this@MapNavigationActivity, PrivacyOverrideActivity::class.java))
+                }
+            }
+        }
+
         // Saving the current position is only possible while the robot knows where it is.
         val canSavePosition = localized == true && pose != null && mapName != null
         // Close the dialog if localization is lost while it is open.
@@ -250,7 +283,7 @@ class MapNavigationActivity : ComponentActivity() {
                     } else {
                         Button(
                             enabled = corners.size >= 3,
-                            onClick = { probe.finishDrawingArea() },
+                            onClick = { nameAreaFor = AreaKind.DRAWN },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828), contentColor = Color.White),
                             modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING
                         ) { Text("Finish area (${corners.size} corners)", fontSize = 13.sp) }
@@ -342,22 +375,48 @@ class MapNavigationActivity : ComponentActivity() {
                 OutlinedButton(onClick = { probe.clearCustomPoints() }, modifier = Modifier.fillMaxWidth()) { Text("Clear tapped points") }
 
                 Text("Privacy areas", fontWeight = FontWeight.Bold)
-                Text(
-                    if (privateZones.isEmpty()) "none" else privateZones.joinToString { it.name },
-                    fontSize = 13.sp
-                )
+                if (privateZones.isEmpty()) Text("none", fontSize = 13.sp)
+                privateZones.forEach { zone ->
+                    val expiresAt = activeOverrides.entries.firstOrNull { it.key.equals(zone.name, ignoreCase = true) }?.value
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.weight(1f)) {
+                            Text(zone.name, fontSize = 14.sp)
+                            if (expiresAt != null) {
+                                val left = ((expiresAt - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
+                                Text("temporarily allowed, %d:%02d left".format(left / 60, left % 60), fontSize = 12.sp, color = Color(0xFF2E7D32))
+                            }
+                        }
+                        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            // Delete: removes the area (after confirmation). Red text, plain button.
+                            OutlinedButton(
+                                enabled = zonesLoaded && zoneStoreError == null,
+                                onClick = { confirmDeleteArea = zone.name },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.height(32.dp)
+                            ) { Text("Delete", fontSize = 13.sp, color = Color(0xFFD32F2F)) }
+                            // ✕: only while crossing is temporarily allowed; ends that permission now.
+                            if (expiresAt != null) {
+                                OutlinedButton(
+                                    onClick = { probe.revokeCrossingPermission(zone.name) },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) { Text("✕", fontSize = 14.sp) }
+                            }
+                        }
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Button(
                         enabled = selected != null && zonesLoaded && zoneStoreError == null,
-                        onClick = { probe.makeSelectedAreaPrivate() },
+                        onClick = { nameAreaFor = AreaKind.CIRCLE },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828), contentColor = Color.White),
                         modifier = Modifier.weight(1f)
-                    ) { Text("Private area around selected", fontSize = 13.sp) }
+                    ) { Text("Set Point as Private Area", fontSize = 11.sp) }
                     OutlinedButton(
                         enabled = privateZones.isNotEmpty() || zoneStoreError != null,
                         onClick = { confirmClearAreas = true },
                         modifier = Modifier.weight(1f)
-                    ) { Text(if (zoneStoreError != null) "Reset private areas" else "Clear private areas", fontSize = 13.sp) }
+                    ) { Text(if (zoneStoreError != null) "Reset private areas" else "Clear private areas", fontSize = 11.sp) }
                 }
 
                 Text("Saved places (RobotOS)", fontWeight = FontWeight.Bold)
@@ -460,6 +519,42 @@ class MapNavigationActivity : ComponentActivity() {
                 ) { Text(if (saving) "Saving…" else "Save") }
             },
             dismissButton = { TextButton(enabled = !saving, onClick = onDismiss) { Text("Cancel") } }
+        )
+    }
+
+    /** Which kind of private area the name dialog creates. */
+    private enum class AreaKind { CIRCLE, DRAWN }
+
+    /** Asks for the name of a new private area (default "Bereich N"); stays open with a message if it is refused. */
+    @Composable
+    private fun AreaNameDialog(kind: AreaKind, onDismiss: () -> Unit) {
+        var name by remember { mutableStateOf(probe.nextAreaName()) }
+        var error by remember { mutableStateOf<String?>(null) }
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Name the private area") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it; error = null },
+                        singleLine = true,
+                        isError = error != null,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    error?.let { Text(it, color = Color(0xFFD32F2F)) }
+                }
+            },
+            confirmButton = {
+                Button(enabled = name.isNotBlank(), onClick = {
+                    val result = when (kind) {
+                        AreaKind.CIRCLE -> probe.makeSelectedAreaPrivate(name)
+                        AreaKind.DRAWN -> probe.finishDrawingArea(name)
+                    }
+                    if (result == null) onDismiss() else error = result
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
         )
     }
 

@@ -32,6 +32,9 @@ class PrivacyGuard(
         private set
 
     private var override: Override? = null
+
+    /** Per-zone overrides, keyed by lower-case zone name: lift the restriction for ONE area only. */
+    private val zoneOverrides = mutableMapOf<String, Override>()
     private val auditLog = mutableListOf<AuditEntry>()
 
     fun updateZones(newZones: MapZones) { zones = newZones }
@@ -40,15 +43,17 @@ class PrivacyGuard(
 
     /** Whether the robot may navigate to [target] right now. */
     fun evaluateTarget(target: Point2D): Decision {
-        val blocking = zones.zonesAt(target, margin).firstOrNull { it.isPrivate }
-            ?: return Decision.Allowed
-        return if (overrideActive()) {
-            record(AuditEntry.OverriddenEntry(clock(), blocking.name, activeOverride()!!.reason))
-            Decision.AllowedByOverride(blocking, activeOverride()!!)
-        } else {
+        val private = zones.zonesAt(target, margin).filter { it.isPrivate }
+        if (private.isEmpty()) return Decision.Allowed
+        val blocking = private.firstOrNull { overrideFor(it) == null }
+        if (blocking != null) {
             record(AuditEntry.Refused(clock(), blocking.name, target))
-            Decision.Refused(blocking)
+            return Decision.Refused(blocking)
         }
+        val zone = private.first()
+        val o = overrideFor(zone)!!
+        record(AuditEntry.OverriddenEntry(clock(), zone.name, o.reason))
+        return Decision.AllowedByOverride(zone, o)
     }
 
     /**
@@ -62,9 +67,8 @@ class PrivacyGuard(
         if (pose.status == PoseStatus.FORBIDDEN) {
             return Violation.SdkForbiddenArea
         }
-        val zone = zones.zonesAt(pose.point, margin).firstOrNull { it.isPrivate }
+        val zone = zones.zonesAt(pose.point, margin).firstOrNull { it.isPrivate && overrideFor(it) == null }
             ?: return null
-        if (overrideActive()) return null
         record(AuditEntry.EnteredPrivateZone(clock(), zone.name, pose.point))
         return Violation.PrivateZone(zone)
     }
@@ -72,7 +76,7 @@ class PrivacyGuard(
     /** Convenience: is this named zone currently enterable? */
     fun mayEnter(zoneName: String): Boolean {
         val z = zones.byName(zoneName) ?: return true
-        return !z.isPrivate || overrideActive()
+        return !z.isPrivate || overrideFor(z) != null
     }
 
     // ---- override -------------------------------------------------------
@@ -103,6 +107,52 @@ class PrivacyGuard(
         )
         override = o
         record(AuditEntry.OverrideGranted(o.grantedAt, reason, grantedBy, o.expiresAt))
+        return o
+    }
+
+    /**
+     * Temporarily lift the restriction for the single zone [zoneName] only, e.g. after a person on the robot's screen
+     * allowed it to cross that area. Same rules as [grantOverride]: hard expiry (max [MAX_OVERRIDE_MILLIS]), audited.
+     */
+    fun grantZoneOverride(
+        zoneName: String,
+        reason: OverrideReason,
+        durationMillis: Long,
+        grantedBy: String
+    ): Override {
+        require(durationMillis > 0) { "Override must have a positive duration" }
+        require(durationMillis <= MAX_OVERRIDE_MILLIS) {
+            "Override capped at ${MAX_OVERRIDE_MILLIS / 60000} minutes; re-grant if still needed"
+        }
+        val o = Override(reason, grantedBy, clock(), clock() + durationMillis, zoneName)
+        zoneOverrides[zoneName.lowercase()] = o
+        record(AuditEntry.OverrideGranted(o.grantedAt, reason, grantedBy, o.expiresAt, zoneName))
+        return o
+    }
+
+    fun revokeZoneOverride(zoneName: String, revokedBy: String) {
+        val o = zoneOverrides.remove(zoneName.lowercase()) ?: return
+        record(AuditEntry.OverrideRevoked(clock(), o.reason, revokedBy, zoneName))
+    }
+
+    /** Active per-zone overrides by zone name; expired ones are removed (and audited) on the way. */
+    fun activeZoneOverrides(): Map<String, Override> {
+        val now = clock()
+        zoneOverrides.entries.removeAll { (_, o) ->
+            (now >= o.expiresAt).also { expired -> if (expired) record(AuditEntry.OverrideExpired(o.expiresAt, o.reason, o.zoneName)) }
+        }
+        return zoneOverrides.values.associateBy { it.zoneName ?: "" }
+    }
+
+    /** The override that currently lets the robot into [zone]: a global one, or one for this zone; null if none. */
+    private fun overrideFor(zone: Zone): Override? {
+        activeOverride()?.let { return it }
+        val o = zoneOverrides[zone.name.lowercase()] ?: return null
+        if (clock() >= o.expiresAt) {
+            zoneOverrides.remove(zone.name.lowercase())
+            record(AuditEntry.OverrideExpired(o.expiresAt, o.reason, o.zoneName))
+            return null
+        }
         return o
     }
 
@@ -172,7 +222,9 @@ data class Override(
     val reason: OverrideReason,
     val grantedBy: String,
     val grantedAt: Long,
-    val expiresAt: Long
+    val expiresAt: Long,
+    /** The single zone this override applies to; null = all zones. */
+    val zoneName: String? = null
 )
 
 sealed interface AuditEntry {
@@ -194,18 +246,21 @@ sealed interface AuditEntry {
         override val timestamp: Long,
         val reason: OverrideReason,
         val grantedBy: String,
-        val expiresAt: Long
+        val expiresAt: Long,
+        val zoneName: String? = null
     ) : AuditEntry
 
     data class OverrideRevoked(
         override val timestamp: Long,
         val reason: OverrideReason,
-        val revokedBy: String
+        val revokedBy: String,
+        val zoneName: String? = null
     ) : AuditEntry
 
     data class OverrideExpired(
         override val timestamp: Long,
-        val reason: OverrideReason
+        val reason: OverrideReason,
+        val zoneName: String? = null
     ) : AuditEntry
 
     data class OverriddenEntry(

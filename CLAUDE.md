@@ -707,6 +707,35 @@ these beans have not been inspected yet.
    editing are refused (`zonesLoaded`); unreadable file → `zoneStoreError`, red banner, driving/editing blocked, "Reset private
    areas" deletes it. Save failure → non-blocking red warning. Unique zone names (tapped points restart at P1) and "Bereich N"
    numbering continues from stored names. Probe screen unchanged (in memory only).
+   **Named areas, per-area delete, ask-to-cross popup (owner request 2026-09-16, compiled + installed, not yet run):**
+   - Creating an area (circle or drawn) opens a name dialog, default "Bereich N" (N = highest number in existing names + 1);
+     names unique per map (case-insensitive), max 40 chars. Area list: each area with a small ✕ (confirm dialog) →
+     `MapNavigation.removePrivateArea` (also revokes its permission). Old uniqueZoneName/"Privat: " prefix removed.
+   - `PrivacyGuard`: the existing `grantOverride` lifts ALL zones, so per-zone overrides were added next to it:
+     `grantZoneOverride(zoneName, reason, durationMillis, grantedBy)` (same 1 h cap + audit), `revokeZoneOverride`,
+     `activeZoneOverrides()`; `Override.zoneName` and audit entries got an optional zoneName. evaluateTarget/violationAt skip
+     zones with an active global OR per-zone override; `mayEnter` likewise.
+   - On BlockedByPrivacy (target inside) and AbortedOnPrivateZoneEntry: new German sentence (owner's wording, "Dieser Weg führt
+     mich durch einen als privat gekennzeichneten Bereich, …an meinem Bildschirm tun.") + `PrivacyOverridePrompt.ask(zone)` →
+     MapNavigationActivity starts `PrivacyOverrideActivity` (dialog theme, exported=false, no finish on outside touch):
+     "Allow robot to temporarily cross "<area>"?" green Yes = 5 min, red No, "Custom time" → 1/2/5/10/60 min + typed minutes
+     (1–60). Yes → grantZoneOverride(UserSummoned, grantedBy "person at robot screen") and the drive to the same target restarts.
+     No / Back / popup destroyed → robot stays; after a stop on the way it then turns away (EscapeHeading). A newer question
+     replaces an open one (old = no). The area list shows "temporarily allowed, m:ss left"; the poll loop expires permissions.
+     Unverified: whether RobotOS keeps SDK control with the dialog activity on top (same package, so expected yes); if a
+     permission expires while inside the area, the in-motion check stops the robot and asks again.
+   - Area row buttons (owner correction): "Delete" (outlined, red TEXT, confirm) deletes the area; below it "✕" appears only
+     while a temporary permission is active and revokes it (`MapNavigation.revokeCrossingPermission`).
+   - Popup fixes (owner: "Custom time" button missing): Yes / No / Custom time now in ONE row; window width set to 80 % of the
+     screen, content scrollable. On any answer `tts.stop()` then German confirmation (owner's wording): Yes → "Ich darf <area> für
+     <n Minuten | eine Minute> betreten und setze meinen Weg fort"; No → "Keine Erlaubnis für <area> erteilt, stoppe Navigation".
+   - Popup redesign (owner feedback on the robot: labels wrapped/cut, preset numbers invisible, custom time answered directly):
+     page 1 = text "Yes allows it for N minutes." + Yes/No row + full-width "Custom time"; page 2 = presets (current one filled)
+     + typed minutes with "Set" + Back. Choosing a time only updates N and returns to page 1; only Yes grants. Labels one line
+     (softWrap=false), button content padding 8 dp, window.setLayout moved after setContent (dialog theme kept it narrow).
+   - Area highlight (owner request): tapping an area's name in the list toggles `highlightedArea` (rememberSaveable, UI only, cleared
+     if the area disappears): list row light blue background + bold blue name; on the map (preview and full screen) the polygon is
+     drawn light blue (fill 0x8881D4FA, stroke 0xFF0288D1) instead of red; the margin ring stays red.
    **Named locations (`SavedPointStore`) are NOT stored the same way (checked 2026-09-16):** plaintext JSON in
    `files/robocontrol/points/<map>.json`, temp + rename but no fsync, and an unreadable file silently loads as an empty list, so
    the next save overwrites (loses) all locations. Shared by the probe and MapNavigation. Proposed to the owner: same
