@@ -6,14 +6,20 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaRecorder
+import com.ainirobot.coreservice.client.ApiListener
 import com.ainirobot.coreservice.client.Definition
 import com.ainirobot.coreservice.client.RobotApi
 import com.ainirobot.coreservice.client.StatusListener
 import com.ainirobot.coreservice.client.listener.CommandListener
+import com.ainirobot.coreservice.client.speech.SkillApi
+import com.ainirobot.coreservice.client.speech.SkillCallback
 import com.example.robocontrol.sensorcontrol.RoboGuardDeviceAdmin
 import com.example.robocontrol.sensorcontrol.SensorChangeListener
 import com.example.robocontrol.sensorcontrol.Sensors
@@ -23,14 +29,26 @@ import com.example.robocontrol.vision.SnapshotResult
 import com.example.robocontrol.voiceprobe.ProbeLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.log10
 import kotlin.math.sqrt
 
+/** The latest camera snapshot for the test screen: [bitmap] is null when no image could be taken. */
+data class ShownImage(val bitmap: Bitmap?, val caption: String)
+
+/** One test recording: 16 kHz mono PCM, held in memory only until it has been played back, never written. */
+private class MicRecording(val samples: ShortArray, val count: Int, val levelDbfs: Double)
+
 /**
  * Hardware test for sensor switching: does `Sensors.update()` really switch LIDAR, microphone and camera
  * on the robot?
+ *
+ * So the tester can judge with their own ears and eyes, every test recording is played back through the robot's
+ * speaker right after it is measured, and every camera snapshot is shown on screen ([lastImage]).
  *
  * Every switch test goes through the real path (`Sensors.update` → `SensorSwitches`) and then checks
  * the result on three levels:
@@ -60,6 +78,11 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
     @Volatile
     private var lastTest: String? = null
 
+    private val _lastImage = MutableStateFlow<ShownImage?>(null)
+
+    /** The most recent camera snapshot (or the reason there is none), shown by the test screen. */
+    val lastImage: StateFlow<ShownImage?> = _lastImage.asStateFlow()
+
     /** Logs every change `Sensors` applies, including ones coming from the phone app via RobotServerService. */
     private val changeLogger = SensorChangeListener { name, enabled ->
         log.i(TAG, "settings change applied: $name=${onOff(enabled)}")
@@ -73,6 +96,28 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
     @Volatile
     private var radarListenerRegistered = false
 
+    // ---- speech-service observer (for the RobotOS-level microphone check) ----
+
+    private val skillApi = SkillApi()
+
+    @Volatile
+    private var skillConnected = false
+
+    /** Recognition starts and partial/final results. Only counted; the recognised text is never read or logged. */
+    private val speechEvents = AtomicInteger(0)
+
+    /** Volume callbacks with a value above 0, i.e. the speech service measured sound. */
+    private val loudVolumeEvents = AtomicInteger(0)
+
+    private val skillCallback = object : SkillCallback() {
+        override fun onSpeechParResult(result: String?) { speechEvents.incrementAndGet() }
+        override fun onQueryAsrResult(result: String?) { speechEvents.incrementAndGet() }
+        override fun onStart() { speechEvents.incrementAndGet() }
+        override fun onStop() {}
+        override fun onQueryEnded(status: Int) {}
+        override fun onVolumeChange(volume: Int) { if (volume > 0) loudVolumeEvents.incrementAndGet() }
+    }
+
     /**
      * Logs the starting state and begins watching for settings changes. Creating [Sensors] (above) also
      * applies the saved settings once and connects the SDK if needed.
@@ -82,11 +127,33 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
         log.i(TAG, "saved settings: ${sensors.getSensors()}")
         sensors.addListener(changeLogger)
         log.i(TAG, "watching for settings changes, e.g. saved from the phone app")
+
+        // Observes RobotOS's speech service, to check whether the microphone switch reaches RobotOS itself,
+        // not just ordinary apps.
+        skillApi.connectApi(context, object : ApiListener {
+            override fun handleApiConnected() {
+                skillApi.registerCallBack(skillCallback)
+                skillConnected = true
+                log.i(TAG, "speech-service observer connected")
+            }
+
+            override fun handleApiDisconnected() {
+                skillConnected = false
+            }
+
+            override fun handleApiDisabled() {
+                skillConnected = false
+                log.i(TAG, "speech-service observer disabled: start this screen from the robot's home launcher icon")
+            }
+        })
     }
 
     /** Stops watching. Does not restore settings; see [restoreSaved]. */
     fun stop() {
         sensors.removeListener(changeLogger)
+        runCatching { skillApi.unregisterCallBack(skillCallback) }
+        runCatching { skillApi.disconnectApi() }
+        skillConnected = false
         if (radarListenerRegistered) {
             runCatching { RobotApi.getInstance().unregisterStatusListener(radarStatus) }
             radarListenerRegistered = false
@@ -164,26 +231,60 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
     }
 
     /**
-     * Records one second and checks it against the requested state: off = silent, on = signal.
-     * Talk or clap during the recording. Silence while "on" can also mean the speech service holds the mic
-     * (see the voice probes), so run "Microphone on" first as a baseline.
+     * The microphone switch acts on two layers, so they are checked separately:
+     *  1. Android layer (`setMicrophoneMute`): can an ordinary app still record? A 2 s test recording.
+     *     A silent recording while ON is INCONCLUSIVE, not FAIL: it usually just means nobody talked.
+     *  2. RobotOS speech layer (`setASREnabled` / `setRecognizable`): does RobotOS's speech service still hear
+     *     anything? For [SPEECH_WINDOW_MS] the speech service's own callbacks are counted (recognition start,
+     *     partial/final results, volume above 0) while the tester says the wake word and keeps talking.
+     *     Only counts are logged, never recognised text.
+     * A silent Android recording alone does NOT prove the microphone is off for RobotOS; layer 2 does.
      */
-    private fun checkMicrophone(enabled: Boolean) {
+    private suspend fun checkMicrophone(enabled: Boolean) {
         log.i(TAG, "Android read-back: isMicrophoneMute=${audioManager.isMicrophoneMute}")
+
+        // ---- 1. Android layer
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            return log.i(TAG, "test recording skipped: RECORD_AUDIO not granted")
+            log.i(TAG, "[Android layer] skipped: RECORD_AUDIO not granted")
+        } else {
+            log.i(TAG, "[Android layer] test recording for ${MIC_RECORD_SECONDS} s NOW: talk or clap")
+            val recording = recordMic(MIC_RECORD_SECONDS)
+            if (recording == null) {
+                log.i(TAG, "[Android layer] recording failed: could not open or read the microphone")
+            } else {
+                val level = recording.levelDbfs
+                val silent = level < SILENCE_DBFS
+                val levelText = "recording level ${"%.1f".format(level)} dBFS = ${if (silent) "silent" else "signal"}"
+                val verdict = when {
+                    !enabled && silent -> "PASS"
+                    !enabled -> "FAIL"
+                    !silent -> "PASS"
+                    else -> "INCONCLUSIVE (did you talk? repeat the test; if it stays silent, another app may hold the mic)"
+                }
+                log.i(TAG, "[Android layer] $verdict: $levelText, expected ${if (enabled) "signal" else "silent"}")
+                log.i(TAG, "[Android layer] playing the recording back now (${if (silent) "expect silence" else "you should hear yourself"})")
+                playBack(recording)
+            }
         }
-        log.i(TAG, "test recording for 1 s now: talk or clap")
-        val level = measureMicLevelDbfs()
-            ?: return log.i(TAG, "test recording failed: could not open or read the microphone")
-        val silent = level < SILENCE_DBFS
-        val pass = silent == !enabled
-        log.i(
-            TAG,
-            "${if (pass) "PASS" else "FAIL"}: recording level ${"%.1f".format(level)} dBFS = ${if (silent) "silent" else "signal"}, " +
-                "expected ${if (enabled) "signal" else "silent"}"
-        )
-        log.i(TAG, "Also say the wake word: the robot should ${if (enabled) "" else "NOT "}react.")
+
+        // ---- 2. RobotOS speech layer
+        if (!skillConnected) {
+            return log.i(TAG, "[Speech layer] skipped: speech-service observer not connected")
+        }
+        speechEvents.set(0)
+        loudVolumeEvents.set(0)
+        log.i(TAG, "[Speech layer] for ${SPEECH_WINDOW_MS / 1000} s NOW: say the wake word, then keep talking")
+        delay(SPEECH_WINDOW_MS)
+        val speech = speechEvents.get()
+        val volume = loudVolumeEvents.get()
+        val heard = speech > 0 || volume > 0
+        log.i(TAG, "[Speech layer] speech-service callbacks: recognition/results=$speech, volume>0=$volume")
+        val verdict = when {
+            heard == enabled -> "PASS"
+            enabled -> "FAIL? (nobody spoke, or RobotOS did not re-enable recognition; see isRecognizable in the report)"
+            else -> "FAIL (RobotOS still hears the microphone)"
+        }
+        log.i(TAG, "[Speech layer] $verdict: speech service ${if (heard) "heard something" else "heard nothing"}, expected ${if (enabled) "to hear you" else "nothing"}")
     }
 
     /**
@@ -196,11 +297,16 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
             is SnapshotResult.Success -> {
                 val pixels = shot.image.pixels
                 val mean = pixels.sumOf { (it.toInt() and 0xFF).toLong() }.toDouble() / pixels.size
-                log.i(TAG, "snapshot succeeded after ${shot.elapsedMs} ms, mean brightness ${"%.0f".format(mean)}/255")
+                log.i(TAG, "snapshot succeeded after ${shot.elapsedMs} ms, mean brightness ${"%.0f".format(mean)}/255 (shown on screen)")
+                _lastImage.value = ShownImage(
+                    shot.image.toBitmap(),
+                    "Camera ${onOff(enabled)}: ${shot.image.width}×${shot.image.height}, mean brightness ${"%.0f".format(mean)}/255"
+                )
                 mean < DARK_FRAME_MEAN
             }
             is SnapshotResult.Failure -> {
                 log.i(TAG, "snapshot failed after ${shot.elapsedMs} ms: ${shot.reason}")
+                _lastImage.value = ShownImage(null, "Camera ${onOff(enabled)}: no image (${shot.reason})")
                 if (shot.reason == SnapshotFailure.NotConnected) {
                     log.i(TAG, "INCONCLUSIVE: RobotApi not connected, so the failure says nothing about the camera")
                     return
@@ -216,15 +322,19 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
     // ---- helpers ------------------------------------------------------------------
 
     /**
-     * Records one second, mono 16 kHz, and returns its RMS level in dBFS, or null if recording failed.
-     * Only the level is computed; no audio is kept.
+     * Records [seconds] seconds, mono [MIC_RATE] Hz, and returns the samples with their RMS level in dBFS, or null if
+     * recording failed. The samples stay in memory only, for [playBack], and are never written anywhere.
      */
     @SuppressLint("MissingPermission") // checked by the caller
-    private fun measureMicLevelDbfs(): Double? {
-        val rate = 16_000
-        val samples = ShortArray(rate)
+    private fun recordMic(seconds: Int): MicRecording? {
+        val rate = MIC_RATE
+        val samples = ShortArray(rate * seconds)
+        // CAMCORDER, not MIC: on the GreetBot Mini (robot ZTT18P1000A0) the voice probe's Mic access test measured
+        // CAMCORDER -37 dBFS, MIC -77 dBFS and VOICE_RECOGNITION/VOICE_COMMUNICATION/UNPROCESSED about -93 dBFS with
+        // the same sound; MIC also varied between -35 and -103 dBFS while com.ainirobot.remotecontrolservice keeps
+        // recording from MIC permanently.
         val recorder = runCatching {
-            AudioRecord(MediaRecorder.AudioSource.MIC, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, samples.size * 2)
+            AudioRecord(MediaRecorder.AudioSource.CAMCORDER, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, samples.size * 2)
         }.getOrNull() ?: return null
         try {
             if (recorder.state != AudioRecord.STATE_INITIALIZED) return null
@@ -239,12 +349,53 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
             var sum = 0.0
             for (i in 0 until read) sum += samples[i].toDouble() * samples[i]
             val rms = sqrt(sum / read)
-            return if (rms == 0.0) Double.NEGATIVE_INFINITY else 20 * log10(rms / Short.MAX_VALUE)
+            val level = if (rms == 0.0) Double.NEGATIVE_INFINITY else 20 * log10(rms / Short.MAX_VALUE)
+            return MicRecording(samples, read, level)
         } catch (e: Exception) {
             return null
         } finally {
             runCatching { recorder.stop() }
             recorder.release()
+        }
+    }
+
+    /**
+     * Plays [recording] once through the robot's speaker and returns when it has finished, so the playback does not
+     * overlap the following speech-layer check. The samples are zeroed afterwards.
+     */
+    private suspend fun playBack(recording: MicRecording) {
+        val track = runCatching {
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(MIC_RATE)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(recording.count * 2)
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .build()
+        }.getOrElse {
+            recording.samples.fill(0)
+            return log.i(TAG, "playback failed: $it")
+        }
+        try {
+            track.write(recording.samples, 0, recording.count)
+            track.play()
+            delay(recording.count * 1000L / MIC_RATE + PLAYBACK_TAIL_MS)
+        } catch (e: Exception) {
+            log.i(TAG, "playback failed: $e")
+        } finally {
+            runCatching { track.stop() }
+            track.release()
+            recording.samples.fill(0)
         }
     }
 
@@ -322,6 +473,18 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
 
         /** A muted microphone delivers zeros or digital silence; real room noise is far above this. */
         const val SILENCE_DBFS = -80.0
+
+        /** Length of the Android-layer test recording. */
+        const val MIC_RECORD_SECONDS = 2
+
+        /** Sample rate for the test recording and its playback. */
+        const val MIC_RATE = 16_000
+
+        /** Extra wait after playback so the end is not cut off. */
+        const val PLAYBACK_TAIL_MS = 300L
+
+        /** How long speech-service callbacks are counted for the RobotOS-layer microphone check. */
+        const val SPEECH_WINDOW_MS = 6_000L
 
         /** Mean Y value below which a frame counts as black (lens covered or camera blocked). */
         const val DARK_FRAME_MEAN = 8.0

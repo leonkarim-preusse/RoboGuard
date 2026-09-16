@@ -131,6 +131,13 @@ class FakeRobotBridge(
         l?.onFailed(NavFailure.CancelledByCaller)
     }
 
+    /** Turns instantly. */
+    override fun turnInPlace(angleRad: Double, callback: (Boolean) -> Unit) {
+        heading = EscapeHeading.normalize(heading + angleRad)
+        emitPose()
+        callback(true)
+    }
+
     /**
      * Advance the simulation one step. Returns true while still navigating.
      * Call repeatedly in a test; drive from a coroutine or Handler in the app.

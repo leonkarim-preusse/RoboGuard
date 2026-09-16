@@ -5,6 +5,7 @@ import com.ainirobot.coreservice.client.ApiListener
 import com.ainirobot.coreservice.client.Definition
 import com.ainirobot.coreservice.client.RobotApi
 import com.ainirobot.coreservice.client.StatusListener
+import com.ainirobot.coreservice.client.actionbean.Pose
 import com.ainirobot.coreservice.client.listener.ActionListener
 import com.ainirobot.coreservice.client.listener.CommandListener
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.abs
 
 /**
  * Real [RobotBridge] over the OrionStar RobotOS SDK.
@@ -30,6 +32,18 @@ class OrionStarBridge(
 
     private val _connected = MutableStateFlow(false)
     override val connected: StateFlow<Boolean> = _connected.asStateFlow()
+
+    /**
+     * Speed limit for the next navigation, or null for RobotOS's default speed. Applied only when both
+     * [linearSpeed] and [angularSpeed] are set. The jar names the parameters `linearSpeed` and `angularSpeed`;
+     * the units are not documented and assumed to be m/s and rad/s (check against the `navi_speed` status).
+     */
+    @Volatile
+    var linearSpeed: Double? = null
+
+    /** See [linearSpeed]. */
+    @Volatile
+    var angularSpeed: Double? = null
 
     override fun connect() {
         RobotApi.getInstance().connectServer(context, object : ApiListener {
@@ -159,31 +173,62 @@ class OrionStarBridge(
     // ---- navigation -------------------------------------------------------
 
     override fun navigateTo(placeName: String, listener: NavigationListener) {
-        RobotApi.getInstance().startNavigation(
-            reqIdSource(),
-            placeName,
-            COORDINATE_DEVIATION,
-            OBSTACLE_TIMEOUT_MS,
-            actionListener(listener)
-        )
+        val linear = linearSpeed
+        val angular = angularSpeed
+        val code = if (linear != null && angular != null) {
+            // startNavigation(int reqId, String destination, double coordinateDeviation, long time,
+            //                 double linearSpeed, double angularSpeed, ActionListener): names read from the jar.
+            RobotApi.getInstance().startNavigation(
+                reqIdSource(), placeName, COORDINATE_DEVIATION, OBSTACLE_TIMEOUT_MS, linear, angular, actionListener(listener)
+            )
+        } else {
+            RobotApi.getInstance().startNavigation(
+                reqIdSource(), placeName, COORDINATE_DEVIATION, OBSTACLE_TIMEOUT_MS, actionListener(listener)
+            )
+        }
+        if (code < 0) listener.onFailed(NavFailure.Sdk(code, "startNavigation rejected the request"))
     }
 
     override fun navigateTo(target: Point2D, listener: NavigationListener) {
-        // ⚠ The coordinate overload takes a Pose object whose package and
-        // constructor are not documented publicly. Until that is confirmed from
-        // the jar, resolve the point to a named place first, or uncomment:
-        // val pose = Pose(target.x, target.y, 0.0)
-        // RobotApi.getInstance().startNavigation(
-        //     reqIdSource(), pose, COORDINATE_DEVIATION, OBSTACLE_TIMEOUT_MS,
-        //     actionListener(listener))
-        listener.onFailed(
-            NavFailure.Sdk(-1, "Coordinate navigation not yet bound — see OrionStarBridge TODO")
-        )
+        // Pose(float, float, float) and startNavigation(int, Pose, double, long, ActionListener) are verified in
+        // robotservice_12.3.jar (actionbean.Pose). Theta 0 = the robot ends facing +x; orientation is not needed yet.
+        val pose = Pose(target.x.toFloat(), target.y.toFloat(), 0f)
+        val linear = linearSpeed
+        val angular = angularSpeed
+        val code = if (linear != null && angular != null) {
+            // startNavigation(int reqId, Pose pose, double coordinateDeviation, long time,
+            //                 double linearSpeed, double angularSpeed, ActionListener): names read from the jar.
+            RobotApi.getInstance().startNavigation(
+                reqIdSource(), pose, COORDINATE_DEVIATION, OBSTACLE_TIMEOUT_MS, linear, angular, actionListener(listener)
+            )
+        } else {
+            RobotApi.getInstance().startNavigation(
+                reqIdSource(), pose, COORDINATE_DEVIATION, OBSTACLE_TIMEOUT_MS, actionListener(listener)
+            )
+        }
+        // A negative return value means the request was not accepted, so no callback will follow.
+        if (code < 0) listener.onFailed(NavFailure.Sdk(code, "startNavigation rejected the request"))
     }
 
     override fun stopNavigation() {
-        // NOT stopMove(): the docs are explicit that stopMove cannot stop navigation.
+        // stopMove() alone cannot stop navigation (per the docs), so stopNavigation is the essential call.
+        // stopMove() additionally ends direct motions such as turnInPlace's turnLeft/turnRight.
         RobotApi.getInstance().stopNavigation(reqIdSource())
+        runCatching { RobotApi.getInstance().stopMove(reqIdSource(), null) }
+    }
+
+    override fun turnInPlace(angleRad: Double, callback: (Boolean) -> Unit) {
+        // turnLeft/turnRight(reqId, speed, angle, CommandListener): both in DEGREES (deg/s and deg); the jar converts
+        // them with Math.toRadians before sending "turn_left"/"turn_right". Left assumed = counter-clockwise = +theta.
+        val degrees = Math.toDegrees(abs(angleRad)).toFloat()
+        val listener = object : CommandListener() {
+            override fun onResult(result: Int, message: String?, extraData: String?) = callback(result == Definition.RESULT_OK)
+            override fun onError(errorCode: Int, errorString: String?, extraData: String?) = callback(false)
+        }
+        val api = RobotApi.getInstance()
+        val code = if (angleRad >= 0) api.turnLeft(reqIdSource(), TURN_SPEED_DEG_PER_S, degrees, listener)
+        else api.turnRight(reqIdSource(), TURN_SPEED_DEG_PER_S, degrees, listener)
+        if (code < 0) callback(false)
     }
 
     // The SDK dispatcher calls the (…, extraData) variant AND then the deprecated 2-arg
@@ -230,6 +275,9 @@ class OrionStarBridge(
 
         /** Obstacle-avoidance timeout, milliseconds (SDK unit). */
         const val OBSTACLE_TIMEOUT_MS = 30_000L
+
+        /** Rotation speed for turnInPlace, degrees per second. */
+        const val TURN_SPEED_DEG_PER_S = 30f
 
         private var counter = 1000
         private fun nextReqId(): Int = ++counter
