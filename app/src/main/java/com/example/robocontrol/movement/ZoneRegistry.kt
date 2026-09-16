@@ -3,6 +3,7 @@ package com.example.robocontrol.movement
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Persistence for [MapZones].
@@ -15,22 +16,38 @@ import java.io.File
  *
  * Uses org.json (part of Android) rather than adding a serialization dependency.
  *
+ * With a [cipher] (RoboGuard's "Navigation and Map" screen uses [KeystoreZoneCipher]) the JSON is encrypted and files
+ * end in `.zones` instead of `.json`. Note: RoboGuard's manifest currently has `allowBackup="true"`, so the encryption,
+ * not the storage location, is what keeps a backup copy unreadable.
+ *
+ * Writes go to a temp file that is flushed to disk (fsync) and then renamed over the old file, so a power cut leaves
+ * either the old or the new version, never half a file.
+ *
  * @param baseDir normally `context.filesDir`. Injected so tests can use a temp dir.
+ * @param cipher encrypts file contents; null = plain JSON (as before)
  */
-class ZoneRegistry(private val baseDir: File) {
+class ZoneRegistry(private val baseDir: File, private val cipher: ZoneCipher? = null) {
 
     private val dir: File by lazy {
         File(baseDir, ZONES_DIR).apply { if (!exists()) mkdirs() }
     }
 
-    private fun fileFor(mapName: String) = File(dir, "${sanitize(mapName)}.json")
+    private val extension get() = if (cipher != null) ".zones" else ".json"
+
+    private fun fileFor(mapName: String) = File(dir, "${sanitize(mapName)}$extension")
+
+    /** Authenticated with the encrypted content: binds a file to its own name, i.e. to its map. */
+    private fun associatedData(file: File) = "roboguard-zones:${file.name}".toByteArray(Charsets.UTF_8)
+
+    private fun readText(f: File): String =
+        cipher?.decrypt(f.readBytes(), associatedData(f))?.toString(Charsets.UTF_8) ?: f.readText()
 
     /** Returns the stored zones for [mapName], or an empty set if none exist yet. */
     fun load(mapName: String): MapZones {
         val f = fileFor(mapName)
         if (!f.exists()) return MapZones(mapName)
         return try {
-            parse(JSONObject(f.readText()), mapName)
+            parse(JSONObject(readText(f)), mapName)
         } catch (e: Exception) {
             // A corrupt file must not brick navigation. Fail closed to "no zones
             // known" and let the caller decide: PrivacyGuard treats an empty
@@ -50,23 +67,31 @@ class ZoneRegistry(private val baseDir: File) {
     fun save(zones: MapZones) {
         val f = fileFor(zones.mapName)
         val tmp = File(f.parentFile, f.name + ".tmp")
-        tmp.writeText(serialize(zones).toString(2))
-        // Atomic-ish replace so a crash mid-write cannot leave a half-file that
+        val json = serialize(zones).toString(2).toByteArray(Charsets.UTF_8)
+        val bytes = cipher?.encrypt(json, associatedData(f)) ?: json
+        FileOutputStream(tmp).use { out ->
+            out.write(bytes)
+            out.fd.sync()
+        }
+        // Atomic replace so a crash mid-write cannot leave a half-file that
         // would later read as "no private zones".
         if (!tmp.renameTo(f)) {
-            f.writeText(tmp.readText())
+            f.writeBytes(tmp.readBytes())
             tmp.delete()
         }
     }
 
     fun listMaps(): List<String> =
-        dir.listFiles { _, n -> n.endsWith(".json") }
-            ?.mapNotNull { runCatching { JSONObject(it.readText()).optString(KEY_MAP) }.getOrNull() }
+        dir.listFiles { _, n -> n.endsWith(extension) }
+            ?.mapNotNull { runCatching { JSONObject(readText(it)).optString(KEY_MAP) }.getOrNull() }
             ?.filter { it.isNotBlank() }
             ?.sorted()
             ?: emptyList()
 
     fun delete(mapName: String): Boolean = fileFor(mapName).delete()
+
+    /** True if a stored file exists for [mapName] (readable or not). */
+    fun exists(mapName: String): Boolean = fileFor(mapName).exists()
 
     // ---- serialization -------------------------------------------------
 

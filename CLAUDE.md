@@ -678,6 +678,45 @@ these beans have not been inspected yet.
      (stronger than the app-level in-motion abort; `Pose.status == 2 FORBIDDEN` when inside). Cons: authored manually in
      the map tool; writing them from the app means editing the map (`ShareMemoryApi.setMapPgmPFD`), which is undocumented and
      risky. Plausible thesis design: no-go zones in the map tool + RoboGuard shows/enforces them additionally.
+   **"Navigation and Map" in the main app (owner request 2026-09-16, compiled + installed, not yet run):** the movement
+   test's interactive UI is copied (probe unchanged, still "RG Movement Test") to `robocontrol/movement/MapNavigation.kt`
+   (model) + `MapNavigationActivity.kt` (UI, exported=false, no launcher icon) + `NavigationLog.kt` (screen + Logcat tag
+   `RoboGuardNav`, no file). Dropped from the copy: the no-go line experiment (PgmMap/NoGoLineWriter, map writing) and the
+   per-second navi_speed log lines. MainActivity: the "Show Current Settings" button now sits in a Row (0.8 width, weight 1
+   each) with a green (0xFF4CAF50) "Navigation and Map" button that starts MapNavigationActivity (first owner-requested
+   change to roboguard/ source). SDK control is per package, so it works when RoboGuard was started from the home launcher.
+   UI changes (owner, 2026-09-16, installed, not yet seen): STOP (56 dp, smaller) and "Drive to <location name>" pinned
+   above the scrolling left column; "Show debug" switch at the bottom (off by default, rememberSaveable) hides the event log,
+   "Clear log" and ALL status lines (Map, SDK control, Localized, Robot pose, Navigation, Selected, measured speed; also the
+   navigation/localized/areas/zoom part of the full-screen status); only the speed presets stay visible (owner correction).
+   "Save current position…" and "Reload map" always visible, directly above the debug switch; "Clear tapped points" stays up top.
+   "Tapped points" heading only when tapped points exist; "Delete selected location" moved below the tapped points list. Full-screen bar buttons compact (40 dp, 13 sp) so all fit.
+   **Existing storage in RoboGuard (read 2026-09-16):** RobotServerService uses PLAIN `getSharedPreferences("robot_prefs")`
+   (robot_id), not EncryptedSharedPreferences (no androidx.security-crypto dependency). Encryption exists as:
+   `KeyManager` (AndroidKeyStore AES-256-GCM key, IV(12)+ciphertext Base64 in SharedPreferences) holding the SQLCipher
+   passphrase; `ClientDatabase` (Room 2.6.1 + SQLCipher 4.5.4, version 1, ClientEntity only). Manifest `allowBackup="true"`
+   (ZoneRegistry's comment wrongly assumes false). Persistence options proposed to the owner: (A) ZoneRegistry plaintext JSON in
+   filesDir; (B) same JSON AES-GCM-encrypted with a separate Keystore key [recommended]; (C) zones table in the SQLCipher Room DB
+   (migration 1→2, passphrase via KeyManager); (D) EncryptedSharedPreferences (security-crypto deprecated). **Owner chose B.**
+   **Implemented (2026-09-16, compiled, not yet run):** `movement/ZoneCipher.kt`: `KeystoreZoneCipher`, own AndroidKeyStore alias
+   `robocontrol_private_zones` (NOT KeyManager's key: one key per purpose, no roboguard dependency), AES-256-GCM, file =
+   "RGZ1" + 12-byte IV + ciphertext/tag, AAD = "roboguard-zones:<file name>" (a file copied onto another map fails).
+   `ZoneRegistry(baseDir, cipher?)`: `.zones` files when encrypted (`files/zones/<sanitized map>.zones`), write = temp + fsync
+   + rename, new `exists()`. `MapNavigation`: loads zones in every reloadMapAndPlaces; saves on each change in the background
+   (sequence numbers skip stale saves); clear deletes the file (confirm dialog). **Fail closed:** before loading, driving and
+   editing are refused (`zonesLoaded`); unreadable file → `zoneStoreError`, red banner, driving/editing blocked, "Reset private
+   areas" deletes it. Save failure → non-blocking red warning. Unique zone names (tapped points restart at P1) and "Bereich N"
+   numbering continues from stored names. Probe screen unchanged (in memory only).
+   **Named locations (`SavedPointStore`) are NOT stored the same way (checked 2026-09-16):** plaintext JSON in
+   `files/robocontrol/points/<map>.json`, temp + rename but no fsync, and an unreadable file silently loads as an empty list, so
+   the next save overwrites (loses) all locations. Shared by the probe and MapNavigation. Proposed to the owner: same
+   KeystoreZoneCipher pattern (own alias), fsync, fail closed on read errors, one-time migration of existing plaintext files.
+   **Implemented (owner approved 2026-09-16, compiled + installed, not yet run):** `SavedPointStore(context, cipher =
+   KeystoreZoneCipher("robocontrol_saved_points"))`: `<map>.points` (AAD "roboguard-points:<file name>"), fsync + rename,
+   `load` throws `PointStoreCorrupt` instead of returning empty; legacy `<map>.json` is read, saved encrypted, then deleted
+   (robot had `RoboGuard_Lab-0916110443.json` with "Home" before the first run). MapNavigation: `pointStoreError` → red banner,
+   "Save current position" disabled, "Reset saved locations" (confirm) deletes; driving stays allowed. MovementProbe only logs
+   the error (its save/delete already fail because load runs first inside runCatching).
    **Movement test (compiled 2026-09-16, not yet run):** `robocontrol/movementprobe/` (`MovementProbe`, `MovementProbeActivity`,
    launcher icon "RG Movement Test"): map from RobotMapFile, live pose via `RobotApi.getCurrentPose()` every 0.5 s,
    `isRobotEstimate()`/`isActive()` every 2 s, saved places via `getPlaceList()`, tap map → custom point, drive via

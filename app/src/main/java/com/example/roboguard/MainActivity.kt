@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.roboguard.ui.theme.RoboGuardTheme
+import com.example.robocontrol.movement.MapNavigationActivity
 import kotlinx.coroutines.delay
 
 /**
@@ -100,13 +101,26 @@ class MainActivity : ComponentActivity() {
                                         QRCodeDisplay(service)
                                     }
 
-                                    Button(
-                                        onClick = { showSettings = true },
+                                    Row(
                                         modifier = Modifier
                                             .fillMaxWidth(0.8f)
-                                            .padding(bottom = 16.dp)
+                                            .padding(bottom = 16.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
-                                        Text("Show Current Settings", fontSize = 16.sp)
+                                        Button(
+                                            onClick = { showSettings = true },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("Settings", fontSize = 16.sp)
+                                        }
+                                        // Opens the map, driving and private areas screen from robocontrol.movement
+                                        Button(
+                                            onClick = { startActivity(Intent(this@MainActivity, MapNavigationActivity::class.java)) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50), contentColor = Color.White),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("Navigation and Map", fontSize = 16.sp)
+                                        }
                                     }
                                 }
                             }

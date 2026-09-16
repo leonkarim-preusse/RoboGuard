@@ -1,39 +1,17 @@
-package com.example.robocontrol.movementprobe
+package com.example.robocontrol.movement
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.os.SystemClock
 import com.ainirobot.coreservice.client.Definition
 import com.ainirobot.coreservice.client.RobotApi
 import com.ainirobot.coreservice.client.StatusListener
 import com.example.robocontrol.audio.OrionStarTts
 import com.example.robocontrol.audio.TtsFailure
 import com.example.robocontrol.audio.TtsListener
-import com.example.robocontrol.movement.CellBounds
-import com.example.robocontrol.movement.EscapeHeading
-import com.example.robocontrol.movement.MapZones
-import com.example.robocontrol.movement.NavigationController
-import com.example.robocontrol.movement.PrivacyGuard
-import com.example.robocontrol.movement.PrivacyLevel
-import com.example.robocontrol.movement.Violation
-import com.example.robocontrol.movement.Zone
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
-import com.example.robocontrol.movement.NavEvent
-import com.example.robocontrol.movement.NavFailure
-import com.example.robocontrol.movement.NavigationListener
-import com.example.robocontrol.movement.NoGoLineWriter
-import com.example.robocontrol.movement.OrionStarBridge
-import com.example.robocontrol.movement.PgmMap
-import com.example.robocontrol.movement.Point2D
-import com.example.robocontrol.movement.PoseStatus
-import com.example.robocontrol.movement.RobotMapFile
-import com.example.robocontrol.movement.RobotPose
-import com.example.robocontrol.movement.SavedPoint
-import com.example.robocontrol.movement.SavedPointStore
-import com.example.robocontrol.voiceprobe.ProbeLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -71,27 +49,62 @@ enum class SpeedPreset(val label: String, val linear: Double?, val angular: Doub
 }
 
 /**
- * Hardware test for robot movement: shows the current RobotOS map to scale with the robot's live position and
- * saved places, lets the tester add points by tapping the map, and drives to a selected point.
+ * State and actions behind RoboGuard's "Navigation and Map" screen ([MapNavigationActivity]): the current RobotOS map
+ * with the robot's live position, saved places, named locations and tapped points; driving to a selected point; and
+ * private areas (circle around a point or drawn polygon) that every drive must respect.
  *
- * Driving goes through the real movement code, [OrionStarBridge] (`navigateTo(name)` for saved places,
- * `navigateTo(Point2D)` for tapped points), so this also tests that code. Privacy zones are not applied yet.
+ * Copied from the movement test (`movementprobe.MovementProbe`, which stays for dedicated hardware tests) without the
+ * no-go line experiment, which wrote the robot's map and did not work.
  *
- * Data sources, all verified on the robot:
- *  - map: `RobotMapFile` from `/sdcard/robot/map/<name>/navi_data/probabilitymap.data` (needs READ_EXTERNAL_STORAGE)
- *  - map name, saved places, live pose, localization: `RobotApi.getMapName()`, `getPlaceList()`,
- *    `getCurrentPose()`, `isRobotEstimate()` (synchronous SDK calls)
+ * Every drive goes through [NavigationController] + [PrivacyGuard]: a target inside a private area is refused before
+ * moving; a route that enters one is stopped (pose checked every [POLL_NAVIGATING_MS] ms while driving), with a spoken
+ * German announcement and a turn on the spot away from the area.
  *
- * Must run in an activity started from the robot's home launcher: otherwise RobotOS grants no SDK control and
- * navigation is silently ignored.
+ * Data sources (verified on the robot): map from `RobotMapFile` (`/sdcard/robot/map/<name>/navi_data/`, needs
+ * READ_EXTERNAL_STORAGE); map name, places, pose and localization from synchronous `RobotApi` calls.
+ *
+ * Must run while RoboGuard holds SDK control, i.e. the app was started from the robot's home launcher (activation is
+ * per package, so opening this screen from MainActivity works).
+ *
+ * Private areas are saved per map, encrypted ([ZoneRegistry] + [KeystoreZoneCipher], `files/zones/<map>.zones`), on
+ * every change, and loaded with the map, so they survive closing the screen, app restarts and reboots. If a saved file
+ * exists but cannot be read (damaged, or the Keystore key is gone), the screen FAILS CLOSED: driving and editing areas
+ * are blocked until the user resets the private areas.
  */
-class MovementProbe(
+class MapNavigation(
     context: Context,
-    private val log: ProbeLog,
+    private val log: NavigationLog,
     private val scope: CoroutineScope
 ) {
     private val bridge = OrionStarBridge(context)
     private val pointStore = SavedPointStore(context)
+    private val zoneRegistry = ZoneRegistry(context.filesDir, KeystoreZoneCipher())
+
+    /** Set when the saved private areas of the current map exist but cannot be read: driving and editing are blocked. */
+    private val _zoneStoreError = MutableStateFlow<String?>(null)
+    val zoneStoreError: StateFlow<String?> = _zoneStoreError.asStateFlow()
+
+    /** Set when the latest change to the private areas could not be saved (they still apply until the screen closes). */
+    private val _zoneSaveWarning = MutableStateFlow<String?>(null)
+    val zoneSaveWarning: StateFlow<String?> = _zoneSaveWarning.asStateFlow()
+
+    /**
+     * False until the saved areas of the current map were read. Before that, driving is refused (areas not known yet)
+     * and editing is refused (a save would overwrite the stored areas with an incomplete set).
+     */
+    private val _zonesLoaded = MutableStateFlow(false)
+    val zonesLoaded: StateFlow<Boolean> = _zonesLoaded.asStateFlow()
+
+    /**
+     * Set when the saved named locations of the current map exist but cannot be read. Saving and deleting locations is
+     * then refused (it would overwrite them) until they are reset; driving stays allowed.
+     */
+    private val _pointStoreError = MutableStateFlow<String?>(null)
+    val pointStoreError: StateFlow<String?> = _pointStoreError.asStateFlow()
+
+    /** Orders background saves: a save older than the last one written is skipped. */
+    private var zoneSaveSeq = 0L
+    private var zoneWrittenSeq = 0L
 
     // ---- privacy areas: every drive goes through NavigationController, which checks the target before starting
     //      and aborts when a pose from the poll loop lies inside a private zone (plus PrivacyGuard's margin).
@@ -117,27 +130,6 @@ class MovementProbe(
             }
         }
     }
-
-    private var noGoReqId = NO_GO_REQ_ID_START
-    private val noGoWriter = NoGoLineWriter(context, log = { log.i(TAG, it) }, reqIdSource = { ++noGoReqId })
-
-    /** The map tool's image of the current map, including its no-go lines; null if it could not be read. */
-    private val _pgm = MutableStateFlow<PgmMap?>(null)
-    val pgm: StateFlow<PgmMap?> = _pgm.asStateFlow()
-
-    private val _lineA = MutableStateFlow<MapPoint?>(null)
-    val lineA: StateFlow<MapPoint?> = _lineA.asStateFlow()
-
-    private val _lineB = MutableStateFlow<MapPoint?>(null)
-    val lineB: StateFlow<MapPoint?> = _lineB.asStateFlow()
-
-    /** The previewed no-go line (end points in world coordinates), not yet written. */
-    private val _lineCandidate = MutableStateFlow<Pair<Point2D, Point2D>?>(null)
-    val lineCandidate: StateFlow<Pair<Point2D, Point2D>?> = _lineCandidate.asStateFlow()
-
-    /** True once RoboGuard has saved the original map image of the current map, i.e. a restore is possible. */
-    private val _hasMapBackup = MutableStateFlow(false)
-    val hasMapBackup: StateFlow<Boolean> = _hasMapBackup.asStateFlow()
 
     private val _rendered = MutableStateFlow<RenderedMap?>(null)
     val rendered: StateFlow<RenderedMap?> = _rendered.asStateFlow()
@@ -174,19 +166,10 @@ class MovementProbe(
     private val _measuredSpeed = MutableStateFlow<String?>(null)
     val measuredSpeed: StateFlow<String?> = _measuredSpeed.asStateFlow()
 
-    private var lastSpeedLogAt = 0L
-
-    /** Logs the measured speed while driving, at most once per [SPEED_LOG_INTERVAL_MS], to verify the speed units. */
+    /** Keeps [measuredSpeed] current. */
     private val speedStatus = object : StatusListener() {
         override fun onStatusUpdate(type: String?, value: String?) {
             _measuredSpeed.value = value
-            val now = SystemClock.elapsedRealtime()
-            if (_navState.value.startsWith("driving") || _navState.value.contains(":")) {
-                if (now - lastSpeedLogAt >= SPEED_LOG_INTERVAL_MS) {
-                    lastSpeedLogAt = now
-                    log.i(TAG, "  measured navi_speed: $value")
-                }
-            }
         }
     }
 
@@ -195,7 +178,7 @@ class MovementProbe(
 
     /** Connects to the SDK; once connected, loads map and places and starts polling the pose. */
     fun start() {
-        log.section("Movement")
+        log.section("Navigation and Map")
         setSpeed(_speed.value)
         tts.connect { log.i(TAG, "text-to-speech connected (for privacy announcements)") }
         bridge.connect()
@@ -221,20 +204,18 @@ class MovementProbe(
 
     /**
      * Marks a circular area around the selected point as private ([ZONE_RADIUS_M], polygon with [ZONE_SEGMENTS] corners).
-     * From then on, drives into or through it are refused or aborted, with a spoken German announcement.
-     * Kept in memory for this session only.
+     * From then on, drives into or through it are refused or aborted, with a spoken German announcement. Saved.
      */
     fun makeSelectedAreaPrivate() {
         val point = _selected.value ?: return log.i(TAG, "select a point first")
+        if (zonesLocked()) return
         val zone = Zone(
-            name = "Privat: ${point.name}",
+            // Unique name: tapped points restart at P1 after a restart and must not replace an older saved area.
+            name = uniqueZoneName("Privat: ${point.name}"),
             polygon = circlePolygon(point.position, ZONE_RADIUS_M, ZONE_SEGMENTS),
             privacy = PrivacyLevel.PRIVATE
         )
-        synchronized(controller) {
-            guard.updateZones(guard.zones.withZone(zone))
-            _privateZones.value = guard.zones.privateZones
-        }
+        changeZones { it.withZone(zone) }
         idleViolationZone = null
         log.i(TAG, "PRIVATE area \"${zone.name}\": radius $ZONE_RADIUS_M m around ${fmt(point.position)}, " +
             "plus ${guard.margin} m margin → the robot stops about %.1f m from the centre".format(ZONE_RADIUS_M + guard.margin))
@@ -283,12 +264,10 @@ class MovementProbe(
     fun finishDrawingArea() {
         val corners = _drawingVertices.value ?: return
         if (corners.size < 3) return log.i(TAG, "an area needs at least 3 corners (have ${corners.size})")
+        if (zonesLocked()) return
         drawnAreaCounter++
-        val zone = Zone(name = "Privat: Bereich $drawnAreaCounter", polygon = corners, privacy = PrivacyLevel.PRIVATE)
-        synchronized(controller) {
-            guard.updateZones(guard.zones.withZone(zone))
-            _privateZones.value = guard.zones.privateZones
-        }
+        val zone = Zone(name = uniqueZoneName("Privat: Bereich $drawnAreaCounter"), polygon = corners, privacy = PrivacyLevel.PRIVATE)
+        changeZones { it.withZone(zone) }
         _drawingVertices.value = null
         idleViolationZone = null
         log.i(TAG, "PRIVATE area \"${zone.name}\" drawn with ${corners.size} corners: " + corners.joinToString { fmt(it) } +
@@ -296,13 +275,116 @@ class MovementProbe(
         _pose.value?.let { if (zone.containsWithMargin(it.point, guard.margin)) log.i(TAG, "note: the robot is currently inside this area") }
     }
 
+    /**
+     * Removes all private areas of the current map, also from storage. This is also the way out when the saved areas
+     * could not be read: the unreadable file is deleted and the areas can be drawn again.
+     */
     fun clearPrivateAreas() {
+        if (!_zonesLoaded.value && _zoneStoreError.value == null) return log.i(TAG, "private areas are not loaded yet")
+        val map = guard.zones.mapName
         synchronized(controller) {
-            guard.updateZones(MapZones(guard.zones.mapName))
+            guard.updateZones(MapZones(map))
             _privateZones.value = emptyList()
         }
         idleViolationZone = null
-        log.i(TAG, "private areas cleared")
+        drawnAreaCounter = 0
+        val wasUnreadable = _zoneStoreError.value != null
+        scope.launch(Dispatchers.IO) {
+            synchronized(zoneRegistry) {
+                zoneWrittenSeq = ++zoneSaveSeq
+                val deleted = map.isBlank() || !zoneRegistry.exists(map) || zoneRegistry.delete(map)
+                if (deleted) {
+                    _zoneStoreError.value = null
+                    _zoneSaveWarning.value = null
+                    log.i(TAG, if (wasUnreadable) "unreadable private areas deleted; areas can be drawn again" else "private areas cleared and deleted from storage")
+                } else {
+                    _zoneSaveWarning.value = "Could not delete the saved private areas; they will come back after a restart."
+                    log.i(TAG, "private areas cleared, but deleting the saved file FAILED")
+                }
+            }
+        }
+    }
+
+    /** True (and logged) while the saved areas are unreadable: editing them now would overwrite what could still be recovered. */
+    private fun zonesLocked(): Boolean {
+        if (!_zonesLoaded.value) {
+            log.i(TAG, "private areas are not loaded yet; try again in a moment")
+            return true
+        }
+        val error = _zoneStoreError.value ?: return false
+        log.i(TAG, "private areas cannot be changed: $error")
+        return true
+    }
+
+    /** Applies [update] to the zones in force, then saves the result for the current map in the background. */
+    private fun changeZones(update: (MapZones) -> MapZones) {
+        val snapshot = synchronized(controller) {
+            guard.updateZones(update(guard.zones))
+            _privateZones.value = guard.zones.privateZones
+            guard.zones
+        }
+        if (snapshot.mapName.isBlank()) {
+            _zoneSaveWarning.value = "No map active: private areas are not saved."
+            return
+        }
+        val seq = synchronized(zoneRegistry) { ++zoneSaveSeq }
+        scope.launch(Dispatchers.IO) {
+            synchronized(zoneRegistry) {
+                if (seq < zoneWrittenSeq) return@synchronized // a newer change was written already
+                runCatching { zoneRegistry.save(snapshot) }
+                    .onSuccess {
+                        zoneWrittenSeq = seq
+                        _zoneSaveWarning.value = null
+                        log.i(TAG, "private areas saved (${snapshot.zones.size}, encrypted)")
+                    }
+                    .onFailure {
+                        _zoneSaveWarning.value = "Private areas could NOT be saved: $it"
+                        log.i(TAG, "saving private areas FAILED: $it")
+                    }
+            }
+        }
+    }
+
+    private fun uniqueZoneName(base: String): String {
+        val taken = guard.zones.zones.map { it.name.lowercase() }.toSet()
+        if (base.lowercase() !in taken) return base
+        return generateSequence(2) { it + 1 }.map { "$base ($it)" }.first { it.lowercase() !in taken }
+    }
+
+    /**
+     * Loads the saved private areas of [map] into the guard. A missing file means none; an unreadable one blocks
+     * driving and editing ([zoneStoreError]) instead of silently driving as if nothing were private.
+     */
+    private fun loadZones(map: String?) {
+        if (map.isNullOrBlank()) {
+            synchronized(controller) {
+                guard.updateZones(MapZones(""))
+                _privateZones.value = emptyList()
+            }
+            _zoneStoreError.value = null
+            _zonesLoaded.value = true
+            return
+        }
+        val loaded = synchronized(zoneRegistry) { runCatching { zoneRegistry.load(map) } }
+        loaded.onSuccess { zones ->
+            synchronized(controller) {
+                guard.updateZones(zones)
+                _privateZones.value = zones.privateZones
+            }
+            _zoneStoreError.value = null
+            _zonesLoaded.value = true
+            drawnAreaCounter = zones.zones.mapNotNull { DRAWN_AREA_NUMBER.find(it.name)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 0
+            log.i(TAG, "private areas loaded: ${zones.privateZones.size}" +
+                zones.privateZones.joinToString(prefix = if (zones.privateZones.isEmpty()) "" else " (", postfix = if (zones.privateZones.isEmpty()) "" else ")") { it.name })
+        }.onFailure { e ->
+            synchronized(controller) {
+                guard.updateZones(MapZones(map))
+                _privateZones.value = emptyList()
+            }
+            _zoneStoreError.value = "The saved private areas of this map cannot be read (${e.cause ?: e}). " +
+                "Driving is blocked. Reset the private areas to continue."
+            log.i(TAG, "LOADING PRIVATE AREAS FAILED, driving blocked: $e / ${e.cause}")
+        }
     }
 
     /**
@@ -390,6 +472,7 @@ class MovementProbe(
         }
         val map = _mapName.value
         if (map.isNullOrBlank()) return@withContext "No map is active on the robot."
+        _pointStoreError.value?.let { return@withContext it }
 
         val api = RobotApi.getInstance()
         val localized = runCatching { api.isRobotEstimate() }.getOrDefault(false)
@@ -411,6 +494,24 @@ class MovementProbe(
         _selected.value = point
         log.i(TAG, "location \"$name\" saved at ${fmt(position)}, heading %.0f° (map %s)".format(Math.toDegrees(theta), map))
         null
+    }
+
+    /**
+     * Deletes all saved named locations of the current map, including an unreadable file. The way out when
+     * [pointStoreError] is set.
+     */
+    fun resetSavedLocations() {
+        val map = _mapName.value ?: return
+        scope.launch(Dispatchers.IO) {
+            if (runCatching { pointStore.delete(map) }.getOrDefault(false)) {
+                _pointStoreError.value = null
+                _customPoints.value = _customPoints.value.filter { !it.persistent }
+                _selected.value?.let { if (it.persistent) _selected.value = null }
+                log.i(TAG, "saved locations of \"$map\" deleted")
+            } else {
+                log.i(TAG, "deleting the saved locations FAILED")
+            }
+        }
     }
 
     /** Deletes the selected named location from the list and from storage. Does nothing for other point types. */
@@ -437,11 +538,19 @@ class MovementProbe(
      */
     fun driveToSelected() {
         val target = _selected.value ?: return log.i(TAG, "select a point first: tap the map or a list entry")
+        if (!_zonesLoaded.value) {
+            _navState.value = "waiting for private areas to load"
+            return log.i(TAG, "DRIVE REFUSED: private areas not loaded yet")
+        }
+        _zoneStoreError.value?.let { error ->
+            _navState.value = "blocked: private areas unreadable"
+            return log.i(TAG, "DRIVE REFUSED: $error")
+        }
         if (_localized.value == false) {
             log.i(TAG, "warning: the robot reports it is NOT localized; navigation will most likely fail (NotLocalized)")
         }
         if (!_sdkActive.value) {
-            log.i(TAG, "warning: no SDK control; start this screen from the robot's home launcher icon")
+            log.i(TAG, "warning: no SDK control; start RoboGuard from the robot's home launcher")
         }
         log.i(TAG, "DRIVE to ${target.name} ${fmt(target.position)}, speed ${_speed.value.label}, private areas: ${_privateZones.value.size}")
         _navState.value = "driving to ${target.name}"
@@ -493,69 +602,6 @@ class MovementProbe(
             }
     }
 
-    // ---- no-go line test ---------------------------------------------------------------
-
-    /** Uses the selected point as end A ([isA]) or B of the line to block. */
-    fun setLineEnd(isA: Boolean) {
-        val point = _selected.value ?: return log.i(TAG, "select a point first")
-        if (isA) _lineA.value = point else _lineB.value = point
-        _lineCandidate.value = null
-        log.i(TAG, "no-go test: ${if (isA) "A" else "B"} = ${point.name} ${fmt(point.position)}")
-    }
-
-    /**
-     * Computes the line that blocks the way between A and B (across the midpoint, wall to wall) and shows it in red.
-     * Nothing is written.
-     */
-    fun previewNoGoLine() {
-        val a = _lineA.value ?: return log.i(TAG, "set A first")
-        val b = _lineB.value ?: return log.i(TAG, "set B first")
-        val map = _pgm.value ?: return log.i(TAG, "map.pgm is not loaded, cannot compute the line")
-        runCatching { map.lineAcross(a.position, b.position) }
-            .onSuccess { line ->
-                _lineCandidate.value = line
-                log.i(TAG, "preview: no-go line across ${a.name}–${b.name}: ${fmt(line.first)} → ${fmt(line.second)}, " +
-                    "%.2f m (red on the map)".format(map.lengthOf(line.first, line.second)))
-            }
-            .onFailure { log.i(TAG, "preview failed: $it") }
-    }
-
-    /**
-     * Writes the previewed line into the robot's map (see [NoGoLineWriter]) and reloads the map so it shows in blue.
-     * @return a message for the tester
-     */
-    suspend fun writeNoGoLine(): String = withContext(Dispatchers.IO) {
-        val map = _mapName.value ?: return@withContext "No map is active on the robot."
-        val line = _lineCandidate.value ?: return@withContext "Preview a line first."
-        if (!_sdkActive.value) return@withContext "No SDK control: start this screen from the robot's home launcher icon."
-        log.i(TAG, "WRITING no-go line into map \"$map\"")
-        runCatching { noGoWriter.write(map, line.first, line.second) }.fold(
-            onSuccess = { message ->
-                _lineCandidate.value = null
-                reloadMapAndPlaces()
-                "$message. Now drive from A to B and watch what the robot does."
-            },
-            onFailure = { e ->
-                log.i(TAG, "writing the no-go line FAILED: $e")
-                "Failed: $e"
-            }
-        )
-    }
-
-    /** Restores the map image as it was before RoboGuard's first change and reloads the map. */
-    suspend fun restoreOriginalMap(): String = withContext(Dispatchers.IO) {
-        val map = _mapName.value ?: return@withContext "No map is active on the robot."
-        if (!_sdkActive.value) return@withContext "No SDK control: start this screen from the robot's home launcher icon."
-        log.i(TAG, "RESTORING the original map image of \"$map\"")
-        runCatching { noGoWriter.restore(map) }.fold(
-            onSuccess = { message -> reloadMapAndPlaces(); message },
-            onFailure = { e ->
-                log.i(TAG, "restore FAILED: $e")
-                "Failed: $e"
-            }
-        )
-    }
-
     /** Stops any navigation immediately. */
     fun stop(reason: String) {
         runCatching { synchronized(controller) { controller.stop() } }
@@ -570,14 +616,9 @@ class MovementProbe(
         val api = RobotApi.getInstance()
         val name = runCatching { api.getMapName() }.getOrNull()
         _mapName.value = name
-        // Zones are bound to a map: coordinates from one map are meaningless on another.
-        if (guard.zones.mapName != (name ?: "")) {
-            synchronized(controller) {
-                guard.updateZones(MapZones(name ?: ""))
-                _privateZones.value = emptyList()
-            }
-        }
         log.i(TAG, "current map: ${name ?: "none"}")
+        // Zones are bound to a map: coordinates from one map are meaningless on another. Loaded from storage every time.
+        loadZones(name)
         if (name.isNullOrBlank()) {
             log.i(TAG, "no map is active on the robot; create or select one in the map tool")
         } else {
@@ -589,10 +630,19 @@ class MovementProbe(
         log.i(TAG, "saved places (${poses.size}): " + _places.value.joinToString { "${it.name} ${fmt(it.position)}" })
 
         // RoboGuard's own named locations for this map, followed by any tapped points that already exist.
-        // Unreadable stored locations are only logged here; saving refuses to overwrite them (load fails first).
-        val stored = if (name.isNullOrBlank()) emptyList() else runCatching { pointStore.load(name) }
-            .onFailure { log.i(TAG, "saved locations UNREADABLE: $it / ${it.cause}") }
-            .getOrDefault(emptyList())
+        val stored = if (name.isNullOrBlank()) {
+            _pointStoreError.value = null
+            emptyList()
+        } else {
+            runCatching { pointStore.load(name) }
+                .onSuccess { _pointStoreError.value = null }
+                .onFailure { e ->
+                    _pointStoreError.value = "The saved locations of this map cannot be read (${e.cause ?: e}). " +
+                        "Saving locations is blocked. Reset the saved locations to continue."
+                    log.i(TAG, "LOADING SAVED LOCATIONS FAILED: $e / ${e.cause}")
+                }
+                .getOrDefault(emptyList())
+        }
         _customPoints.value = stored.map { MapPoint(it.name, it.position, saved = false, persistent = true) } +
             _customPoints.value.filter { !it.persistent }
         log.i(TAG, "my locations (${stored.size}): " + stored.joinToString { "${it.name} ${fmt(it.position)}" })
@@ -611,14 +661,6 @@ class MovementProbe(
             }
             .onFailure { log.i(TAG, "could not load the map file: $it (storage permission granted?)") }
 
-        _pgm.value = runCatching { PgmMap.load(name) }
-            .onSuccess { g ->
-                log.i(TAG, "map.pgm loaded: ${g.width}×${g.height} px at ${g.resolution} m, origin (${g.originX}, ${g.originY}), " +
-                    "${g.noGoPixels().size} no-go pixels (blue)")
-            }
-            .onFailure { log.i(TAG, "could not load map.pgm (no-go lines not shown): $it") }
-            .getOrNull()
-        _hasMapBackup.value = noGoWriter.hasBackup(name)
     }
 
     /** Polls the pose every [POLL_MS] and localization / SDK control every few polls. */
@@ -681,15 +723,11 @@ class MovementProbe(
         }
 
     private companion object {
-        const val TAG = "move"
+        const val TAG = "nav"
         const val POLL_MS = 500L
         const val STATUS_EVERY_N_POLLS = 4
         const val MAP_MARGIN_CELLS = 20
-        const val SPEED_LOG_INTERVAL_MS = 1_000L
         const val MAX_NAME_LENGTH = 40
-
-        /** Request ids for map-edit SDK calls, apart from other components' ranges. */
-        const val NO_GO_REQ_ID_START = 40_000
 
         /** Pose poll interval while a drive is running (privacy checks happen on each poll). */
         const val POLL_NAVIGATING_MS = 150L
@@ -701,6 +739,9 @@ class MovementProbe(
         /** Radius of a private area created around a point; PrivacyGuard adds its margin on top. */
         const val ZONE_RADIUS_M = 1.0
         const val ZONE_SEGMENTS = 24
+
+        /** Finds N in "Privat: Bereich N", to continue the numbering after a restart. */
+        val DRAWN_AREA_NUMBER = Regex("""Bereich (\d+)""")
 
         /** Spoken (German) when a drive is refused or stopped because of a private area. Owner's wording. */
         const val PRIVACY_STOP_SENTENCE = "Weg führt durch privaten Bereich. Ich halte an und fahre nicht weiter."
