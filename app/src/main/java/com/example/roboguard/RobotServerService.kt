@@ -18,6 +18,15 @@ import com.example.robocontrol.audio.OrionStarTts
 import com.example.robocontrol.audio.TtsFailure
 import com.example.robocontrol.audio.TtsListener
 import com.example.robocontrol.sensorcontrol.Sensors
+import com.ainirobot.coreservice.client.RobotApi
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.MultiFormatWriter
 import com.journeyapps.barcodescanner.BarcodeEncoder
@@ -298,21 +307,22 @@ class RobotServerService : Service() {
                             try {
                                 val settings = jsonConfig.decodeFromString<AppSettings>(payload)
                                 getSettingsFile(applicationContext).writeText(payload)
-                                // Switch the robot's sensors to the general sensor settings (room-specific settings are ignored for now)
-                                val sensorsApplied = applySensorSettings(settings)
-                                speakGerman(
-                                    if (sensorsApplied) "Einstellungen wurden aktualisiert"
-                                    else "Einstellungen konnten nicht gespeichert werden, versuchen Sie es bitte erneut"
-                                )
+
+                                // The popup brings RoboGuard to the front; RobotOS gives SDK control back only a moment later.
                                 this@RobotServerService.notification("Settings Saved, check RoboGuard App for details!")
                                 this@RobotServerService.showPopup("Privacy Settings Saved")
+                                // Sensors (general settings only, rooms ignored for now) and speech wait for that control.
+                                // The phone gets its answer right away.
+                                applySettingsWhenInControl(settings)
                                 call.respondText("OK")
                                 
 
 
                             } catch (e: Exception) {
                                 Log.e("Server", "Failed to save settings: $e")
-                                speakGerman("Einstellungen konnten nicht gespeichert werden, versuchen Sie es bitte erneut")
+                                // Bring RoboGuard to the front so the robot is allowed to say that saving failed.
+                                runCatching { this@RobotServerService.showPopup("Privacy Settings could not be saved") }
+                                speakWhenInControl("Einstellungen konnten nicht gespeichert werden, versuchen Sie es bitte erneut")
                                 call.respond(HttpStatusCode.InternalServerError, "Error: ${e.message}")
                             }
                         }
@@ -459,11 +469,80 @@ class RobotServerService : Service() {
 
     override fun onDestroy() {
         server?.stop(1000, 2000)
+        serviceScope.cancel()
         runCatching { tts?.disconnect() }
         super.onDestroy()
     }
 
     /* ---------- Sensors and speech (robocontrol) ---------- */
+
+    /** Background work of the service (waiting for SDK control); cancelled in onDestroy. */
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** The pending "apply settings" of the latest save; a newer save replaces it. */
+    private var applyJob: Job? = null
+
+    /**
+     * Switches the sensors and confirms by speech once RoboGuard has SDK control.
+     *
+     * Found on the robot: when the phone saves while RoboGuard is in the background, RobotOS refuses every SDK call
+     * ("skillType is SUSPEND", RobotApi code -7) until RoboGuard is in front again. `startActivity` (the popup) only
+     * queues the start; control returns ~0.5 s later, and RobotOS then calls stopTTS on the app change. So this waits
+     * for [waitForSdkControl] first. Android-level switches (camera policy, mic mute) work either way.
+     */
+    private fun applySettingsWhenInControl(settings: AppSettings) {
+        applyJob?.cancel()
+        applyJob = serviceScope.launch {
+            waitForSdkControl()
+            val sensorsApplied = applySensorSettings(settings)
+            speakGerman(
+                if (sensorsApplied) "Einstellungen wurden aktualisiert"
+                else "Einstellungen wurden gespeichert, aber die Sensoren konnten nicht umgeschaltet werden"
+            )
+        }
+    }
+
+    /** Speaks [sentence] once RoboGuard has SDK control (see [applySettingsWhenInControl]). */
+    private fun speakWhenInControl(sentence: String) {
+        serviceScope.launch {
+            waitForSdkControl()
+            speakGerman(sentence)
+        }
+    }
+
+    /**
+     * Waits until RobotOS reports RoboGuard as the active app (`RobotApi.isActive()`, polled every
+     * [CONTROL_POLL_MS] ms, at most [CONTROL_WAIT_TIMEOUT_MS] ms). If control had to be regained, it also waits
+     * [CONTROL_SETTLE_MS] ms, past the stopTTS RobotOS sends right after an app change.
+     *
+     * @return true if RoboGuard is in control; false after the timeout (logged; SDK parts will then be refused)
+     */
+    private suspend fun waitForSdkControl(): Boolean {
+        return try {
+            // Creating Sensors starts the RobotApi connection if nothing else has; isActive() is false until connected.
+            Sensors.get(applicationContext)
+            val api = RobotApi.getInstance()
+            val wasActive = api.isActive()
+            val deadline = SystemClock.elapsedRealtime() + CONTROL_WAIT_TIMEOUT_MS
+            while (!api.isActive()) {
+                if (SystemClock.elapsedRealtime() >= deadline) {
+                    Log.w("Server", "No SDK control after $CONTROL_WAIT_TIMEOUT_MS ms: RobotOS will refuse speech and SDK sensor switches")
+                    return false
+                }
+                delay(CONTROL_POLL_MS)
+            }
+            if (!wasActive) {
+                Log.i("Server", "SDK control regained, waiting $CONTROL_SETTLE_MS ms before speaking")
+                delay(CONTROL_SETTLE_MS)
+            }
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("Server", "Could not check SDK control: $e", e)
+            false
+        }
+    }
 
     /**
      * Applies the general sensor settings (Camera, LIDAR, Microphone) to the robot via [Sensors].
@@ -485,6 +564,13 @@ class RobotServerService : Service() {
     private companion object {
         /** How long to wait for the speech service before giving up on a sentence. */
         const val TTS_CONNECT_TIMEOUT_MS = 5_000L
+
+        /** Waiting for RobotOS to give SDK control back after the popup brought RoboGuard to the front. */
+        const val CONTROL_WAIT_TIMEOUT_MS = 3_000L
+        const val CONTROL_POLL_MS = 100L
+
+        /** Pause after regaining control; RobotOS calls stopTTS ~0.5 s after the app change. */
+        const val CONTROL_SETTLE_MS = 1_000L
     }
 
     /** Created on first use; RobotOS only serves speech while RoboGuard is the active (foreground) app. */

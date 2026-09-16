@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.roboguard.ui.theme.RoboGuardTheme
 import com.example.robocontrol.movement.MapNavigationActivity
+import com.example.robocontrol.system.DefaultAppSetting
 import kotlinx.coroutines.delay
 
 /**
@@ -41,6 +42,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Make RoboGuard the robot's default app, so RobotOS gives it SDK control whenever it is in the foreground
+        // (not only after a launch from the home screen). Only writes if not already set; see DefaultAppSetting.
+        DefaultAppSetting.ensureRoboGuardIsDefault(this)
         enableEdgeToEdge()
         setContent {
             RoboGuardTheme {
