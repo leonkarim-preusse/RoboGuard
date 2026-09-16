@@ -501,7 +501,15 @@ these beans have not been inspected yet.
    so the empty map is gone. It offers `states: StateFlow`, `getSensors()` (always current), `isEnabled(name): Boolean?`,
    `update(Map)` / `update(AppSettings)` / `reload()`, and `addListener(SensorChangeListener, notifyCurrent)`.
    Listeners are called once per CHANGED sensor, on the caller's thread, with exceptions caught per listener.
-   **RobotServerService hook: described to the owner, NOT applied by Claude (owner applies it).** In `/save`,
+   **RobotServerService /save hook APPLIED by Claude at the owner's request (2026-09-16, compiled + installed, not yet run):**
+   after writing privacy_settings.json and before the notification/popup: `applySensorSettings(settings)` →
+   `Sensors.get(applicationContext).update(settings)` (GENERAL sensors only; rooms ignored for now; exceptions caught → false),
+   then German TTS via a lazily created `OrionStarTts` in the service: success "Einstellungen wurden aktualisiert"; sensor
+   switching threw → "Einstellungen wurden gespeichert, aber die Sensoren konnten nicht umgeschaltet werden"; parse/write
+   failure (catch block, still HTTP 500) → owner's wording "Einstellungen konnten nicht gespeichert werden, versuchen Sie es
+   bitte erneut". `speakGerman` never throws: connects on demand, keeps only the newest pending sentence, logs "ServerTts"
+   (not connected after 5 s, onFailed). Speech only works while RoboGuard is the active foreground app. LIDAR=false in a save
+   stops any running navigation (SensorSwitches). Previous note, kept for history: In `/save`,
    store the parsed settings (`val settings = jsonConfig.decodeFromString<AppSettings>(payload)`) and after
    `writeText(payload)` call `Sensors.get(applicationContext).update(settings)`, plus
    `import com.example.robocontrol.sensorcontrol.Sensors`. Until then nothing calls `update()` automatically.
