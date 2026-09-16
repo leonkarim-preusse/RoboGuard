@@ -13,8 +13,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -70,6 +73,15 @@ class TtsProbeActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Leaving the screen (home button, another app coming to the front) stops a running test and the speech.
+     * The SDK would stop serving this app in the background anyway, and a test must never keep running unseen.
+     */
+    override fun onStop() {
+        if (running?.isActive == true) stopTest("screen left")
+        super.onStop()
+    }
+
     override fun onDestroy() {
         running?.cancel()
         probe.disconnect()
@@ -89,6 +101,13 @@ class TtsProbeActivity : ComponentActivity() {
         }
 
         Column(Modifier.fillMaxSize().padding(12.dp)) {
+            // Always enabled and always at the top, so a test can be stopped no matter what state it is in.
+            Button(
+                onClick = { stopTest("STOP pressed") },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
+                modifier = Modifier.fillMaxWidth().height(72.dp)
+            ) { Text(if (isBusy) "STOP (test running)" else "STOP", fontSize = 26.sp) }
+            Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(enabled = !isBusy, onClick = { runTest { probe.saySentences() } }) { Text("0 Say sentences") }
                 Button(enabled = !isBusy, onClick = { runTest { probe.listVoices() } }) { Text("1 Voices") }
@@ -107,7 +126,6 @@ class TtsProbeActivity : ComponentActivity() {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { probe.verdict(asExpected = true) }) { Text("✔ As expected") }
                 OutlinedButton(onClick = { probe.verdict(asExpected = false) }) { Text("✘ Wrong") }
-                OutlinedButton(onClick = { stopTest() }) { Text("Stop") }
                 OutlinedButton(onClick = { log.clearScreen() }) { Text("Clear screen") }
             }
             Spacer(Modifier.height(8.dp))
@@ -133,10 +151,15 @@ class TtsProbeActivity : ComponentActivity() {
         }
     }
 
-    /** Cancels the running test and silences the robot. */
-    private fun stopTest() {
+    /**
+     * Cancels the running test, silences the robot and re-enables the test buttons immediately,
+     * without waiting for the cancelled coroutine to finish.
+     */
+    private fun stopTest(reason: String) {
         running?.cancel()
+        running = null
         probe.stopSpeech()
-        log.i("probe", "stopped by tester")
+        busy.value = false
+        log.i("probe", "stopped: $reason")
     }
 }

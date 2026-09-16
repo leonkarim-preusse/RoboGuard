@@ -1,6 +1,7 @@
 server.crt
 server.jks
 server.p12
+Claude.md
 
 app/src/main/assets/*
 

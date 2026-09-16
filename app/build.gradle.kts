@@ -60,6 +60,9 @@ android {
 
 dependencies {
     implementation(files("libs/robotservice_12.3.jar"))
+    // Required at runtime by robotservice_12.3.jar (SkillApi, RobotApi, ... use Gson; the jar does not bundle it).
+    // OrionStar's RobotSample uses 2.7; 2.11.0 is API-compatible and fixes CVE-2022-25647 (< 2.8.9).
+    implementation("com.google.code.gson:gson:2.11.0")
     // Compose & AndroidX (bleiben gleich)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

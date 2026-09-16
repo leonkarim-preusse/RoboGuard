@@ -3,7 +3,9 @@ package com.example.robocontrol.voiceprobe
 import android.content.Context
 import android.os.SystemClock
 import com.ainirobot.coreservice.client.ApiListener
+import com.ainirobot.coreservice.client.RobotApi
 import com.ainirobot.coreservice.client.listener.TextListener
+import com.ainirobot.coreservice.client.module.ModuleCallbackApi
 import com.ainirobot.coreservice.client.speech.SkillApi
 import com.ainirobot.coreservice.client.speech.entity.LangParamsEnum
 import com.ainirobot.coreservice.client.speech.entity.TTSEntity
@@ -57,6 +59,20 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
     private var lastTest: String? = null
 
     /**
+     * Reports whether RobotOS grants (onRecovery) or withdraws (onSuspend) SDK control from this app.
+     * Only the request type is logged, never request text, which can contain speech.
+     */
+    private val moduleCallback = object : ModuleCallbackApi() {
+        override fun onSendRequest(reqId: Int, reqType: String?, reqText: String?, reqParam: String?): Boolean {
+            log.i(TAG, "RobotOS request: $reqType")
+            return false
+        }
+
+        override fun onSuspend() = log.i(TAG, "RobotOS SUSPENDED this app: another app holds SDK control, TTS will not work")
+        override fun onRecovery() = log.i(TAG, "RobotOS RECOVERED this app: SDK control granted")
+    }
+
+    /**
      * Connects both [OrionStarTts] and the raw [SkillApi]. Call once when the screen opens.
      * If "disabled" is logged, the app is not allowed to use the SDK (usually: not in the
      * foreground) and every test below will fail with NotConnected.
@@ -81,12 +97,28 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
                 log.i(TAG, "raw SkillApi disabled: app not in foreground or not authorized, TTS will not work")
             }
         })
+
+        // CoreService only serves its "active app module"; being the foreground activity is not enough
+        // (on the robot, mActiveAppModule stayed com.ainirobot.maptool while this screen was on top and
+        // playText got no callback). connectServer + setCallback is the SDK's documented init order and is
+        // expected to register this app as a module; onRecovery/onSuspend above show whether it worked.
+        RobotApi.getInstance().connectServer(context, object : ApiListener {
+            override fun handleApiConnected() {
+                RobotApi.getInstance().setCallback(moduleCallback)
+                log.i(TAG, "RobotApi connected after ${now() - t0} ms, module callback registered")
+                logSdkControl()
+            }
+
+            override fun handleApiDisconnected() = log.i(TAG, "RobotApi disconnected")
+            override fun handleApiDisabled() = log.i(TAG, "RobotApi disabled: this app is not the active app")
+        })
     }
 
-    /** Stops speech and closes both connections. Call when the screen closes. */
+    /** Stops speech and closes all connections. Call when the screen closes. */
     fun disconnect() {
         tts.disconnect()
         runCatching { rawApi.disconnectApi() }
+        runCatching { RobotApi.getInstance().disconnectApi() }
         rawConnected = false
     }
 
@@ -375,6 +407,17 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         lastTest = name
         log.section("TTS: $name")
         log.i(TAG, expectation)
+        logSdkControl()
+    }
+
+    /**
+     * Logs whether RobotOS currently grants this app SDK control. If "no", every SDK call is silently ignored.
+     * The usual cause: the screen was started via adb instead of the robot's home launcher icon.
+     */
+    private fun logSdkControl() {
+        val active = runCatching { RobotApi.getInstance().isApiConnectedService() && RobotApi.getInstance().isActive() }
+            .getOrDefault(false)
+        log.i(TAG, if (active) "SDK control active: yes" else "SDK control active: NO (start this screen from the robot's home launcher icon)")
     }
 
     private fun askForVerdict() = log.i(TAG, "Did it behave as expected? Press ✔ or ✘.")

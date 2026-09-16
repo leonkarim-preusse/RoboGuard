@@ -117,7 +117,17 @@ Test code, not product code. `VoiceProbeActivity` (Compose) is started with
   `RECORD_AUDIO`, `com.ainirobot.coreservice.robotSettingProvider`, the probe activity.
 - Step-by-step test procedure for the owner: README.md, "Testing the voice probes" (added
   2026-09-15 at the owner's request, as the only change to README.md).
-- **Results go here once run on the robot.**
+- **Mic access results (robot ZTT18P1000A0, Android 9, probe-20260916-121719.log, VERIFIED):**
+  - 4 input devices (type 15 twice: channels 1/2/3/4/6, index masks 7/15/63; types 16 and 18: 1–2 ch), rates 8–48 kHz.
+  - **An ordinary app CAN record, but the source matters:** mono 16 kHz levels with the same room sound:
+    **CAMCORDER -37.4 dBFS (clear signal)**, MIC -77.1 (weak), VOICE_RECOGNITION -92.4, VOICE_COMMUNICATION -95.3,
+    UNPROCESSED -94.3 (≈ silent). The sensor test later measured MIC at -34.8, -43.8, -66.2, -91.7 and -103 dBFS in
+    different runs, so MIC is unreliable. **Use CAMCORDER for app-side audio (conversation detection).**
+  - **Multi-channel is useless:** 2/4/6/8 ch at 16 and 48 kHz give channel 0 at ≤ -50 dBFS and all others -Infinity,
+    so no raw mic array is exposed and bearing must come from RobotOS, not from the app.
+  - **`com.ainirobot.remotecontrolservice` (uid 1000) records from MIC permanently** (`dumpsys audio`
+    RecordActivityMonitor: session 57, 2ch→1ch 16 kHz, running since boot). Our recordings run alongside it
+    (Android 9 allows concurrent capture, sometimes with silence).
 - `MicAccessProbe` is the deciding experiment for the conversation detector below. If no
   `AudioSource` delivers signal while the speech service runs, change detection on raw audio is
   blocked, and only `SkillApi` signals (VAD timing, volume, multiple mode) and bearings remain.
@@ -343,7 +353,46 @@ none of this has been run on hardware.
   installed (test 1), codeName vs codeValue (tests 2 and 3), queue vs interrupt (test 6), play-status
   values while speaking (test 7). The tester's ✔/✘ verdicts land in the log file.
   The owner asked for on-robot tests, not JVM unit tests. There is still no test dependency in Gradle.
-- **Results go here once run.**
+- **Results (robot ZTT18P1000A0, Android 9, 2026-09-16):**
+  - Start: after adding Gson, TtsProbeActivity launches without crashing. `OrionStarTts connected after 969 ms`,
+    `raw SkillApi connected after 970 ms` (SkillApi.connectApi works from our foreground activity).
+  - Test 0 "Say sentences": **nothing spoken; no TextListener callback within 30 s** for sentence 1.
+    Robot logcat shows the cause: CoreService `ModuleManager: mActiveAppModule : com.ainirobot.maptool` and
+    `DaemonService: Check permission, top : com.example.roboguard  current : com.ainirobot.maptool`, every 2 s.
+    **Being the top (foreground) activity is NOT enough: CoreService keeps an "active app module", and SDK
+    commands from other apps are ignored silently** (no error, no callback). The map tool (still running, pid 14698)
+    held it after the owner created the map "RoboGuard Lab-0916110443". Another third-party app,
+    `com.example.PRIVATAR`, also runs on this robot. Open question: what makes an app the active module
+    (closing the map tool? launching via RobotOS home / `action.orionstar.default.app`? `RobotApi.connectServer` +
+    `setCallback`?). OrionStarTts/TtsProbe only use SkillApi and never call RobotApi.connectServer.
+  - **ANSWERED (2026-09-16): an app only gets SDK control if it is LAUNCHED FROM THE ROBOTOS HOME LAUNCHER
+    ("app center").** Evidence: after the map tool was stopped, `mActiveAppModule` stayed `null` for our TtsProbe
+    (started via `adb am start`, even with RobotApi.connectServer + setCallback → immediate `onSuspend`), AND for
+    OrionStar's own installed sample `com.ainirobot.robotos` started via `adb monkey`. The sample shows on screen:
+    "Your sdk init failed Make sure launch this app from Home Launcher / SDK初始化失败了请确保从应用中心启动此程序".
+    Its MainActivity polls `RobotApi.isApiConnectedService() && RobotApi.isActive()`.
+    Consequences: **activities started with adb (all probe screens) cannot use the SDK.** SDK-free parts
+    (Android AudioRecord, AudioManager, DevicePolicyManager) are unaffected. `RobotApi.isActive()` is the check
+    to log/show.
+    **How activation works (robot logcat, 2026-09-16 18:17):** tapping a launcher icon logs
+    `ActivityManager: START u0 {cmp=com.example.roboguard/...VoiceProbeActivity} from uid 1000` (system/home), then
+    `ModuleManager: Set active module` → `mActiveAppModule : com.example.roboguard` and
+    `PermissionManager: On app change pre app : [com.example.PRIVATAR, com.ainirobot.maptool, com.example.roboguard] current : com.example.roboguard`.
+    adb starts come from uid 2000 (shell) and are not activated. **Activation is per PACKAGE**: after the icon launch,
+    other activities of com.example.roboguard (TtsProbeActivity) had `isActive() = true`. So once RoboGuard is started
+    by RobotOS (launcher icon or boot/default app via `action.orionstar.default.app`), all robocontrol code in the
+    package has SDK control while in the foreground. Production workaround: make RoboGuard the robot's default/boot
+    app (settings, three-finger pull-down). Not yet verified that a boot launch activates the same way.
+    Sample init order: in `Application.onCreate` do RobotApi.connectServer → setCallback + setResponseThread
+    → then SkillApi.connectApi. Also in the jar: `RobotApi.registerModule(String, List<String>, ModuleCallbackApi)`,
+    `unregisterModule` (semantics unknown).
+  - **TTS results after launching from the home launcher icon (probe-20260916-121758.log):**
+    `SDK control active: yes`. **English TTS WORKS**: "say sentences" finished sentences in 2.6–4.1 s; test 2 English
+    started after 505 ms, total 4.8 s. **German with SpeechLanguage "de_DE" (codeName) finished** (started after 515 ms,
+    total 5.6 s); whether it SOUNDED German is still unknown (no ✔/✘ verdict logged yet). `voicesFor(ENGLISH/GERMAN)`
+    → `getSpokemanListByLanguage` returns **null** for both, so it is useless as an installed-voice check.
+    `onSuspend`/`onRecovery` fire when another screen or app takes the foreground and when this one returns
+    (seen at 42 s / 46 s / 71 s). Tests 3–7 not yet run.
 
 ### Sensor on/off switches (jar bytecode verified 2026-09-15; behaviour UNVERIFIED on hardware)
 
@@ -403,6 +452,11 @@ these beans have not been inspected yet.
   implemented as stop motion + close sensor gates + say so on screen.
 - Speech is on `SkillApi`: `playText(String, TextListener)` (max 1000 chars),
   `stopTTS()`, `setRecognizable(boolean)`, `setRecognizeMode(boolean)`.
+- **Runtime dependency Gson (VERIFIED on the robot 2026-09-16):** robotservice_12.3.jar uses `com.google.gson`
+  (50 classes referenced, not bundled). Without it, `SkillApi()` crashes with `NoClassDefFoundError:
+  com/google/gson/GsonBuilder` (first TtsProbeActivity launch). jdeps shows Gson is the only missing external library.
+  OrionStar's RobotSample declares `api 'com.google.code.gson:gson:2.7'`; RoboGuard now has
+  `implementation("com.google.code.gson:gson:2.11.0")` in app/build.gradle.kts.
 - Required manifest permissions: `INTERNET`,
   `com.ainirobot.coreservice.robotSettingProvider` (easy to miss — without it the
   connect callback never fires), `READ/WRITE_EXTERNAL_STORAGE`.
@@ -476,7 +530,49 @@ these beans have not been inspected yet.
    getHeadCameraStatus / isMicrophoneMute / getCameraDisabled / admin active) and effect checks (1 s mic RMS <
    -80 dBFS = silent; CameraSnapshot fails or mean Y < 8 = blocked; NotConnected = inconclusive; LIDAR by eye).
    PASS/FAIL plus ✔/✘ verdicts go to the ProbeLog file (files/voiceprobe/). onDestroy restores the saved settings.
-   **Results go here once run.**
+   **Results (robot ZTT18P1000A0, launched from the home icon, probe-20260916-121844.log):**
+   - UI bug: the row layout overflowed on the robot's display (buttons render very large; "5 Camera OFF" squashed,
+     LIDAR row, verdict buttons and log off-screen). Fixed with a scrollable button column on the left and the log on the right.
+   - **Microphone ON (read from the full log): run 1 PASS, test recording -43.8 dBFS = real signal**, so an ordinary app
+     CAN record while RobotOS's speech service runs (an earlier note claiming otherwise was wrong). Run 2 was -91.7 dBFS
+     (silent), most likely nobody talked, so that is inconclusive rather than a failure.
+   - **Re-enabling speech recognition is NOT confirmed:** after Microphone ON, `setASREnabled(true)` + `setRecognizable(true)`
+     left `isRecognizable=false` (report SENT). Either the read-back is too early or re-enabling is ignored, which would
+     leave RobotOS speech recognition off until a reboot. SensorSwitches now re-reads it after 2 s and reports FAILED
+     if it is still false.
+   - The owner's point: a silent Android recording while OFF only proves `setMicrophoneMute` blocks ordinary apps, NOT
+     that RobotOS's speech service is deaf. SensorProbe now checks both layers: Android (2 s recording; silent while ON =
+     INCONCLUSIVE) and RobotOS speech (6 s counting SkillCallback events: onStart/partial/final results and volume>0,
+     counts only, no text).
+   - **Owner request (2026-09-16):** the sensor test PLAYS BACK each 2 s test recording through the speaker right after
+     measuring (AudioTrack, 16 kHz, in memory only, zeroed after playback, never written), and SHOWS each camera
+     snapshot on screen (`SensorProbe.lastImage`, not saved), so results can be judged by ear and eye. This is test
+     tooling only; production code keeps the no-audio/no-image-retention rules.
+   - **Microphone OFF: both switches CONFIRMED** (`setASREnabled/setRecognizable` → isRecognizable=false;
+     `setMicrophoneMute` → isMicrophoneMute=true), recording -Infinity dBFS, PASS. Wake-word verdict not yet logged.
+   - **Camera ON: `startVision` CONFIRMED** (result=1, message `{"status":0}`), `setCameraDisabled(false)` CONFIRMED,
+     **device admin already active: true** (not set up by Claude). **CameraSnapshot / SurfaceShare WORKS:**
+     snapshot after 1076 ms, mean brightness 48/255, PASS.
+   - **Camera OFF (probe-20260916-122928.log): both switches CONFIRMED** (`stopVision` result=1 `{"status":0}`;
+     `setCameraDisabled(true)` → getCameraDisabled=true). **CameraSnapshot then fails immediately with SurfaceShare error
+     -15** (ERROR_SET_STREAM_SURFACE_FAILED) after 40 ms. PASS, tester verdict ✔. Note: the device-policy camera disable
+     PERSISTS after our app closes, until the app runs again (Sensors.init applies the saved settings) or is changed.
+   - **Speech recognition cannot be re-enabled through the SDK:** since the first Microphone OFF (~12:18), every
+     Microphone ON reports `isRecognizable=false after 2000 ms` → FAILED, and the speech-layer check counted 0 speech-service
+     callbacks while the tester talked (runs at 12:27–12:30). Wake-word behaviour to be confirmed by the tester; a robot
+     reboot is expected to restore it. **Consequence for the product: switching RobotOS speech off via
+     setASREnabled/setRecognizable(false) may be one-way until reboot; do not use it casually.**
+   - **Wake word (robot logcat, SkillManager in com.ainirobot.speechasrservice, 2026-09-16):** no user-set word
+     (`initCustomizedWakeupWord userSetWord:null`); the oversea preset is `mPresetDefaultWakeUpWords :oo:ou k:ei l:a k:ei`
+     (phonetic: O-KAY LA-KAY). Most likely "OK Lucki" / "Okay Lucky"; not confirmed by ear. SDK: `SkillApi.queryUserSetWakeUpWord()`,
+     `setCustomizeWakeUpWord(...)`, `closeCustomizeWakeUpWord()`.
+   - Microphone ON test recording was -103 dBFS in 122928 (silent playback): the reason the tester heard nothing.
+     The sensor test now records with CAMCORDER (see Mic access results).
+   - **With CAMCORDER recording (probe-20260916-123336.log):** Microphone ON tester verdict ✔ (heard own voice in playback).
+     **Microphone OFF: both layers PASS**: Android recording -Infinity dBFS, speech service 0 callbacks in 6 s while the
+     tester talked, verdict ✔. **Restore saved settings:** Camera ON (startVision + setCameraDisabled(false)) CONFIRMED,
+     LIDAR ON CONFIRMED, mic unmute CONFIRMED, but SDK speech re-enable still FAILED (isRecognizable=false).
+   - LIDAR OFF/ON: skipped by the owner for now ("seems to be working").
    **Ways to reach RobotServerService members from robocontrol:** (a) bind: `LocalBinder.getService()`
    already exists, and MainActivity.kt:52–69 does `startForegroundService` + `bindService(BIND_AUTO_CREATE)` and
    gets the instance in `onServiceConnected` (no RoboGuard change needed); (b) a companion-object instance
@@ -485,7 +581,168 @@ these beans have not been inspected yet.
    Casing mismatch: defaults use situational key `"pixelate objects"`, capabilities use `"Pixelate Objects"`.
    The actual default sensors are only Camera/LIDAR/Microphone (the DTO note above also lists Ultrasonic/Collision).
 4. The map must still be built and zones defined before anything is enforced.
-5. **IDE shows ~100 errors in `app/build.gradle.kts`** (2026-09-14, via Android Studio
+   **Map app (from the jar, 2026-09-16):** RobotOS's "map tool" is `Definition.MAPTOOL_PACKAGE_NAME = "com.ainirobot.maptool"`,
+   launcher `MAPTOOL_PACKAGE_NAME_LAUNCHER_CLASS = "com.ainirobot.maptool.activity.GuideInitActivity"`, so
+   `adb shell am start -n com.ainirobot.maptool/.activity.GuideInitActivity` (not tried; no robot connected).
+   The first-setup app `com.ainirobot.firstconfig` also has `first_config_action_start_create_map`.
+   The docs (https://doc.orionstar.com/en/knowledge-base/map-and-position/) only say the map tool does
+   "all map and point operations"; there are no UI steps. Places belong to a map, and switching maps requires relocalization.
+   **No probe needs a map:** voice, TTS and sensor probes run without one. A map matters for movement/zones, and for
+   relocalizing after the sensor probe's LIDAR ON test.
+   **Map files on the robot (VERIFIED 2026-09-16, robot ZTT18P1000A0):** `/sdcard/robot/map/<mapName>/` (e.g.
+   "RoboGuard Lab-0916110443"; other maps: ForumWissen, office, BBS1_Arnoldi, CSP_RoboLab) contains `mapinfo.json`
+   (mapName, mapId, createTime, `forbidLine:1` = has no-go lines, mapLanguage de_DE, …), `mapConfig.json`,
+   `mapping_track.json`, `place.json` (saved places with x/y/theta and multilingual names, e.g. Charging Point (0.44, -0.15)),
+   `place.properties`, and `navi_data/` with `map.pgm`, `probabilitymap.data`, `probpyramids.data`, `vision_map*.data`,
+   `config.json` (device params, no georeference). No yaml; resolution/origin are not in any JSON.
+   - **`navi_data/probabilitymap.data` format (decoded):** int32 LE length, then protobuf: f1 double resolution
+     (0.05), f2 varint width (660), f3 varint height (600), f4 double origin x (-16.0), f5 double origin y (-15.0),
+     f6 bytes = width×height uint16 LE cells, **row 0 = lowest world y**. Values: 0 unknown, 1 free, up to 32767 occupied.
+     Parsed by `movement/RobotMapFile.kt`. Rendered correctly by eye (same shape as map.pgm, flipped vertically).
+   - **`navi_data/map.pgm`** (P5, 320×260 for RoboGuard Lab) is the map tool's display map: 150 unknown, 255 free,
+     **5 = walls/obstacles, 0 = NO-GO LINES drawn in the map tool** (straight blue lines when colour-coded), 68/153 rare.
+     Its resolution/origin are NOT known: bbox fitting against the probability map gave inconsistent x/y scales
+     (0.064 vs 0.079 m/px) and only 35 % wall overlap, so the PGM may be cropped/rotated differently. Unresolved.
+   - **map.pgm georeference SOLVED (2026-09-16, from the map tool's own code):** the file is `P5\n<w> <h>\n255\n` + w×h
+     pixels + **16 trailing bytes: double LE resolution (0.05), float LE origin x (-8.0), float LE origin y (-6.0)**
+     (MapUtils.loadMap reads `bytes2Double(extra,0)`, `byte2float(extra,8)`, `byte2float(extra,12)`). Conversion
+     (MapUtils.pose2PixelByRoverMap): `px = (x - originX)/res`, `py = height - (y - originY)/res`. VERIFIED by overlay:
+     probability-map walls land exactly on PGM walls, and saved places land on free pixels (Empfangsstelle → px 214/157,
+     Ladestapel 156/139, Aufladepunkt 168/142).
+   - **How no-go lines are created (map tool com.ainirobot.maptool, /system/priv-app/MapTool/MapTool.apk, disassembled):**
+     `MapReqProcessor.handleSaveMap(mapName)` →
+     (1) `SettingUtils.setForbidLineFlag` → **`RobotApi.setMapForbidLineFlag(reqId, mapName, 1|0, listener)`**;
+     (2) `MapView.getEditedBitmap()` → **`MapUtils.saveRoverMapToPgm(map, mapName)` writes `<map root>/navi_data/map.pgm`
+     directly** (P5 header via "P5\n%d %d\n255\n", pixels, extra bytes); no-go lines are pixel value 0;
+     (3) `SettingUtils.setTypeLocalMapVersion` → **`RobotApi.setMapUpdateTime(reqId, mapName, now, listener)`**.
+     `ShareMemoryApi.set/getMapPgmPFD` is only used by the map tool's TestActivity. So RoboGuard CAN create no-go lines
+     with the same public SDK calls + a file write (the app has WRITE_EXTERNAL_STORAGE, targetSdk 28). NOT YET TRIED; unknown
+     whether navigation reloads immediately or needs switchMap/relocalization. Back up the map folder (adb pull) first.
+   - **PC backup of "RoboGuard Lab-0916110443" (2026-09-16 13:49, md5-verified for map.pgm/probabilitymap.data/mapinfo.json):**
+     `~/RoboGuard_map_backups/RoboGuard Lab-0916110443_20260916-134911/` (all 15 files). Original map.pgm md5
+     `56a2986a38166c7997444bf48bed053f`.
+   - **Implemented (owner approved 2026-09-16, compiled, not yet run):** `movement/PgmMap.kt` (parse/serialise map.pgm exactly,
+     world↔pixel, `lineAcross(a, b)` = perpendicular through the midpoint, extended until the first non-free pixel + 0.10 m on
+     both sides, `withLine` Bresenham with a square brush, value 0) and `movement/NoGoLineWriter.kt` (backs up the ORIGINAL
+     map.pgm + original forbidLine flag once into `files/robocontrol/map_backups/<map>/`, writes via temp file + rename, then
+     `setMapForbidLineFlag(…,1)` + `setMapUpdateTime(…, now s)`, logs the SDK answers; `restore()` puts the original back and
+     re-sends the original flag). Movement test: section "No-go line test": A/B = selected, preview (red), write/restore with
+     confirmation dialogs; existing no-go pixels drawn blue; requests READ+WRITE storage. Default line 2 px = 10 cm.
+     README: "No-go line test" incl. PC restore via adb push.
+   - **RESULT (owner + probe-20260916-135310.log): programmatic no-go lines DO NOT WORK.** Writing map.pgm (135 new
+     value-0 pixels) + `setMapForbidLineFlag(1)` + `setMapUpdateTime(now)` all answered `succeed`, the new line appeared in
+     map.pgm, but the robot drove straight through to Empfangsstelle (ARRIVED). Lines drawn **by hand in the map tool** DO
+     work: with one in place, `startNavigation` reported status 1025 "The global is path search failed" and then
+     `Sdk(code=3)`. So the map tool must also update other navigation data (e.g. probabilitymap/probpyramids or a
+     navigation-service reload) that our file write does not. Not pursued further (owner: "which is fine"). The robot's
+     map.pgm is back to the original md5 `56a2986a…`; the app's backup copy of the original remains in
+     `files/robocontrol/map_backups/RoboGuard_Lab-0916110443/`.
+   - **Privacy areas enforced by RoboGuard (owner request 2026-09-16, compiled, not yet run):** the movement test drives
+     ONLY through `NavigationController(bridge, PrivacyGuard)` (saved places now by coordinates too). "Private area around
+     selected" creates `Zone("Privat: <point>", 24-gon radius 1.0 m, PRIVATE)`; `PrivacyGuard.margin` 0.5 m on top.
+     Pre-move: target in zone → `BlockedByPrivacy`. In-motion: the 0.5 s pose poll calls `controller.onPose(pose)` →
+     stop + `AbortedOnPrivateZoneEntry`. Both → `OrionStarTts.speakGerman("Weg führt durch privaten Bereich. Ich halte an
+     und fahre nicht weiter.")`, first outcome wins (SDK's later Sdk(3) ignored), no automatic resume. Zones are in memory,
+     reset on map change; drawn red with the margin ring. Controller calls are synchronized (poll thread vs UI).
+     **Stop at the zone edge WORKS on the robot (owner, 2026-09-16), but the robot was then TRAPPED:** after stopping it stands
+     inside the margin, and the strict in-motion check aborted every following drive at once, even turning away. Fixes
+     (compiled, not yet run): (1) `NavigationController` exit rule: a drive that starts inside a zone (incl. margin) is only
+     aborted if the clearance to that zone falls below the best clearance reached during the drive minus
+     `EXIT_TOLERANCE_M` = 0.05 m; zones left drop out, re-entry is a normal violation; FORBIDDEN (SDK) stays a hard stop.
+     (2) After an in-motion privacy abort the robot TURNS ON THE SPOT (owner's decision, replaced a first 0.3 m goBackward
+     back-off because backward motion has no obstacle avoidance: `goBackward` has no `avoid` flag, unlike `goForward`).
+     `EscapeHeading.choose` (movement/, pure): candidates every 5°; line of sight marched in 5 cm steps against the zone
+     polygons WITHOUT margin (zones the robot is inside don't block); directions clear for ≥ 1 m → pick the one whose
+     point 1 m ahead is furthest from all private zones; none clear → longest free distance. `RobotBridge.turnInPlace(rad)`
+     → `RobotApi.turnLeft/turnRight(reqId, speed, angle, CommandListener)`: **both args in DEGREES** (bytecode:
+     `motionAngle` applies `Math.toRadians` to both, then sends "turn_left"/"turn_right" via motionLine with the angle in the
+     "distance" field); `turnBack` = 180°. 30°/s, 0.8 s after the stop, skipped below 10°. UNVERIFIED: turnLeft = +theta
+     (counter-clockwise) and pose theta in radians; the log prints heading before/after to check.
+     Other obstacle APIs in the jar (not used yet): `checkIfHasObstacle(reqId, d, d, d, l)`, `hasObstacleInArea(reqId, d, d, d, d, l)`,
+     `motionArcWithObstacles`, `setObstaclesSafeDistance`, status `status_obstacle_info`.
+     `OrionStarBridge.stopNavigation` now also calls `stopMove` so STOP ends the turn. (3) Pose poll 150 ms while navigating.
+     **Run probe-20260916-143236.log (VERIFIED):** drawn 4-corner area, drive to Empfangsstelle stopped in front of it, and the
+     following drive to Home from INSIDE the margin ARRIVED, so **the exit rule works**. But no German sentence and no turn:
+     the log shows `FAILED to reach Empfangsstelle: Sdk(code=3)`. Cause: after `controller.onPose` called `stopNavigation`,
+     RobotOS's own result (status 3 = stopped) came in on the SDK callback thread BEFORE the controller delivered
+     `AbortedOnPrivateZoneEntry`, and the probe keeps only the first outcome. Fix (compiled, installed, not yet run): a `driveId`
+     in NavigationController; abort and `stop()` bump it, and bridge callbacks from an older drive are dropped. `stop()` now
+     reports `CancelledByCaller` itself. Also confirmed: `navi_speed` values are m/s and rad/s (Slow: linear ≈0.25,
+     turning in place ≈1.1–1.26 rad/s, even though angular 0.5 was requested).
+     **Drawn areas (2026-09-16, compiled, not yet run):** full-screen map button "Draw private area" → map taps go to
+     `MovementProbe.handleMapTap`, which adds polygon corners while drawing (else a temporary point); Undo / Cancel /
+     "Finish area" (≥3 corners) → `Zone("Privat: Bereich N", corners, PRIVATE)`, enforced like the circles. Leaving full screen
+     cancels an unfinished drawing. Movement test UI now: preview map (tap → full screen), full screen with a control bar
+     above the map (no overlays), zoom ×1–8 via double tap / pinch.
+   - **Owner idea (2026-09-16): use map-tool no-go zones as private areas.** Pros: RobotOS's planner avoids them itself
+     (stronger than the app-level in-motion abort; `Pose.status == 2 FORBIDDEN` when inside). Cons: authored manually in
+     the map tool; writing them from the app means editing the map (`ShareMemoryApi.setMapPgmPFD`), which is undocumented and
+     risky. Plausible thesis design: no-go zones in the map tool + RoboGuard shows/enforces them additionally.
+   **Movement test (compiled 2026-09-16, not yet run):** `robocontrol/movementprobe/` (`MovementProbe`, `MovementProbeActivity`,
+   launcher icon "RG Movement Test"): map from RobotMapFile, live pose via `RobotApi.getCurrentPose()` every 0.5 s,
+   `isRobotEstimate()`/`isActive()` every 2 s, saved places via `getPlaceList()`, tap map → custom point, drive via
+   `OrionStarBridge.navigateTo(name)` / `navigateTo(Point2D)` (now implemented: `Pose(x, y, 0f)` + `startNavigation(reqId, Pose,
+   0.3, 30000, listener)`, negative return → onFailed). Big STOP; onStop stops navigation. Needs READ_EXTERNAL_STORAGE
+   (runtime). README: "Testing movement".
+   **First movement run (probe-20260916-124628.log, VERIFIED):** storage permission granted, map "RoboGuard Lab-0916110443"
+   loaded and rendered (287×252 cells shown), `localized: true` right away. `getPlaceList()` names come in the map language
+   (de_DE): Empfangsstelle (2.71, -0.86) [reception point], Ladestapel (-0.18, 0.03) [charging pole],
+   Aufladepunkt (0.44, -0.15) [charging point]. **Drive to Empfangsstelle by name: Started → ARRIVED after 7.9 s.**
+   Drive to Aufladepunkt: Started, AvoidingObstacle / ObstacleCleared events, then **STOP → onResult status 3
+   (`Sdk(code=3)`), probably "cancelled"**; mapping 3 → CancelledByCaller is not yet done. Owner: "it's going quite fast".
+   Marker position/heading correctness not yet confirmed by the owner.
+   **Speed (jar, VERIFIED signatures via MethodParameters):** `startNavigation(int reqId, String destination, double
+   coordinateDeviation, long time, double linearSpeed, double angularSpeed, ActionListener)` and the same with `Pose pose`.
+   Also `startNavigation(..., double obsDistance, long time, ...)` and `(..., obsDistance, destinationRange, time, ...)`.
+   Definition: `STATUS_SPEED = "navi_speed"`, `CMD_NAVI_SET_NAVIGATION_SPEED`, `CMD_NAVI_CHANGE_NAVIGATION_SPEED`, JSON keys
+   `linear_speed`, `angular_speed`. Units undocumented (assumed m/s, rad/s). OrionStarBridge now has `linearSpeed`/`angularSpeed`
+   (null = default overload); the movement test has presets Slow 0.25/0.5, Medium 0.45/0.8, Robot default (default = Slow)
+   and logs the measured `navi_speed` status while driving to verify the units.
+   **Named locations (owner request 2026-09-16, compiled, not yet run):** movement test button "Save current position…",
+   enabled only when `localized == true` and a pose is known; a dialog asks for a name; `MovementProbe.saveCurrentPosition`
+   re-checks `isRobotEstimate()` at the moment of saving (refuses if not localized), rejects empty, >40-char or duplicate
+   names (case-insensitive, across RobotOS places and own points), reads `getCurrentPose()` and stores name + x/y + theta.
+   **Stored in RoboGuard, NOT as RobotOS places** (`setLocation` places cannot be deleted via the SDK; removeLocation is a no-op):
+   `movement/SavedPointStore.kt` → `files/robocontrol/points/<sanitized map name>.json`, per map, written via temp file +
+   rename. Listed under "My locations" (purple markers), driven to by coordinates, deletable ("Delete selected location").
+   Tapped points stay temporary ("Clear tapped points" keeps named locations).
+5. **ADB on the robot (2026-09-16):** over USB the robot enumerates cleanly (`orionstar SDA845-QRD`,
+   USB 05c6:90b8, adb serial **ZTT35P1001KV**, product string `_SN:EE8D15E2`) and exposes an "ADB Interface".
+   The host is fine: plugdev + 51-android.rules, autosuspend off, no kernel USB errors, and both adb USB
+   backends (ADB_LIBUSB=0/1) behave the same. But every transport dies immediately ("read failed",
+   "write terminated: Connection timed out"), so `adb devices` lists nothing, even after the auth dialog
+   was accepted with a freshly generated host key (the old key is at ~/.android/adbkey.bak).
+   **Cause per OrionStar docs** (https://doc.orionstar.com/en/knowledge-base/open-developer-mode-2/):
+   ADB is closed by default on the factory build (GreetBot V6.9+, Mini V6.13+). Temporary enable: one-finger
+   pull-down, tap the time zone several times → dynamic password page (shows system date/time) → enter
+   the password → "Enable debugging"; "Persistent debugging" then appears (off by default) and keeps ADB on
+   across reboots. Password: give the SN to OrionStar pre-sales tech support, or agents use
+   https://wp.orionstar.com/public/dynpass/ . The hidden menu also has shortcuts "Open settings" (native
+   Android settings) and "Open the system navigation bar". SDK Access docs: three-finger pull-down → settings.
+   Not yet confirmed that this fixes the timeouts.
+   **Second robot, same result (2026-09-16 11:50):** adb serial **ZTT18P1000A0** (USB product `_SN:D3C0F53F`), same
+   PC, cable and port. Identical "read failed / write terminated: Connection timed out", also after a clean adb server
+   restart. Two robots failing identically points to something they share: either both have factory-locked ADB
+   (debugging not enabled or not persistent on each robot), or the shared cable/port. Decisive test: plug a normal
+   Android phone into the same cable and port.
+   The auth dialog DID appear on the second robot over USB, so adbd is enabled; USB still times out after that
+   (likely cable/port, since small packets pass and larger ones time out; unconfirmed).
+   **Network ADB works (2026-09-16 11:5x):** the second robot advertises mDNS `_adb._tcp` as `adb-ZTT18P1000A0`
+   → `Android.local` **10.131.33.35:5555** (found with `adb mdns services`; the dev PC is 10.131.33.36 on wlp3s0).
+   `adb connect 10.131.33.35:5555` reaches the robot and shows `unauthorized` until the dialog on the robot is
+   accepted. How to find a robot's IP without its settings: `adb mdns services` (RoboGuard's own mDNS name
+   `robot-<id>.local` only exists once RoboGuard is installed and running). The OrionStar cloud robot_info API
+   returns no IP.
+   Caution: `adb mdns services` once listed BOTH `adb-ZTT35P1001KV` and `adb-ZTT18P1000A0` at 10.131.33.35:5555.
+   A unicast mDNS query to that IP showed it is the SECOND robot (ZTT18P1000A0, MAC f0:74:e4:44:98:be), so
+   adb's cached entry was wrong. Verify with a unicast query or `adb -s <ip:port> shell getprop ro.serialno`
+   before trusting the mapping. The first robot's network IP is still unknown.
+   **CONNECTED + AUTHORIZED (2026-09-16):** `10.131.33.35:5555` → `ro.serialno` **ZTT18P1000A0** (the second robot),
+   product `models_mini01G`, model `OS-R-SD03`, **Android 9 (SDK 28)**, **ABI arm64-v8a** (VERIFIED via getprop).
+   Consequences: `abiFilters("arm64-v8a")` would cut the OpenCV native libs to 25 MB; Android 9 means no
+   SensorPrivacyManager (Android 12+), plain device admin camera policy OK, and before Android 10 a
+   second AudioRecord usually gets silence rather than an error while another app records.
+6. **IDE shows ~100 errors in `app/build.gradle.kts`** (2026-09-14, via Android Studio
    diagnostics). Almost all are `Unresolved reference` (`libs`, `android`,
    `implementation`…), plus `Cannot access java.io.Serializable` / `groovy.lang.Closure`.
    That pattern means the IDE can't load the script classpath (Gradle sync not done or

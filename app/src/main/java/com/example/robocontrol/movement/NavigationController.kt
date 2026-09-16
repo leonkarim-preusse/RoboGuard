@@ -18,6 +18,13 @@ package com.example.robocontrol.movement
  *
  * Feed poses in via [onPose] (from `bridge.pose` in the app, or by hand in a
  * test). This class deliberately does not own a coroutine scope.
+ *
+ * Leaving is always allowed. Found on the robot: after a stop at the edge of a private
+ * zone the robot stands inside the margin, so a strict in-motion check aborted every
+ * following drive at once, even turning away. A drive that *starts* inside a zone
+ * (or its margin) is therefore only aborted if the robot gets closer to that zone than
+ * the best clearance it has reached during the drive, minus [EXIT_TOLERANCE_M]. Once it
+ * is outside the margin, the normal rule applies again.
  */
 class NavigationController(
     private val bridge: RobotBridge,
@@ -26,6 +33,23 @@ class NavigationController(
 
     private var activeListener: NavigationListener? = null
     private var activeTarget: Point2D? = null
+
+    /**
+     * Increments per drive and on every stop/abort. Bridge callbacks carrying an older id are dropped. Found on the robot:
+     * after our privacy abort, RobotOS's own "stopped" result (Sdk code 3) arrived on its callback thread BEFORE our
+     * AbortedOnPrivateZoneEntry, so the caller saw a plain failure and never announced the privacy stop.
+     */
+    @Volatile
+    private var driveId = 0
+
+    /** Last pose seen; used to find the zones the robot is already in when a drive starts. */
+    private var lastPose: RobotPose? = null
+
+    /**
+     * For the current drive: private zones the robot started inside (incl. margin), mapped to the best clearance
+     * reached so far (metres from the zone boundary, negative inside the polygon).
+     */
+    private val exitExemptions = mutableMapOf<String, Double>()
 
     val isNavigating: Boolean get() = activeTarget != null
 
@@ -89,9 +113,12 @@ class NavigationController(
     }
 
     fun stop() {
+        val listener = activeListener
+        driveId++
         activeTarget = null
         activeListener = null
         bridge.stopNavigation()
+        listener?.onFailed(NavFailure.CancelledByCaller)
     }
 
     // ---- pose monitoring -------------------------------------------------
@@ -105,11 +132,17 @@ class NavigationController(
      * the problem, not the act of navigating there.
      */
     fun onPose(pose: RobotPose) {
+        lastPose = pose
+        // A drive that started inside a zone may continue as long as it does not move further in (see class doc).
+        if (isNavigating && pose.status != PoseStatus.FORBIDDEN && exitExemptions.isNotEmpty() && onlyLeavingExemptZones(pose)) {
+            return
+        }
         val violation = guard.violationAt(pose) ?: return
         lastAbort = violation
 
         if (isNavigating) {
             val listener = activeListener
+            driveId++ // from here on, RobotOS's own "stopped" result for this drive is ignored
             activeTarget = null
             activeListener = null
             bridge.stopNavigation()
@@ -164,17 +197,29 @@ class NavigationController(
         launch: (NavigationListener) -> Unit
     ) {
         lastAbort = null
+        val id = ++driveId
         activeTarget = target
         activeListener = listener
+
+        exitExemptions.clear()
+        val startPose = lastPose
+        if (startPose != null && !guard.overrideActive()) {
+            guard.zones.privateZones
+                .filter { it.containsWithMargin(startPose.point, guard.margin) }
+                .forEach { exitExemptions[it.name] = clearance(it, startPose.point) }
+        }
         launch(object : NavigationListener {
-            override fun onStarted() = listener.onStarted()
-            override fun onProgress(event: NavEvent) = listener.onProgress(event)
+            private val current get() = driveId == id
+            override fun onStarted() { if (current) listener.onStarted() }
+            override fun onProgress(event: NavEvent) { if (current) listener.onProgress(event) }
             override fun onArrived() {
+                if (!current) return
                 activeTarget = null
                 activeListener = null
                 listener.onArrived()
             }
             override fun onFailed(failure: NavFailure) {
+                if (!current) return
                 activeTarget = null
                 activeListener = null
                 listener.onFailed(failure)
@@ -182,7 +227,33 @@ class NavigationController(
         })
     }
 
-    private companion object {
-        const val FORBIDDEN_AREA_CODE = -1001
+    /**
+     * True if every private zone the robot is in right now is one it started this drive in, and it is not closer to
+     * any of them than its best clearance so far (minus the tolerance). Zones it has left drop out of the exemption,
+     * so re-entering them later counts as a normal violation.
+     */
+    private fun onlyLeavingExemptZones(pose: RobotPose): Boolean {
+        val p = pose.point
+        val current = guard.zones.privateZones.filter { it.containsWithMargin(p, guard.margin) }
+        exitExemptions.keys.retainAll(current.map { it.name }.toSet())
+        if (current.isEmpty()) return false // no zone at all: the normal check finds no violation
+        for (zone in current) {
+            val best = exitExemptions[zone.name] ?: return false
+            val now = clearance(zone, p)
+            if (now < best - EXIT_TOLERANCE_M) return false
+            exitExemptions[zone.name] = maxOf(best, now)
+        }
+        return true
+    }
+
+    /** Distance from the zone boundary in metres: positive outside the polygon, negative inside. */
+    private fun clearance(zone: Zone, p: Point2D): Double =
+        if (zone.contains(p)) -zone.distanceToEdge(p) else zone.distanceToEdge(p)
+
+    companion object {
+        private const val FORBIDDEN_AREA_CODE = -1001
+
+        /** How much closer to a zone a drive that started inside it may get before it is aborted (localization jitter). */
+        const val EXIT_TOLERANCE_M = 0.05
     }
 }

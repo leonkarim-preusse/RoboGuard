@@ -32,8 +32,7 @@ The probes only use audio and sound direction, never the camera. No audio is sav
 2. Grant the microphone permission, either when the probe screen asks for it or beforehand:
    ```adb shell pm grant com.example.roboguard android.permission.RECORD_AUDIO```
 3. Test in a quiet room with two people available. Write down where the robot stands and where the people stand
-4. Start the probe screen:
-   ```adb shell am start -n com.example.roboguard/com.example.robocontrol.voiceprobe.VoiceProbeActivity```
+4. Start the probe screen by tapping the **RG Voice Test** icon on the robot's home screen (swipe to the next page if needed). Do not start it with ```adb shell am start```: RobotOS only lets apps started from its home launcher use the robot SDK
 5. Keep the probe screen in the foreground for the whole test. The robot only serves its SDK to the app in front, so if another app or popup appears, the results of probes 2 and 3 are not valid
 
 ### Test 1: Mic access (run this first)
@@ -78,9 +77,8 @@ Add the findings to ```CLAUDE.md``` under "robocontrol/voiceprobe", noting which
 ### Preparation
 1. Install the app on the robot as described in the Installation section above
 2. Turn the robot's volume up and stand within about 1 m of it
-3. Start the TTS test screen:
-   ```adb shell am start -n com.example.roboguard/com.example.robocontrol.voiceprobe.TtsProbeActivity```
-4. The log must show ```OrionStarTts connected``` and ```raw SkillApi connected```. If it shows ```disabled```, the test screen is not in the foreground; bring it back to the front and restart it
+3. Start the TTS test screen by tapping the **RG TTS Test** icon on the robot's home screen (swipe to the next page if needed). Do not start it with ```adb shell am start```: RobotOS only lets apps started from its home launcher use the robot SDK, and every speech command would be silently ignored
+4. The log must show ```OrionStarTts connected```, ```raw SkillApi connected``` and **```SDK control active: yes```**. If it says ```SDK control active: NO```, close the screen and start it again from the home launcher icon
 5. Keep the test screen in the foreground for the whole test
 
 ### Running the tests
@@ -125,8 +123,7 @@ The tests only change the settings in memory, never the saved settings file. Clo
 4. For the Android camera switch, make the app a device admin once:
    ```adb shell dpm set-active-admin com.example.roboguard/com.example.robocontrol.sensorcontrol.RoboGuardDeviceAdmin```
    Without it, the Android camera switch reports ```FAILED``` with this command as the reason; all other switches still work
-5. Start the sensor test screen:
-   ```adb shell am start -n com.example.roboguard/com.example.robocontrol.sensorprobe.SensorProbeActivity```
+5. Start the sensor test screen by tapping the **RG Sensor Test** icon on the robot's home screen (swipe to the next page if needed). Do not start it with ```adb shell am start```: RobotOS only lets apps started from its home launcher use the robot SDK
 6. Keep the test screen in the foreground for the whole test
 
 ### Running the tests
@@ -157,3 +154,75 @@ Same as for the other probes: the log file name is shown in the first line on th
 2. ```adb exec-out run-as com.example.roboguard cat files/voiceprobe/<file name> > sensors.log```
 
 Add the findings to ```CLAUDE.md``` under "Sensor on/off switches": for each sensor and each method (SDK or Android), whether it really switched the sensor.
+
+## Testing movement
+```app/src/main/java/com/example/robocontrol/movementprobe``` is a test screen for driving the robot: it shows the robot's current map to scale, the robot's live position, the places saved in RobotOS, and points you add by tapping the map. You can then let the robot drive to any of them.
+
+### Preparation
+1. A map must exist and be active on the robot (created with the robot's map tool). The robot must know where it is on that map (localized)
+2. **Clear the area the robot will drive through** and stay close enough to press STOP
+3. Start the test screen by tapping the **RG Movement Test** icon on the robot's home screen. Do not start it with ```adb shell am start```: RobotOS only lets apps started from its home launcher use the robot SDK
+4. Allow storage access when asked: the map is read from the robot's storage
+
+### The screen
+- **Left**: the red **STOP** button, status (map name, SDK control, localized, robot position, navigation state), **Drive to selected**, **Reload map**, **Clear my points**, and all points as a list
+- **Right**: the map (grey = unknown, white = free, dark = walls) with the robot (green circle, the line shows its heading), saved places (blue) and your points (orange); the selected point has a red ring. The log is below the map
+
+### Running the tests
+| Step | What to do | Expected | If not |
+|---|---|---|---|
+| **1 Check status** | Wait a few seconds after opening | ```SDK control: yes```, ```Localized: yes```, the map shows, the green robot sits where the robot really is | ```SDK control: NO```: restart the screen from the home icon. ```Localized: NO```: relocalize in the map tool. Robot in the wrong spot on the map: note it, the map orientation or position conversion may be wrong |
+| **2 Move the robot by hand** | Push or turn the robot a little (or drive it with the map tool) | The green circle and its heading line follow within a second | Note which direction is mirrored or rotated |
+| **3 Drive to a saved place** | Tap a blue place in the list, then **Drive to selected** | The robot drives there; log ends with ```ARRIVED``` | Note the ```FAILED: ...``` reason from the log |
+| **4 Drive to your own point** | Tap an open, reachable spot on the map (it becomes P1 and is selected), then **Drive to selected** | The robot drives to that spot and the green circle ends on the orange point; ```ARRIVED``` | Robot drives somewhere else: the tap-to-position conversion is off |
+| **5 STOP** | Start a drive, then press **STOP** | The robot stops immediately; log shows ```STOP``` | The robot keeps driving: press the robot's emergency stop |
+| **6 Unreachable point** | Tap a spot inside a wall or outside the map, then drive | Navigation fails with a clear reason (e.g. ```Unreachable```) and the robot does not move | Note what happened |
+| **8 Save a location** | Drive or push the robot to a spot, check ```Localized: yes```, press **Save current position…**, enter a name, **Save** | The name appears under "My locations" (purple on the map, at the robot's position) and is selected; closing and reopening the screen keeps it | The button is greyed out: the robot is not localized. An error in the dialog explains why saving was refused |
+| **9 Drive to a saved location** | Move the robot away, select your location, **Drive to selected** | The robot returns to the saved spot; ```ARRIVED``` | Note the log |
+| **7 No-go zone** | If the map has no-go lines, place a point behind one and drive | RobotOS refuses or drives around, never through the zone | Note it |
+
+Leaving the screen (home button, another app) stops any navigation.
+
+### No-go line test (changes the robot's map)
+RoboGuard can write no-go lines into the robot's map the same way RobotOS's map tool does; the robot's own route planner then avoids them. This is the basis for private areas. Existing no-go lines are shown in **blue** on the map.
+
+**Before the first write, make a backup on your PC** (it was done once on 2026-09-16 into ```~/RoboGuard_map_backups/```):
+```adb pull "/sdcard/robot/map/RoboGuard Lab-0916110443/." ~/RoboGuard_map_backups/RoboGuard_Lab_<date>/```
+RoboGuard also keeps its own copy of the original map image before its first change.
+
+| Step | What to do | Expected | If not |
+|---|---|---|---|
+| **1 Choose A and B** | Select the charging point in the list, press **A = selected**; select the Empfangsstelle, press **B = selected** | ```A: …  B: …``` shows both | |
+| **2 Preview** | **Preview line across A–B** | A **red** line crosses the room halfway between A and B, from wall to wall. Nothing is written yet | The line ends in the open or cuts through a place: do not write, note the log |
+| **3 Baseline drive** | Drive the robot to A, then to B (before writing) | Robot drives directly to B | |
+| **4 Write** | **Write no-go line to robot map…** → **Write** | The dialog shows ```no-go line written```; after a moment the line appears **blue** on the map. The log shows ```setMapForbidLineFlag … answered``` and ```setMapUpdateTime … answered``` | Note the error in the dialog and log |
+| **5 Observe** | Drive the robot back to A, then to B | The robot does not cross the line: it detours around it if there is a way, or navigation fails (e.g. ```Unreachable```) | The robot drives straight through: RobotOS may only load the change after reloading the map. Try switching the map in the map tool (or restarting the robot), relocalize, and repeat step 5. Note what was needed |
+| **6 Restore** | **Restore original map…** → **Restore** | ```original map restored```; the red/blue line from step 4 disappears after reload | See "Restoring from the PC backup" below |
+
+**Result (2026-09-16):** lines written by RoboGuard were ignored by RobotOS (the robot drove through), while lines drawn by hand in the map tool worked (navigation failed with ```The global is path search failed```). Privacy areas are therefore enforced by RoboGuard itself, see below.
+
+### Privacy area test
+RoboGuard enforces private areas itself: it refuses drives whose target lies in a private area, and stops a drive as soon as the robot comes into or close to a private area on the way. In both cases the robot says: *"Weg führt durch privaten Bereich. Ich halte an und fahre nicht weiter."*
+
+| Step | What to do | Expected | If not |
+|---|---|---|---|
+| **1 Create the area** | Select **Empfangsstelle** in the list, press **Private area around selected** | A red filled circle (1 m) with an outer ring (+0.5 m margin) appears around the Empfangsstelle; the log shows ```PRIVATE area "Privat: Empfangsstelle"``` | |
+| **2 Target inside** | With Empfangsstelle still selected, press **Drive to selected** | The robot does not move; it says the sentence; log: ```REFUSED``` | The robot drives: note the log |
+| **3 Route through the area** | Tap a point on the far side of the red circle (so the direct path crosses it), then **Drive to selected** | The robot starts, stops at the outer ring, says the sentence, then **turns on the spot** (it does not drive) to face away from the area; log: ```ABORTED at (x, y)```, ```turn away: heading …° → …°```, ```turn away finished, heading now …°``` | The robot drives through: note how far into the circle it got. It turns the wrong way (towards the area): note both headings from the log, the turn direction may be inverted |
+| **3b Leave again** | Right after step 3, select a point away from the area (e.g. where the robot came from) and drive there | The robot drives away normally, although it started close to the area | The robot is stopped again straight away: note the log |
+| **4 Route around the area** | Choose a target whose path does not cross the circle | Normal drive, ```ARRIVED``` | |
+| **5 Clear** | **Clear private areas**, then repeat step 2 | The robot drives to the Empfangsstelle | |
+| **6 Draw an area** | Tap the map to open full screen, press **Draw private area**, tap the corners of an area one after another (zoom in first if needed), press **Finish area** | While drawing, red corners and lines appear; after Finish the area is filled red with its margin ring and listed as ```Privat: Bereich 1```. Drives into or through it behave like steps 2 and 3 | **Undo corner** removes the last corner, **Cancel** discards the drawing |
+
+Private areas are kept only while the screen is open. While driving, the robot checks its position every 0.15 s, so at *Slow* speed it can move about 4 cm past the ring (plus braking distance) before it stops.
+
+#### Restoring from the PC backup
+If the app cannot restore the map (or the map is broken), copy the original image back from the PC, then reload the map in the map tool or restart the robot:
+```adb push ~/RoboGuard_map_backups/<backup folder>/navi_data/map.pgm "/sdcard/robot/map/RoboGuard Lab-0916110443/navi_data/map.pgm"```
+
+### Getting the results
+Same as for the other test screens: the log file name is shown in the first log line.
+1. ```adb shell run-as com.example.roboguard ls files/voiceprobe```
+2. ```adb exec-out run-as com.example.roboguard cat files/voiceprobe/<file name> > movement.log```
+
+Add the findings to ```CLAUDE.md``` under "Current state / known issues", item 4 (map).

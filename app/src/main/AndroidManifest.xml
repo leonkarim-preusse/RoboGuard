@@ -50,19 +50,50 @@
         <activity
             android:name="com.example.robocontrol.voiceprobe.VoiceProbeActivity"
             android:exported="true"
-            android:label="Voice probe" />
+            android:label="RG Voice Test"
+            android:taskAffinity="com.example.roboguard.voiceprobe">
+            <!-- Launcher icon: RobotOS only grants SDK control to apps started from its home launcher -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
-        <!-- robocontrol.voiceprobe TTS test screen; exported so it can be started via adb -->
+        <!-- robocontrol.voiceprobe TTS test screen -->
         <activity
             android:name="com.example.robocontrol.voiceprobe.TtsProbeActivity"
             android:exported="true"
-            android:label="TTS probe" />
+            android:label="RG TTS Test"
+            android:taskAffinity="com.example.roboguard.ttsprobe">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
-        <!-- robocontrol.sensorprobe test screen; exported so it can be started via adb -->
+        <!-- robocontrol.movementprobe test screen: map, points, driving -->
+        <activity
+            android:name="com.example.robocontrol.movementprobe.MovementProbeActivity"
+            android:exported="true"
+            android:label="RG Movement Test"
+            android:taskAffinity="com.example.roboguard.movementprobe">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- robocontrol.sensorprobe test screen -->
         <activity
             android:name="com.example.robocontrol.sensorprobe.SensorProbeActivity"
             android:exported="true"
-            android:label="Sensor probe" />
+            android:label="RG Sensor Test"
+            android:taskAffinity="com.example.roboguard.sensorprobe">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
         <!-- robocontrol.sensorcontrol: device admin used only to disable the camera.
              Inactive until: adb shell dpm set-active-admin com.example.roboguard/com.example.robocontrol.sensorcontrol.RoboGuardDeviceAdmin -->

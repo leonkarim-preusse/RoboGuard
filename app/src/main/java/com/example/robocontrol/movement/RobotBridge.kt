@@ -54,6 +54,12 @@ interface RobotBridge {
      * call `stopNavigation`, not `stopMove`.
      */
     fun stopNavigation()
+
+    /**
+     * Turns on the spot by [angleRad] (positive = counter-clockwise, i.e. increasing theta), e.g. to face away from a
+     * private area after a stop. No forward or backward motion. Implementations must stop this in [stopNavigation] too.
+     */
+    fun turnInPlace(angleRad: Double, callback: (Boolean) -> Unit)
 }
 
 /** Progress reported while navigating. Mirrors the RobotOS status codes we care about. */

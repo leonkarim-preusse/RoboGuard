@@ -4,6 +4,8 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.media.AudioManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.ainirobot.coreservice.client.ApiListener
 import com.ainirobot.coreservice.client.Definition
@@ -86,6 +88,9 @@ internal class SensorSwitches(private val context: Context) {
 
     private val skillApi = SkillApi()
 
+    /** For delayed read-backs; the SDK calls themselves are made on the caller's thread. */
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     @Volatile private var skillConnected = false
     @Volatile private var skillConnectRequested = false
     @Volatile private var robotConnectRequested = false
@@ -153,6 +158,15 @@ internal class SensorSwitches(private val context: Context) {
             val recognizable = runCatching { skillApi.isRecognizable() }.getOrNull()
             val outcome = if (recognizable == enabled) SwitchReport.Outcome.CONFIRMED else SwitchReport.Outcome.SENT
             report(name, method, enabled, outcome, "isRecognizable=$recognizable")
+
+            // On the robot, isRecognizable still read false right after switching back ON. Read it again later so
+            // the report says whether re-enabling really took effect or was ignored.
+            mainHandler.postDelayed({
+                if (desired[name] != enabled) return@postDelayed // superseded by a newer request
+                val later = runCatching { skillApi.isRecognizable() }.getOrNull()
+                val laterOutcome = if (later == enabled) SwitchReport.Outcome.CONFIRMED else SwitchReport.Outcome.FAILED
+                report(name, method, enabled, laterOutcome, "isRecognizable=$later after ${READBACK_DELAY_MS} ms")
+            }, READBACK_DELAY_MS)
         }.onFailure {
             report(name, method, enabled, SwitchReport.Outcome.FAILED, it.toString())
         }
@@ -296,5 +310,8 @@ internal class SensorSwitches(private val context: Context) {
 
         /** Request ids for these commands, kept apart from the ranges other components use. */
         const val REQ_ID_START = 20_000
+
+        /** Delay before the second isRecognizable read-back (the probe waits 3 s before reading reports). */
+        const val READBACK_DELAY_MS = 2_000L
     }
 }
