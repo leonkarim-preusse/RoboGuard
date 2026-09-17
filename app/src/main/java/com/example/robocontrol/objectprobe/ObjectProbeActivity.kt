@@ -527,7 +527,7 @@ class ObjectProbeActivity : ComponentActivity() {
                 Text("Features per image", fontSize = 13.sp)
                 Choice(listOf(1000, 3000, 5000), settings.maxFeatures, { "$it" }) { v -> changeOrb("features") { it.copy(maxFeatures = v) } }
                 Text("FAST threshold (lower = weaker corners count)", fontSize = 13.sp)
-                Choice(listOf(20, 10, 5), settings.fastThreshold, { "$it" }) { v -> changeOrb("FAST") { it.copy(fastThreshold = v) } }
+                Choice(listOf(20, 15, 10, 5), settings.fastThreshold, { "$it" }) { v -> changeOrb("FAST") { it.copy(fastThreshold = v) } }
                 Text("Spread keypoints over a grid", fontSize = 13.sp)
                 Choice(listOf(false, true), settings.gridDistribution, { if (it) "On" else "Off" }) { v -> changeOrb("grid") { it.copy(gridDistribution = v) } }
                 Text("Thresholds (good matches / inliers)", fontSize = 13.sp)

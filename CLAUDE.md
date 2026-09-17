@@ -1267,3 +1267,13 @@ these beans have not been inspected yet.
   knn 127–352 + homography 2–9 (was 93–444) + resize 1–6; accuracy held (inliers avg 27–45, best 37–62; announcements 30/34/43). While
   ORB runs, the other worker's passes are "skipped (ORB busy)" 15–17 per 2 s, but each still ran the full colour step first (~60–100 ms) →
   ~0.5 core wasted competing with ORB. Remaining costs: brute-force matching (3000 frame × reference keypoints) and keypoint detection (3000).
+- **Owner (installed, not yet measured):** calendar ORB 1000 features, FAST 15 (object test shares it; its FAST choices now 20/15/10/5).
+  Monitor workers wait (10 ms polls) while the ORB gate is taken instead of starting colour passes that would be skipped.
+- Owner (installed): default inliers 20, CONFIRM_INLIER_DROP 8 (confirm 12); pref key min_inliers_v3 (saved 25 dropped). Owner: still not perfect while moving.
+- **Inliers vs. movement analysis (logcat 23:10:45–23:21:40, VERIFIED; graph made in the session scratchpad, not in the repo).** Movement known
+  only from RoboGuardNav events (drive Started→ARRIVED/FAILED/STOP; AvoidingObstacle→ObstacleCleared), no speed. Clear-view 2 s windows
+  while driving (pink frame found in ≥ 80 % of checks): 3000 features / FAST 10: avg inliers median 37, best median 51, 32/49 checks
+  detected (65 %), 2.5 checks/s; 1000 features / FAST 15: avg median 17, best median 33, 64/205 detected (31 %), 5.6 checks/s. Detected
+  checks per second similar (~1.6 vs ~1.8/s) but consistency halved → "2 in a row" fails more; the owner's "works a lot worse" matches.
+  Turning/obstacle phases were not clearly worse than straight driving in phase 1. Owner changed X during runs: 25→23→28→27 (3000 phase),
+  27→23 (1000 phase), then 20/12.
