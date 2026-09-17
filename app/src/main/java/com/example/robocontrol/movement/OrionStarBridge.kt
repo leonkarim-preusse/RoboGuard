@@ -8,6 +8,7 @@ import com.ainirobot.coreservice.client.StatusListener
 import com.ainirobot.coreservice.client.actionbean.Pose
 import com.ainirobot.coreservice.client.listener.ActionListener
 import com.ainirobot.coreservice.client.listener.CommandListener
+import com.example.robocontrol.system.RobotApiConnection
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,31 +46,42 @@ class OrionStarBridge(
     @Volatile
     var angularSpeed: Double? = null
 
-    override fun connect() {
-        RobotApi.getInstance().connectServer(context, object : ApiListener {
-            override fun handleApiConnected() {
-                // ⚠ setCallback expects a ModuleCallbackApi subclass. Supply the
-                // app's ModuleCallback here once voice/system dispatch is wired.
-                // RobotApi.getInstance().setCallback(ModuleCallback())
-                registerPoseListener()
-                _connected.value = true
-            }
+    /** This bridge's hook into the app-wide connection ([RobotApiConnection]); never a second `connectServer`. */
+    private val apiListener = object : ApiListener {
+        override fun handleApiConnected() {
+            // ⚠ setCallback expects a ModuleCallbackApi subclass. Supply the
+            // app's ModuleCallback here once voice/system dispatch is wired.
+            // RobotApi.getInstance().setCallback(ModuleCallback())
+            registerPoseListener()
+            _connected.value = true
+        }
 
-            override fun handleApiDisconnected() { _connected.value = false }
-            override fun handleApiDisabled() { _connected.value = false }
-        })
+        override fun handleApiDisconnected() { _connected.value = false }
+        override fun handleApiDisabled() { _connected.value = false }
     }
 
+    override fun connect() {
+        RobotApiConnection.connect(context, apiListener)
+    }
+
+    /**
+     * Stops driving and detaches this bridge. Does NOT call `RobotApi.disconnectApi()`: the connection is shared by the
+     * whole app (server, sensor switches), and closing it broke their SDK calls.
+     */
     override fun disconnect() {
         stopNavigation()
-        RobotApi.getInstance().disconnectApi()
+        RobotApiConnection.removeListener(apiListener)
+        poseListener?.let { runCatching { RobotApi.getInstance().unregisterStatusListener(it) } }
+        poseListener = null
         _connected.value = false
     }
 
+    /** The registered pose status listener, so a reconnect does not add a second one and disconnect can remove it. */
+    private var poseListener: StatusListener? = null
+
     private fun registerPoseListener() {
-        RobotApi.getInstance().registerStatusListener(
-            Definition.STATUS_POSE,
-            object : StatusListener() {
+        poseListener?.let { runCatching { RobotApi.getInstance().unregisterStatusListener(it) } }
+        poseListener = object : StatusListener() {
                 override fun onStatusUpdate(type: String?, value: String?) {
                     val json = runCatching { JSONObject(value ?: return) }.getOrNull() ?: return
                     _pose.value = RobotPose(
@@ -82,7 +94,7 @@ class OrionStarBridge(
                     )
                 }
             }
-        )
+        RobotApi.getInstance().registerStatusListener(Definition.STATUS_POSE, poseListener)
     }
 
     // ---- localization & map ---------------------------------------------

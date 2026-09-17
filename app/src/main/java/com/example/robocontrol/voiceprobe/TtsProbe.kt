@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import com.ainirobot.coreservice.client.ApiListener
 import com.ainirobot.coreservice.client.RobotApi
+import com.example.robocontrol.system.RobotApiConnection
 import com.ainirobot.coreservice.client.listener.TextListener
 import com.ainirobot.coreservice.client.module.ModuleCallbackApi
 import com.ainirobot.coreservice.client.speech.SkillApi
@@ -102,7 +103,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         // (on the robot, mActiveAppModule stayed com.ainirobot.maptool while this screen was on top and
         // playText got no callback). connectServer + setCallback is the SDK's documented init order and is
         // expected to register this app as a module; onRecovery/onSuspend above show whether it worked.
-        RobotApi.getInstance().connectServer(context, object : ApiListener {
+        RobotApiConnection.connect(context, object : ApiListener {
             override fun handleApiConnected() {
                 RobotApi.getInstance().setCallback(moduleCallback)
                 log.i(TAG, "RobotApi connected after ${now() - t0} ms, module callback registered")
@@ -118,7 +119,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
     fun disconnect() {
         tts.disconnect()
         runCatching { rawApi.disconnectApi() }
-        runCatching { RobotApi.getInstance().disconnectApi() }
+        // No RobotApi.disconnectApi(): that connection is shared by the whole app (RobotApiConnection).
         rawConnected = false
     }
 

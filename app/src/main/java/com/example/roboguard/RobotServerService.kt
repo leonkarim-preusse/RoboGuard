@@ -18,6 +18,8 @@ import com.example.robocontrol.audio.OrionStarTts
 import com.example.robocontrol.audio.TtsFailure
 import com.example.robocontrol.audio.TtsListener
 import com.example.robocontrol.sensorcontrol.Sensors
+import com.example.robocontrol.conversation.ConversationMonitor
+import com.example.robocontrol.vision.CalendarMonitor
 import com.ainirobot.coreservice.client.RobotApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -195,6 +197,10 @@ class RobotServerService : Service() {
         registerMdnsService(8443)
         startKtorServer()
         startForeground(1, notification)
+        // Conversation detection: listens while RoboGuard runs (and the privacy settings allow the microphone)
+        ConversationMonitor.start(applicationContext)
+        // Calendar detection: watches the camera while RoboGuard runs (and the privacy settings allow the camera)
+        CalendarMonitor.start(applicationContext)
     }
 
     /**
@@ -470,6 +476,8 @@ class RobotServerService : Service() {
     override fun onDestroy() {
         server?.stop(1000, 2000)
         serviceScope.cancel()
+        ConversationMonitor.stop()
+        CalendarMonitor.stop()
         runCatching { tts?.disconnect() }
         super.onDestroy()
     }

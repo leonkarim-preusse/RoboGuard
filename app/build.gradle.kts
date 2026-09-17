@@ -19,6 +19,12 @@ android {
         versionName = "1.0"
 
         multiDexEnabled = true
+
+        // Only the robot's processor type (OrionStar GreetBot Mini: arm64-v8a, checked with getprop). OpenCV and ONNX Runtime
+        // otherwise ship native libraries for four ABIs, which made the APK ~270 MB and WiFi installs very slow.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     compileOptions {
@@ -63,6 +69,8 @@ dependencies {
     // Required at runtime by robotservice_12.3.jar (SkillApi, RobotApi, ... use Gson; the jar does not bundle it).
     // OrionStar's RobotSample uses 2.7; 2.11.0 is API-compatible and fixes CVE-2022-25647 (< 2.8.9).
     implementation("com.google.code.gson:gson:2.11.0")
+    // Silero VAD (speech / non-speech) for robocontrol.conversation: runs the bundled silero_vad.onnx on the robot, offline
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
     // Compose & AndroidX (bleiben gleich)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

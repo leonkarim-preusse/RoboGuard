@@ -10,6 +10,7 @@ import android.util.Log
 import com.ainirobot.coreservice.client.ApiListener
 import com.ainirobot.coreservice.client.Definition
 import com.ainirobot.coreservice.client.RobotApi
+import com.example.robocontrol.system.RobotApiConnection
 import com.ainirobot.coreservice.client.listener.CommandListener
 import com.ainirobot.coreservice.client.speech.SkillApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -227,13 +228,15 @@ internal class SensorSwitches(private val context: Context) {
      * app already did) and returns false; [desired] is re-applied when the connection comes up.
      */
     private fun robotApiReady(): Boolean {
-        val api = RobotApi.getInstance()
-        if (api.isApiConnectedService()) return true
+        if (RobotApi.getInstance().isApiConnectedService()) return true
         if (!robotConnectRequested) {
             robotConnectRequested = true
-            api.connectServer(context, object : ApiListener {
+            // Through the app-wide connection: a second connectServer broke pose/isActive calls elsewhere in the app.
+            RobotApiConnection.connect(context, object : ApiListener {
                 override fun handleApiConnected() {
                     Log.i(TAG, "RobotApi connected, applying sensor settings")
+                    RobotApiConnection.removeListener(this)
+                    robotConnectRequested = false
                     apply(desired)
                 }
 

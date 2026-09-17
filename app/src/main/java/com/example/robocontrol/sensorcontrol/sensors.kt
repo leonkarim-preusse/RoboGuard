@@ -41,6 +41,7 @@ fun interface SensorChangeListener {
 class Sensors private constructor(private val context: Context) {
 
     private val json = Json { ignoreUnknownKeys = true }
+    private val writeJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
 
     private val _states = MutableStateFlow(readSettingsFile())
 
@@ -96,6 +97,33 @@ class Sensors private constructor(private val context: Context) {
                     .onFailure { Log.e(TAG, "listener failed for $name=$enabled", it) }
             }
         }
+    }
+
+    /**
+     * Switches one sensor from the robot itself (e.g. "Microphone" off from the conversation popup): applies it like
+     * [update] and writes it into `privacy_settings.json`, so it survives a restart. The phone app's next save replaces
+     * it again. If the file does not exist yet (phone never saved), the change is applied in memory only.
+     *
+     * @return true if it was also written to the file
+     */
+    fun setSensor(name: String, enabled: Boolean): Boolean {
+        val current = getSensors()
+        val key = current.keys.firstOrNull { it.equals(name, ignoreCase = true) } ?: name
+        update(current + (key to enabled))
+        val file = getSettingsFile(context)
+        if (!file.exists()) {
+            Log.w(TAG, "$key=$enabled applied, but not saved: no privacy_settings.json yet")
+            return false
+        }
+        return runCatching {
+            val settings = json.decodeFromString<AppSettings>(file.readText())
+            val sensors = settings.sensors.toMutableMap()
+            sensors[settings.sensors.keys.firstOrNull { it.equals(name, ignoreCase = true) } ?: key] = enabled
+            val tmp = java.io.File(file.parentFile, file.name + ".tmp")
+            tmp.writeText(writeJson.encodeToString(AppSettings.serializer(), settings.copy(sensors = sensors)))
+            check(tmp.renameTo(file)) { "rename failed" }
+            Log.i(TAG, "$key=$enabled applied and saved")
+        }.onFailure { Log.e(TAG, "could not save $key=$enabled", it) }.isSuccess
     }
 
     /** Applies the sensor part of a full settings object, as received by `POST /save`. */
