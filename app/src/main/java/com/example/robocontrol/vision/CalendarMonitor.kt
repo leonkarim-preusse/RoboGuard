@@ -94,8 +94,8 @@ object CalendarMonitor {
     }
 
     private const val PREFS = "robocontrol_calendar_monitor"
-    /** Renamed from "min_inliers" when the default changed to 30, so the old saved 20 does not stay. */
-    private const val KEY_MIN_INLIERS = "min_inliers_v2"
+    /** Renamed whenever the default changes (v2: 30, v3: 20), so an older saved value does not stay. */
+    private const val KEY_MIN_INLIERS = "min_inliers_v3"
 
     private const val KEY_EVERY_DETECTION = "announce_every_detection"
 
@@ -273,6 +273,12 @@ object CalendarMonitor {
                     val f = camera.latest.get()
                     val prev = taken.get()
                     // Each frame goes to exactly one worker, always the newest one available.
+                    // While another worker runs ORB, wait instead of doing a colour pass that would only be skipped (it cost
+                    // 60–100 ms each, ~8 per second, competing with ORB for the CPU).
+                    if (orbGate.availablePermits() == 0) {
+                        delay(10)
+                        continue
+                    }
                     val slot = nextStart.get()
                     val nowStart = SystemClock.elapsedRealtime()
                     if (f == null || f.timestampMs <= prev || nowStart < slot) {

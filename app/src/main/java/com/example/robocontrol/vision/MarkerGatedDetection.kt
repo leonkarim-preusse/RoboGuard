@@ -9,9 +9,11 @@ import kotlin.math.max
 object CalendarDetectionSettings {
     /**
      * 4 pyramid levels instead of 8: the pink frame tells the object's size, so the area is scaled to the reference's size first
-     * ([markerGatedPass]); USAC homography instead of classic RANSAC (both 2026-09-17, for speed).
+     * ([markerGatedPass]); USAC homography instead of classic RANSAC (both 2026-09-17, for speed). Owner then: 1000 features (was 3000)
+     * and FAST 15 (was 10); matching and keypoint detection were the remaining large costs (127–352 / 114–151 ms per pass). That halved
+     * the inliers while driving (median 37 → 17, detected checks 65 % → 31 %, logcat 23:11–23:21), so now 2000 features and FAST 10.
      */
-    val orb = OrbConfig(maxFeatures = 3000, fastThreshold = 10, gridDistribution = false, minGoodMatches = 15, minInliers = 15,
+    val orb = OrbConfig(maxFeatures = 2000, fastThreshold = 10, gridDistribution = false, minGoodMatches = 15, minInliers = 15,
         pyramidLevels = 4, homographyMethod = org.opencv.calib3d.Calib3d.USAC_DEFAULT, homographyMaxIters = 1000)
 
     /** Allowed range for the size-based scale of a pink area (tiny or huge frames are clamped). */
@@ -19,13 +21,14 @@ object CalendarDetectionSettings {
     const val MAX_REGION_SCALE = 4.0
     const val MIN_GOOD_MATCHES = 15
     /** Default inlier requirement; the monitor's current value is [CalendarMonitor.minInliers] (adjustable in the camera view). */
-    const val MIN_INLIERS = 30
+    const val MIN_INLIERS = 20
     const val MIN_INLIERS_LOWEST = 4
     /**
      * Confirming passes need this many inliers fewer than the first one. Owner first chose X − 10; changed to 30 / 25 after weak
-     * announcements with confirming passes of 12–18 inliers (logcat 2026-09-17 22:56), while real ones had 28–48.
+     * announcements with confirming passes of 12–18 inliers (logcat 2026-09-17 22:56), while real ones had 28–48. With 1000 features
+     * (fewer inliers overall) the owner set 20 / 12.
      */
-    const val CONFIRM_INLIER_DROP = 5
+    const val CONFIRM_INLIER_DROP = 8
     const val MIN_INLIERS_HIGHEST = 200
     const val MARKER_MARGIN_PX = 40
     val MARKER_COLOR = MarkerColor.PINK.copy(saturationMin = 50)
