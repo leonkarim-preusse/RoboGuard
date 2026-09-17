@@ -248,6 +248,19 @@ class MapNavigationActivity : ComponentActivity() {
         // Zoom/pan of the full-screen map; starts at the whole map again whenever a new map is loaded.
         val mapView = remember(rendered) { MapViewState() }
 
+        // Debug: camera stream of the calendar detection, shown in place of this screen (same activity, so driving continues).
+        var cameraView by rememberSaveable { mutableStateOf(false) }
+        if (cameraView) {
+            com.example.robocontrol.vision.CalendarCameraScreen(onBack = { cameraView = false }) {
+                Button(
+                    onClick = { probe.stop("STOP pressed") },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
+                    modifier = Modifier.fillMaxWidth().height(56.dp)
+                ) { Text("STOP", fontSize = 20.sp) }
+            }
+            return
+        }
+
         if (mapFullscreen) {
             // Full screen: a control bar ABOVE the map, so nothing covers the map itself.
             Column(Modifier.fillMaxSize().padding(8.dp)) {
@@ -452,6 +465,7 @@ class MapNavigationActivity : ComponentActivity() {
                     Text("Show debug")
                 }
                 if (showDebug) {
+                    Button(onClick = { cameraView = true }, modifier = Modifier.fillMaxWidth()) { Text("Show camera stream") }
                     OutlinedButton(onClick = { log.clearScreen() }, modifier = Modifier.fillMaxWidth()) { Text("Clear log") }
                 }
             }

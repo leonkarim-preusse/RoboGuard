@@ -2,6 +2,7 @@ package com.example.robocontrol.movement
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.SystemClock
 import com.ainirobot.coreservice.client.Definition
 import com.ainirobot.coreservice.client.RobotApi
 import com.ainirobot.coreservice.client.StatusListener
@@ -631,6 +632,12 @@ class MapNavigation(
     }
 
     private fun driveTo(target: MapPoint) {
+        if (SystemClock.elapsedRealtime() - lastPoseAt > POSE_TIMEOUT_MS) {
+            _navState.value = "refused: robot position unknown"
+            log.i(TAG, "DRIVE REFUSED: no current robot position, so private areas could not be enforced")
+            speakGerman(POSITION_UNKNOWN_SENTENCE)
+            return
+        }
         if (!_zonesLoaded.value) {
             _navState.value = "waiting for private areas to load"
             return log.i(TAG, "DRIVE REFUSED: private areas not loaded yet")
@@ -694,6 +701,17 @@ class MapNavigation(
                 log.i(TAG, "navigation call threw: $it")
                 _navState.value = "error: $it"
             }
+    }
+
+    /** Time of the last position read from RobotOS (elapsedRealtime); 0 = never. */
+    @Volatile
+    private var lastPoseAt = 0L
+
+    /** A drive is running but no position arrived for [POSE_TIMEOUT_MS]: stop it, say why. */
+    private fun stopForUnknownPosition() {
+        log.i(TAG, "NO ROBOT POSITION for more than $POSE_TIMEOUT_MS ms while driving: stopping (private areas cannot be checked)")
+        stop("robot position unknown")
+        speakGerman(POSITION_UNKNOWN_SENTENCE)
     }
 
     /** Stops any navigation immediately. */
@@ -765,6 +783,7 @@ class MapNavigation(
             runCatching { api.getCurrentPose() }.getOrNull()?.let { p ->
                 val pose = RobotPose(p.x.toDouble(), p.y.toDouble(), p.theta.toDouble(), PoseStatus.fromCode(p.status))
                 _pose.value = pose
+                lastPoseAt = SystemClock.elapsedRealtime()
                 // In-motion privacy enforcement: aborts a drive as soon as the robot is inside a private area.
                 synchronized(controller) { controller.onPose(pose) }
                 if (idleViolationZone != null && _privateZones.value.none { it.containsWithMargin(pose.point, guard.margin) }) {
@@ -777,6 +796,10 @@ class MapNavigation(
                 if (localized != _localized.value) log.i(TAG, "localized: $localized")
                 _localized.value = localized
                 _sdkActive.value = runCatching { api.isApiConnectedService() && api.isActive() }.getOrDefault(false)
+            }
+            // Fail closed: without a fresh position the in-motion privacy check cannot work, so the drive must stop.
+            if (controller.isNavigating && SystemClock.elapsedRealtime() - lastPoseAt > POSE_TIMEOUT_MS) {
+                stopForUnknownPosition()
             }
             tick++
             // Faster while driving: at 0.25 m/s the robot moves ~4 cm between checks instead of ~12 cm.
@@ -823,6 +846,12 @@ class MapNavigation(
         const val STATUS_EVERY_N_POLLS = 4
         const val MAP_MARGIN_CELLS = 20
         const val MAX_NAME_LENGTH = 40
+
+        /** Longest time without a robot position before a drive is stopped / refused (fail closed). */
+        const val POSE_TIMEOUT_MS = 1_000L
+
+        /** Spoken when a drive is stopped or refused because the robot's position cannot be read. */
+        const val POSITION_UNKNOWN_SENTENCE = "Ich kann meine Position gerade nicht bestimmen und halte deshalb an."
 
         /** Pose poll interval while a drive is running (privacy checks happen on each poll). */
         const val POLL_NAVIGATING_MS = 150L

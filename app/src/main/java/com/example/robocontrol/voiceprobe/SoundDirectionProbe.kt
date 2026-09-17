@@ -8,6 +8,7 @@ import androidx.core.content.ContextCompat
 import com.ainirobot.coreservice.client.ApiListener
 import com.ainirobot.coreservice.client.Definition
 import com.ainirobot.coreservice.client.RobotApi
+import com.example.robocontrol.system.RobotApiConnection
 import com.ainirobot.coreservice.client.StatusListener
 import com.ainirobot.coreservice.client.module.ModuleCallbackApi
 
@@ -114,7 +115,7 @@ class SoundDirectionProbe(private val context: Context, private val log: ProbeLo
             ContextCompat.RECEIVER_EXPORTED
         )
 
-        RobotApi.getInstance().connectServer(context, object : ApiListener {
+        RobotApiConnection.connect(context, object : ApiListener {
             override fun handleApiConnected() {
                 log.i(TAG, "RobotApi connected, setting module callback and status listener")
                 RobotApi.getInstance().setCallback(moduleCallback)
@@ -135,7 +136,7 @@ class SoundDirectionProbe(private val context: Context, private val log: ProbeLo
         started = false
         runCatching { context.unregisterReceiver(wakeReceiver) }
         runCatching { RobotApi.getInstance().unregisterStatusListener(speakerStatus) }
-        runCatching { RobotApi.getInstance().disconnectApi() }
+        // No disconnectApi(): the RobotApi connection is shared by the whole app (RobotApiConnection).
         log.i(TAG, "stopped")
     }
 

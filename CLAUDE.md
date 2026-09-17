@@ -66,6 +66,92 @@ app/src/main/java/com/example/
   then gray + downscale + ORB features via `addReference`. `orb.assetLoadReport` lists loaded names
   and rejected files with reasons (undecodable / too few features / duplicate name). **Construct
   off the main thread** (decoding + ORB per image). EXIF rotation is ignored (ORB is rotation-invariant).
+- **Object test app (owner request 2026-09-17, compiled + installed, not yet run):** owner added `assets/Calendar_prop.jpeg`
+  (6.3 MB) → reference "Calendar_prop". New `vision/CameraStream.kt`: continuous SurfaceShare stream (name "RoboGuardObjectTest",
+  ImageReader YUV_420_888 640×480, keeps only the latest `CameraFrame` = Y-plane GrayImage + BT.601 ARGB preview bitmap, abandon on
+  stop unless −14). `objectprobe/ObjectProbeActivity.kt`, launcher "RG Object Test": builds ORB off the main thread and logs the asset
+  report (keypoints per reference, rejected files); refuses if Sensors Camera=false; connects via RobotApiConnection; runs
+  `orb.evaluate` on the latest frame every ≥150 ms; preview with rotation 0/90/180/270; detected → green projected outline + yellow
+  axis-aligned box + "name (inliers)"; stats line (good/inliers/detection ms); logs DETECTED/lost transitions (numbers only).
+  README: "Testing object detection". Unverified: SurfaceShare frame orientation, preview FPS with the per-pixel YUV→RGB loop, ORB time on
+  the robot's CPU, whether the huge JPEG decodes with enough keypoints.
+  **First run (probe-20260917-134840.log):** ORB ready in 467 ms, Calendar_prop 943 keypoints (reference 640×480), stream code 0,
+  ~39 s of camera, NO detection logged; per-frame numbers were on screen only. Owner reported low preview FPS and no box. Causes found:
+  preview updated only inside the detection loop (FPS = detection rate) and per-pixel ByteBuffer.get YUV→RGB. Reference photo analysis
+  (PC): 4032×3024, EXIF orientation 6 (ORB ignores EXIF, fine due to rotation invariance), mean 135/255, std 33; calendar with spiral
+  binding + identical grid cells (repetitive → ratio test rejects), large white areas, table at the edges. Robot camera snapshot earlier:
+  mean brightness 48/255 (dark). **Changes (installed, not yet run):** CameraStream bulk plane copies + integer BT.601 + per-frame
+  mean brightness/contrast (Y std); separate preview loop (~30 Hz) and detection loop (every new frame); log summary every 2 s (camera
+  fps, preview fps, detection rate/avg ms, brightness, contrast, boost, frame keypoints, good/inliers); `OrbConfig.contrastBoost` (CLAHE
+  clip 2.0, 8×8, lazy after OpenCV load) + `ORB.config` mutable + `lastFrameKeypoints`; screen toggle "Contrast boost". Boxes held:
+  last successful detection per object stays drawn until the next successful detection or 1.5 s without one (owner: box must stay
+  until the next detection frame).
+  **Run probe-20260917-135314.log (VERIFIED):** camera ~29 fps, preview ~26 fps, detection ~18/s at 50–60 ms (FPS fix works); boost on
+  the whole run; brightness 36 at start then 160–214 (partly overexposed), contrast 42–72; frame keypoints 1000 (= maxFeatures) in EVERY
+  frame; Calendar_prop good matches 1–11 (< 15), inliers always 0 → never reached the homography. Brightness/contrast not the bottleneck;
+  matching is. Explained to the owner: ORB already filters like SIFT (FAST threshold ≈ contrast threshold, Harris ranking of the best
+  nfeatures ≈ edge rejection; OpenCV's `edgeThreshold` is only the border size), ratio test at matching comes from SIFT; the filters rank
+  strength, not relevance, so strong background corners take all 1000 and repetitive calendar corners die in the ratio test.
+  **Owner: no SIFT for now (discuss alternatives later), try the other fixes. Implemented (installed, not yet run):** OrbConfig
+  `fastThreshold` (default 20), `gridDistribution` (8×6 cells, over-detect ×4 with a second ORB, keep top response per cell, then
+  compute), `ORB.applySettings(config)` recreates detectors and re-extracts every reference from its stored 640 px image; screen controls
+  features 1000/3000/5000, FAST 20/10/5, grid off/on; "Use current frame as reference" → reference "Camera_capture" from the live gray
+  frame (memory only) + remove; 2 s summary logs the detector settings.
+  **Assets moved (owner):** reference images now in `robocontrol/assets/ORB_img/` (`ORB.ASSET_DIR = "ORB_img"`); Silero model stays in
+  the assets root (it was never loaded by ORB: only image extensions are). Owner replaced Calendar_prop.jpeg with a cropped version
+  (2611×3862) and added IMG_20260917_140748.jpg (3794×2328, upright, best reference). Run probe-20260917-141656.log: references 884 / 850
+  keypoints; detections (good 29–47, inliers 12–17) only at 25.7–31 s when frame contrast jumped 42 → 60–64 (calendar close); otherwise
+  good 7–21, inliers 0–8. features 5000: detection 60 → 110–200 ms. Diagnosis: 640×480 frames + 640 px references, ORB pyramid 8×1.2
+  reaches down to ~180 px → far calendar too small / too little detail.
+  **Camera facts (dumpsys media.camera on the robot, VERIFIED):** device 1 is held by com.ainirobot.maptool's process; RobotOS's session
+  stream is **1280×720, format 0x23 (YUV_420_888), dataspace 0x8c20000 = JFIF (full-range)**; aeMode ON, compensation 0, CONVERGED,
+  aeRegions whole 1920×1080 sensor, exposure ~6.4 ms, ISO 100, AecLux ~122, aeLockAvailable TRUE. SDK has no exposure control
+  (`RobotApi.getVisionResolution` / `STATUS_EXPOSURE` exist, unexplored). SurfaceShare scales into the requested surface size, so the
+  old 640×480 was downscaled AND squeezed 16:9→4:3. **Changes (installed, not yet run):** CameraStream default 1280×720; preview uses
+  full-range BT.601 (TV-range maths had brightened the preview ~15 %; detection always used raw Y); per-frame `clippedShare` (Y ≥ 250)
+  shown and logged as "overexposed %".
+  **Wall test (owner goal: user study with the calendar hanging on a wall, robot at a distance). probe-20260917-142219.log + one screencap
+  of the robot screen (viewed, then deleted, VERIFIED):** 1280×720 works: camera ~13–15 fps, preview ~13–15, detection ~110 ms at 1000
+  features; brightness 185, contrast 38, only 3 % overexposed (exposure is fine). Calendar on a whiteboard ≈ 310×172 px of 1280×720.
+  Good matches 4–14, inliers 0 throughout. The screencap shows: strong **wide-angle / fisheye barrel distortion**; the whiteboard is full of
+  high-contrast drawings, text, magnets, a poster and a photo that take the 1000 keypoints; calendar digits/lines only a few px. Causes
+  given to the owner: too few pixels on the object, keypoint budget used by background, lens distortion breaks the planar homography
+  (RANSAC 5 px), low-texture white calendar. Options proposed (not built): grid + more features + lower FAST, detection on upscaled
+  overlapping tiles at ~1 Hz, reference captured by the robot camera at study distance, lens calibration + undistortion, temporal
+  consistency to allow lower inlier thresholds, and study design (larger / more textured calendar or poster).
+  **Owner: "lets try those changes" + screenshot reference (installed, not yet run):** new screencap of the robot screen, calendar region
+  cropped (screen px 1380,530–1570,646 = the downscaled preview, ~0.58× frame scale) → `assets/ORB_img/Calendar_robotview.png` 190×116
+  (only the calendar; full screenshots deleted). Test app start settings now features 3000, FAST 10, grid on (ORB built with them).
+  "Select region as reference": forces rotation 0°, drag a box on the preview (mapped to frame pixels), "Use region W×H px" crops the
+  full-resolution gray frame → reference "Camera_capture", saved as grayscale PNG to app-private `files/robocontrol/orb_refs/` and
+  reloaded on the next start; "Delete camera reference" removes it and the file.
+  **B + E implemented (owner: "implement the rest", then "Dont do D" — a started LensCalibration.kt with checkerboard calibration +
+  undistortion was deleted again; installed, not yet run):** `ORB.evaluateTiles(frame, cols 2, rows 2, overlap 0.25, upscale 2.0)` —
+  overlapping tiles scaled up and evaluated separately, corners mapped back, best result per reference (detected, then inliers).
+  Test app: tiles On/Off (every 1 s, merged with the full-frame result per object, logs "tiles found …" when only tiles detect);
+  thresholds 15/12, 10/8, 8/6 (good/inliers, set via ORB.config per pass); consistency On/Off = box only when detected in ≥ 2 of the
+  last 3 passes (unconfirmed objects lose their box at once); DETECTED/lost log lines follow the confirmed state; 2 s summary logs
+  thresholds, consistency and tile passes/avg ms.
+  Owner asked whether all references must match: no, `evaluateGray` matches each reference independently and each gets its own
+  result, history and box; boxes were just all green/yellow and overlapped. Now one colour per reference (6-colour palette by name hash),
+  thin outline in that colour, box + label in that colour, labels offset per box, colour legend in the references list.
+  **Later runs (probe-20260917-143321/144309/145024, VERIFIED):** Calendar_robotview (screenshot crop) only 69 keypoints (165×100 after
+  cropping), good 0 → useless. Owner added visual features to the physical calendar and replaced the references (assets/ORB_img now
+  "cal_prop_outlines 1.jpg" / "cal_prop_outlines 2.jpg"; older ones moved into subfolders "outdated" and "cal _prop_blueoutdated", which
+  ORB ignores but which still ship in the APK). Reference keypoints ~2100–2300 at 3000 features (vs ~850–1500 before). Full frame at
+  5000 features: good 27–74, inliers 0–15 (~450–600 ms). **Tiles on: DETECTED at the wall distance** (tiles good 85–133, inliers 13–24 vs
+  full frame 34–61 / 0–14); tile pass 1.4–1.8 s. Open: results with inliers well above the threshold (11–44) still "not detected" →
+  probably `isPlausibleOutline` (convex/area) under fisheye distortion. Box semantics (final, owner: boxes stayed while the lens was covered):
+  boxes = the confirmed detections of the LATEST pass, drawn until the next pass (which may remove them); the latest tile result is
+  merged into every full-frame pass until the next tile pass (≤ 1 s old), so tile detections do not flicker.
+  **Outline rejection confirmed (probe-20260917-145922.log, VERIFIED):** thresholds 10/8, cal_prop_outlines 2 had good 41–83 and
+  inliers 10–24 in almost every 2 s summary but was DETECTED only once; "lost … (good 83, inliers 20)" → `isPlausibleOutline` rejected
+  (reference corners projected through the homography fold / degenerate under clustered inliers + wide-angle distortion). With tiles on
+  only ~0.8 detection passes/s (full ~250 ms + tile pass ~1 s). **Fix (installed, not yet run):** `outlineProblem` returns "non-convex" /
+  "area"; if inliers ≥ minInliers but the outline is implausible, the result is detected with corners = axis-aligned bounding box of the
+  RANSAC inlier points (`ObjectMatch.outlineSource` = "inliers", else "outline"; `outlineRejected` = reason). Test app stats show
+  "(inlier box)" and "[outline …]". `Notes_thesis.md` created at the repo root (owner request): concise bullet summary of all
+  experiments (SDK control, TTS, sensors, navigation/private areas, conversation detection, ORB).
 - `GrayImage.kt`: `GrayImage(width, height, pixels)` + `ImagePoint`, with no OpenCV/Android types in the API.
 - Tuning order on the robot: log `evaluate()` for frames with and without the object, then set
   `OrbConfig.minInliers` between the two.
@@ -159,6 +245,118 @@ distribution or two fits better:
 (testable without a mic, like `FakeRobotBridge`). Change detection is the primary implementation.
 Optionally, an embedding implementation behind the same interface for comparison in the
 evaluation chapter only.
+
+**IMPLEMENTED 2026-09-17 (owner: change detection first, clustering possibly later; compiled + installed, not yet run on the robot):**
+`robocontrol/conversation/`: `Mfcc.kt` (plain Kotlin: pre-emphasis 0.97, 25 ms Hamming, FFT 512, 26 mel bands 100–7600 Hz,
+log, DCT → c1…c12, c0 dropped so loudness is not a change), `Gaussian.kt` (full covariance + 1e-3 ridge, Cholesky, KL2,
+ΔBIC = ½(N log|Σ| − N₁ log|Σ₁| − N₂ log|Σ₂|) − λ·½(d + ½d(d+1))·log N), `ChangeDetector.kt` (pure; speech gate = level >
+max(noise floor + 12 dB, −55 dBFS), floor creeps up 2 dB/s; windows of 150 speech frames = 1.5 s; every 10 frames KL2 of the
+two latest adjacent windows; candidate = local KL2 max ≥ 1.3 × running mean and ≥ 100 frames after the last change; accepted if
+ΔBIC > 0; ring buffer of 2W+2step frames, zeroed by clear()), `PcmSource.kt` (`AndroidMicSource` AudioRecord CAMCORDER 16 kHz
+mono; `SyntheticVoicesSource`: pulse train + 3 formant resonators, 4 syllables/s, voice A 115 Hz/formants ×1.0, voice B 215 Hz/
+×1.2, `expectedChangesMs` truth), `ConversationDetector.kt` (interface + `SpeakerChangeDetector` thread: 10 ms hop, publishes
+`ConversationSnapshot` every 100 ms; states NO_SPEECH / LISTENING (< 3 s speech) / ONE_SPEAKER / MULTIPLE_SPEAKERS = ≥ 2 accepted
+changes in 20 s; buffers zeroed on stop). Config in `ChangeDetectorConfig`.
+**Offline JVM check (kotlinc from the Android Studio plugin, synthetic voices, VERIFIED on the PC):** one voice 30 s (A and B):
+0 accepted (10–14 candidates all rejected by ΔBIC); A/B every 4 s: 7/7 changes within ±1 s, 0 false, KL2 peaks 190–280 vs one-voice
+mean ~3–4, ΔBIC 760–1090; A/B with 0.7 s pauses: 5/7 within ±1 s plus 2 changes found ~1.2–1.4 s early. Synthetic output needed
+gain 250 (first version peaked at −54 dBFS and never passed the speech gate). Real voices are NOT tested yet.
+**Test app:** `robocontrol/conversationprobe/SpeakerProbe.kt` + `SpeakerProbeActivity.kt`, launcher icon "RG Speaker Test"
+(taskAffinity com.example.roboguard.speakerprobe). Mic start refused if Sensors says Microphone=false; asks RECORD_AUDIO;
+"Synthetic self-test (fast)" (4 scenes, PASS/FAIL), "Synthetic demo (40 s, live)", ✔/✘ verdicts for 5 scenarios; big state banner,
+numbers, KL2 graph with threshold; ProbeLog gets numbers only. onStop stops listening. README: "Testing speaker change detection".
+
+**First robot run (probe-20260917-111600.log, VERIFIED):** one speaker from a video → MULTIPLE_SPEAKERS after 5 s of speech
+(accepted "changes" with KL2 25–46, ΔBIC 231–392 at λ=1, penalty ≈257); "silence" test still MULTIPLE and 20 s of "speech"
+counted overall: the speech gate let background noise in (floor tracker + 12 dB margin), and MULTIPLE had priority over
+NO_SPEECH for the 20 s decision window, so silence showed late. **Changes (installed, not yet re-run):** noise floor = 10th
+percentile of the last 5 s of frame levels (updated every 25 frames), margin 15 dB, speech also needs ≥ 6 of the last 20 frames
+loud; NO_SPEECH wins over MULTIPLE (hold 1.5 s); λ default 2.0; KL2 running mean = plain average for the first 50 evaluations
+(the old EMA started at the first value and blocked all candidates); full reset of buffered speech + counted changes after
+`resetAfterSilenceMs` = 30 s of silence (owner asked 30 s). Candidates log BIC gain and penalty ("would need λ < x"). Screen:
+settings λ 1/1.5/2/3, window 1.0/1.5/2.5 s, speech margin 10/15/20 dB (restart listening), floor shown.
+Offline gate comparison (synthetic): margin 12 no run filter 7/7 + 6/7 (1 false); margin 15 run≥6: one voice 0 candidates,
+A/B 6/7, A/B with pauses 6/7, 0 false → chosen. Run≥12 halved speech frames and broke detection.
+
+**Speech gate: Silero VAD (owner decision 2026-09-17, after a privacy comparison of self-built voicing check / WebRTC-VAD /
+Silero; compiled + installed, not yet run on the robot).** Problem: the loudness gate counted loud noise (claps, doors, music) as
+speech. Library `com.github.gkonovalov.android-vad:silero:2.0.10` (JitPack) pulls kotlin-stdlib 2.2.0 while the app builds with
+Kotlin 2.1.0, so NOT used; instead its bundled model `silero_vad.onnx` (Silero v4, MIT; sha256 a35ebf52…5af28) + LICENSE were copied
+to `robocontrol/assets/` and run with `com.microsoft.onnxruntime:onnxruntime-android:1.22.0` via own wrapper
+`conversation/SileroVad.kt`. Model I/O VERIFIED on the PC with desktop onnxruntime 1.22.0: inputs `input` float[batch, seq],
+`sr` int64 (scalar; shape [1] also accepted), `h`/`c` float[2, batch, 64]; outputs `output` [batch, 1], `hn`, `cn`. PC check:
+silence p≈0.02, Gaussian noise 0.3 p≈0.02–0.03, loud clicks p≈0.04–0.06 (no real speech sample tested). Wrapper bytecode showed
+android-vad's thresholds: 0.5 / 0.8 / 0.95 by mode. Integration: `ChangeDetectorConfig.speechGate` = SILERO (default) | LOUDNESS,
+`sileroThreshold` 0.5 with hysteresis 0.15, plus level > speechMinDb − 10; 512-sample chunks (32 ms) filled from the 10 ms hops,
+latest probability applies to following frames; state reset on the 30 s conversation reset; tensors/buffers zeroed, session
+closed on stop; load failure → error text + loudness fallback. Synthetic self-test and demo force LOUDNESS (the buzz is not speech).
+Screen: gate Silero/Loudness, Silero threshold 0.3/0.5/0.7, "Silero p=…" in the numbers line. Privacy notes given to the owner:
+all on-device; Silero least explainable, unknown training data; better recall protects against missed conversations.
+
+**Overlap / slow detection (owner, 2026-09-17, probe-20260917-114115.log):** sequence speaker 1 → both at once → speaker 2 took
+until 20.3 s for MULTIPLE (window 1.0 s, λ 2.0): accepted changes needed ratios 2.04 and 2.19, several near misses 1.69–1.96; one
+voice (video) earlier peaked at 1.42–1.65. Causes explained: overlap = gradual mixture (two smaller KL2 jumps), 1 s min gap
+suppresses the second, COUNT rule needs 2 changes in 20 s. Owner asked whether evidence accumulation is standard: answered that
+DISTBIC and CUSUM (Page 1954; Basseville & Nikiforov 1993) are standard, applying CUSUM to change candidates for one-vs-many is
+our own heuristic; standard speaker counting = clustering or neural (e.g. CountNet, Stöter et al. 2018) (citations from memory,
+unverified). **Implemented (compiled + installed, not yet run):** `DecisionRule` COUNT | EVIDENCE (default); both computed and
+logged on every flip; evidence += max(0, gain/penalty − r₀) per candidate (accepted or not), halves every `evidenceHalfLifeMs`
+(10 s), ≥ `evidenceThreshold` (0.5) → MULTIPLE held for decisionWindowMs (20 s); r₀ default 1.65 (depends on window length:
+gain ∝ N, penalty ∝ log N). Screen: rule, r₀ 1.5/1.65/1.8/2.0, threshold 0.3/0.5/0.8, half-life 5/10/20 s, evidence bar.
+Worked example on the 114115 log: evidence would cross 0.5 at 11.0 s instead of 20.3 s.
+
+**Conversation monitor in RoboGuard (owner request 2026-09-17: "scheint okay mit den aktuellen Werten"; compiled, install pending):**
+`conversation/ConversationMonitor.kt` (object), started in `RobotServerService.onCreate`, stopped in onDestroy. Listens (default
+config: Silero gate, evidence rule, window 1.5 s — NOTE the owner's "okay" run used the probe screen's settings, not necessarily
+these defaults) only while Sensors says Microphone ≠ false, RECORD_AUDIO granted, not paused, and no speaker test screen records
+(`setProbeUsingMicrophone`, called by SpeakerProbe). MULTIPLE_SPEAKERS for ≥ 2 s (owner) → `ConversationPromptActivity` (dialog, German)
++ German TTS (owner's wording "Bitte entschuldigt die Störung, falls ihr möchtet dass ich den Raum verlasse oder mein Mikrofon
+stummschalte, lasst es mich bitte wissen.") after `system/SdkControl.awaitControl` (isActive poll + 1 s settle). Buttons: "Raum verlassen
+(Navigation und Karte)" → MapNavigationActivity; "Mikrofon ausschalten" → new `Sensors.setSensor("Microphone", false)` (applies via
+update + writes privacy_settings.json atomically if it exists; phone's next save overrides; also triggers SensorSwitches' SDK ASR off,
+which may be one-way until reboot); "Gesprächserkennung N Min. pausieren" (default 30, "Andere Dauer": 5/15/30/60/120 or 1–1440 typed;
+pause in memory only); "Schließen". No re-prompt in the same conversation (until detector's 30 s silence reset, detected via
+speechSeconds == 0) and not within 2 min.
+First real use: prompt appeared almost immediately with the defaults (r₀ 1.65, threshold 0.5, half-life 10 s — measured with 1.0 s
+windows). The owner's successful probe run (probe-20260917-115530.log) used window 1.5 s, λ 2.0, Silero 0.5, EVIDENCE r₀ 1.8,
+threshold 0.8, half-life 5 s → these are now the `ChangeDetectorConfig` defaults (used by the monitor and as probe start values).
+Prompt redesigned (owner): English, no spoken sentence on screen (title "Conversation detected"), small buttons (44 dp, 15 sp) in two
+rows: Leave room | Mute mic, Pause N min | Other time | Close; time page: 5/15/30/60/120 + Minutes field with Set / Back.
+Owner follow-up: "Mute mic" also says (German, owner's wording) "Das Mikrofon kann über die App wieder eingeschaltet werden"
+(Mute is permanent until the phone app saves Microphone on; Pause does not touch the mic). Pause button label now
+"Don't ask again for N min", now in its own full-width row (owner).
+Misdetection 18:27:42 on the robot WITH the tested defaults active (process 13352 started 18:26:59 after the install; the monitor
+logged nothing but the prompt, so not traceable). Now the monitor logs its config at start and every candidate to Logcat (tag
+ConversationMonitor: time, r, evidence added, ΔBIC). Unverified hypothesis told to the owner: the robot's own voice (TTS, e.g.
+the /save confirmation) is picked up by the mic and counts as a second speaker; possible fix = ignore audio while
+AudioManager.activePlaybackConfigurations is non-empty (plus ~0.5 s).
+**Traced misdetection 18:29:53 (monitor candidate log, VERIFIED numbers):** candidates 17–27.8 s r = 1.75–1.95 (each +0.06–0.15
+evidence, ~every 2 s, built up to ~0.3), 28.3 s r 2.26 (+0.46 → 0.74), 30.4 s crossed 0.8; 28.3/31.5/33.2/34.2 s r 2.09–2.37 were
+even ΔBIC-accepted, so the COUNT rule would also have fired (31.5 s, ~1 s later). Owner asked what was audible from ~28 s (unanswered).
+Recalculation: r₀ 2.0 would have stayed at 0.66 (no prompt); λ 2.5 would reject all four accepted ones.
+**Candidate grouping (owner: "yes lets do that"):** candidates came every 0.2–0.3 s around one boundary (evaluation every 10 speech
+frames, spacing only after ACCEPTED changes), counting overlapping windows several times. First version (delay each candidate until its
+group is complete) delayed up to 2 windows of speech and lost end-of-scene changes offline (5/7, 4/7) → replaced by immediate grouping:
+candidates whose boundary is within one window (150 speech frames) of the group's first boundary form a group; `ChangeCandidate` now
+carries `groupBestRatioBefore` / `groupAlreadyAccepted`, `ratio`, `evidenceAdded(r0)` = only the increase over the group's best so far,
+`countsAsChange` = first accepted of its group. Evidence and COUNT rules, monitor log, probe log and self-test use them. Offline synthetic:
+one voice 0 changes; A/B 6/7; A/B with pauses 5/7 (was 6/7; pauses give ~1.6 s speech per turn, close to the group span). Installed,
+not yet run on the robot. Approximate re-run of the traced case with grouping: crossing at ~34.2 s instead of 30.4 s (still triggers).
+**Latency analysis (owner: "delay seems pretty intense", monitor log 18:38 and 18:43, VERIFIED numbers):** first r ≥ 2.0 change to robot
+speaking ≈ 9–10 s: ~5.7 s until evidence crossed 0.8 (grouping over a whole window merged REAL consecutive changes 1–2 s apart: +3.6 s at
+18:43, +1.5 s at 18:38 vs no grouping), 2 s hold, ~1–1.5 s SDK control + settle. One voice r ≈ 1.7–1.98, real changes mostly 2.0–2.3 (some
+2.6–3.4) → small evidence steps. Ideas given: group span 0.5 s, shorter hold, settle 0.8 s, two-stage/shorter windows, better features
+(pitch/F0 in memory only, delta MFCC), adaptive r₀; single strong change and half-life 10 s would not have helped in these two logs.
+**Owner chose 1 + 2:** `ChangeDetectorConfig.groupFrames` = 50 (0.5 s of speech) instead of windowFrames; `MULTIPLE_FOR_MS` 2 s → 1 s.
+Offline synthetic: one voice 0, A/B 6/7, A/B with pauses 6/7 (back from 5/7). Estimated from the logs: crossing as early as without grouping
+(422.3 s / 82.1 s). Installed 13:42 (after the install fix below).
+**Stuck install (2026-09-17, VERIFIED):** a 270 MB WiFi install hung for 30 min (robot pingable, adb `device`, but the TCP byte counter to
+the robot stopped changing); an earlier attempt was killed by my own `pkill -f "adb … install"` because the pattern matched the bash command
+running it (never pkill by a pattern contained in your own command line; kill by PID). `dumpsys package` listed 13 install sessions,
+but ALL under "Historical install sessions" (interrupted ones: mDestroyed=true, "Session was abandoned"); "Active install sessions" was
+empty, so `pm install-abandon` gives "Caller has no access" and nothing needs cleaning. Fix: kill the adb install by PID, adb kill-server /
+start-server / connect. **APK size:** `defaultConfig { ndk { abiFilters += "arm64-v8a" } }` in app/build.gradle.kts (owner approved) →
+APK 270 MB → 73 MB (OpenCV + ONNX Runtime had 4 ABIs); install now takes ~6 s.
 
 **Audio source:** the jar has no PCM API, so use plain Android `AudioRecord` + `RECORD_AUDIO`.
 This is portable across robots, the same argument the outline makes for eSpeak over OrionStar TTS.
@@ -576,7 +774,27 @@ these beans have not been inspected yet.
    connection), poll `RobotApi.isActive()` (live binder call to IModuleRegistry.isActive) every 100 ms up to 3 s; if control had to
    be regained, wait 1 s more; then `applySensorSettings` + speakGerman. Timeout → logged "No SDK control after 3000 ms", still
    applies (Android parts work). Error path: popup "Privacy Settings could not be saved" + `speakWhenInControl(error sentence)`.
-   Also seen in the jar, unexplored: `RobotApi.delegateControl(String): Boolean`. Previous note, kept for history: In `/save`,
+   Also seen in the jar, unexplored: `RobotApi.delegateControl(String): Boolean`.
+   **BUG after reboot: private areas ignored while driving (owner report 2026-09-17; logcat + screenshot VERIFIED, cause partly inferred):**
+   RoboGuard auto-started (default app), CoreService `mActiveAppModule : com.example.roboguard`, Navigation screen loaded map +
+   2 areas ("Privat: Bereich 1", "Schreibtisch"), drives Home/Empfangsstelle/Home all Started → ARRIVED, but every drive logged
+   "warning: no SDK control" and the map showed NO robot marker (screencap). So in MapNavigation.pollLoop `getCurrentPose()` /
+   `isRobotEstimate()` / `isActive()` never succeeded (no "localized:" line, 0 `ModuleServer[com.example.roboguard] getRobotInfo
+   reqType:112` lines) → `controller.onPose` never ran → no in-motion check; the pre-move check only tests targets (outside the
+   areas), so the drives went through. `startNavigation` still worked (different binder path). These three calls all go through
+   `RobotApi.mModuleRegistry` (set in the ServiceConnection's onServiceConnected, set to NULL in onServiceDisconnected).
+   Inferred cause: TWO `connectServer` calls in the process (DefaultAppSetting from MainActivity.onCreate 16:43:20, then
+   OrionStarBridge.connect 16:43:37; bridge "connected" only at ~16:43:51), so an old connection's disconnect likely nulled
+   mModuleRegistry. Also a design flaw: no pose = silently no enforcement (fail OPEN). The robot itself WAS localized (RobotOS
+   refuses navigation otherwise with ERROR_NOT_ESTIMATE); only the app's queries failed.
+   **Fix (owner: "Sounds good", compiled + installed, not yet run):** (1) `robocontrol/system/RobotApiConnection.kt`: the ONE
+   `connectServer` per process (IDLE/CONNECTING/CONNECTED, listener fan-out, adopts an existing connection via
+   isApiConnectedService, never disconnects). OrionStarBridge (listener + tracked pose StatusListener, disconnect() no longer calls
+   `RobotApi.disconnectApi()`), SensorSwitches, DefaultAppSetting, SoundDirectionProbe and TtsProbe now go through it (probes no longer
+   disconnectApi RobotApi). (2) MapNavigation fail closed: `lastPoseAt` set on every successful getCurrentPose; while driving, no
+   position for > `POSE_TIMEOUT_MS` = 1000 → `stop("robot position unknown")` + German "Ich kann meine Position gerade nicht
+   bestimmen und halte deshalb an." (Claude's wording, not the owner's); driveTo refuses to start without a fresh position (same
+   sentence). MovementProbe has no such check. Previous note, kept for history: In `/save`,
    store the parsed settings (`val settings = jsonConfig.decodeFromString<AppSettings>(payload)`) and after
    `writeText(payload)` call `Sensors.get(applicationContext).update(settings)`, plus
    `import com.example.robocontrol.sensorcontrol.Sensors`. Until then nothing calls `update()` automatically.
@@ -911,3 +1129,141 @@ these beans have not been inspected yet.
   `setLocation` names a single *point*. Areas are ours.
 - **Private zone** — a zone the robot may not enter. Distinct from sensor toggles:
   "come in but camera off" and "do not come in" are different instructions.
+
+## ORB pink marker gating (2026-09-17, compiled + installed, not yet run)
+
+- Inlier-bounding-box fallback (accept inliers ≥ minInliers with a folded outline, box = inliers' bounds) gave MANY false
+  detections without the calendar (owner) → removed from `ORB.match`; such results are now `detected=false` with `outlineRejected`.
+- Owner added a pink border line around the calendar; new refs `assets/ORB_img/cal_prop_far_outline 1.jpg` (portrait photo) and
+  `… 2.jpg` (landscape), old `cal_prop_outlines` refs moved to subfolders (ignored).
+- Measured in a robot screenshot at wall distance: pink border hue ~300–320°, S ~60–105/255, V 160–250; whiteboard red frame
+  355–20°, S high; the test app's own magenta overlay is hue 291 (only in screenshots, never in camera frames).
+- `vision/ColorMarker.kt`: `MarkerColor.PINK` (OpenCV H 145–175, S ≥ 50, V ≥ 100), `ColorMarker.find(bitmap)`: HSV inRange →
+  drop 8-connected specks < 12 px → dilate by margin (default 40 px) → groups with ≥ 150 pink px → `MarkerRegion(search, bounds, pinkPixels)`.
+  `ImageRegion` lives there too.
+- `ORB.evaluateRegion(frame, region, targetSide=800, maxUpscale=3.0)`; `evaluateTiles` now shares `evaluateCrop`.
+- Object test: "Only search near pink marker" On → per frame: find pink (top 3 regions) → ORB per region only (no full frame, no tiles);
+  accept a plausible outline with its centre in the search area, else good ≥ minGood and inliers ≥ minInl inside it → box = pink bounds
+  (`outlineSource="marker"`, stats "(pink box)"). Margin 20/40/80, min saturation 35/50/80; white/pink rectangles on the preview;
+  log line prefixed "pink marker ON … pink x %, regions n [W×H/px] · colour ms · region keypoints".
+- **Run probe-20260917-152038.log (VERIFIED): pink marker was OFF** (tiles on, 10/8). cal_prop_far_outline 2: tiles good 95–165,
+  inliers 19–68, almost always `[outline non-convex]` → no box (owner: "a lot of inliers but no bounding box"), since the fallback is
+  removed; only 2 short DETECTED. far_outline 1: good 23–98, inliers 6–42, also non-convex. References 2712/2778 keypoints at 5000 features.
+- Drawing added (installed, not yet run): `ObjectMatch.inlierPoints` (frame coords, mapped back from tiles/regions),
+  `ORB.lastKeypointPositions`, `ColorMarker.find(bitmap, withOverlay)` → green (0xFF00E676) bitmap of the kept pink pixels. Test screen
+  switch "Draw keypoints, inliers and pink mask (green)" (default On): all keypoints small light-blue dots, inliers per reference as big
+  dots in its box colour (detected or not), green pink mask only while pink marker is On. Non-pink mode shows full-frame keypoints only.
+- Preview toggles (owner): Keypoints, Inliers, Boxes, Outlines, Pink (green), Pink bounds, Search area (solid orange 0xFFFF9100, label
+  "search N"), Darken outside (50 % black outside the search areas in pink mode). Box palette orange replaced by blue 0xFF448AFF.
+- **Pink detection "meh" (owner). Analysis of a robot screencap (VERIFIED numbers; screencap includes app overlays):** no log so far had
+  pink mode on. Camera renders white bluish (224,231,248); the border line is ~1 px in the 0.58× preview (~2 px in the frame), mixed
+  pixels like (243,221,254) have hue ~280° and S ~13 % → outside H ≥ 290°; strong pixels (187,113,176) pass. HSV rule found 430 px on the
+  calendar and 126 elsewhere (inner edge of the red frame, skin edge); an R−G ≥ 20 & B−G ≥ 5 rule found more on the calendar but 258 elsewhere.
+- **ColorMarker v2 (installed, not yet run):** grey-world white balance on pixels with gray ≥ 150 (`whiteBalance`), hue 140–175
+  (280–350°), MORPH_CLOSE 5×5 before speck removal, per-region `sideCoverage` (top/right/bottom/left share of positions with pink in a
+  band of 12 % of the shorter side, ≥ 3 px) and `sides` (≥ 0.4); `requireFrame` (default on) keeps only regions with ≥ 3 sides, others
+  go to `MarkerResult.rejected`. Overlay: green = accepted pink, yellow = rejected pink (specks, small, no frame). Test screen toggles
+  "white balance" and "must form a frame"; log per region W×H/px/sides and rejected regions with side coverages in %.
+
+- Custom inlier requirement (owner, installed, not yet run): under the threshold presets "Inliers required: N" with −10/−1/+1/+10
+  (range 4–200, changes only the inlier part of `thresholds`; good-match minimum stays from the preset; logged "inliers required N").
+- Test screen defaults (owner): features 3000 (already), tiles On, pink marker search On (tiles are skipped while pink mode is on).
+- **Calendar announcement (owner request 2026-09-17, compiled + installed, not yet run):** settings taken from run probe-20260917-153521
+  (end state: features 3000, FAST 10, grid OFF, thresholds 15/15, pink on, margin 40, saturation 50, white balance on, frame on).
+  `vision/MarkerGatedDetection.kt`: `CalendarDetectionSettings` (those values + 2-of-3 consistency, max 3 regions) and the shared
+  `markerGatedPass(orb, marker, frame, minGood, minInliers)` (+ `isBetter`), now also used by the object test (its defaults come from
+  the settings; consistency default On). `vision/CalendarMonitor.kt` (object): started/stopped in RobotServerService next to
+  ConversationMonitor (RoboGuard change requested by the owner: "start that when RoboGuard starts"). Watches while Sensors Camera ≠
+  false and no test screen streams the camera (`setProbeUsingCamera`, set by ObjectProbeActivity start/stop); own CameraStream +
+  ORB (assets only, no saved camera captures); any reference detected in ≥ 2 of the last 3 passes → Log + German TTS "Kalender
+  entdeckt" (owner wrote "Kalendar"; spelled correctly for the German voice), cooldown 15 s from the announcement (kept across stream
+  restarts); history cleared after announcing. Speech only with SDK control (awaitControl 500 ms, else skipped + logged); never brings a
+  screen to the front. Stream errors / no frame for 10 s → restart after 5 s. Logcat tag CalendarMonitor. Not coordinated with
+  SensorProbe's CameraSnapshot (would get −14 while the monitor streams). Log in the probe showed DETECTED/lost flapping every ~0.1 s at
+  wall distance (passes without a pink region), which the 2-of-3 rule smooths.
+- **Camera debug view (owner request, installed, not yet run):** Navigation and Map → Show debug → "Show camera stream" replaces the
+  navigation screen (same activity, so driving continues; `rememberSaveable cameraView`) with `vision/CalendarCameraView.kt`
+  `CalendarCameraScreen(onBack, topControls)`: STOP + Back, monitor state, settings, per-pass numbers (pass ms, pink share, regions,
+  rejected side coverages, good/inliers per reference), last-passes count, announcements, cooldown, layer toggles; live image ~20 fps from
+  `CalendarMonitor.latestFrame()` with overlays from `CalendarMonitor.debug` (published only while a viewer is registered via
+  add/removeDebugViewer; pink overlay built only then). Uses the monitor's own stream (no second SurfaceShare consumer). Owner can mirror it
+  to the laptop with scrcpy (not installed on the PC yet; `sudo apt install scrcpy`, `scrcpy -s 10.131.33.35:5555`).
+- **OPEN (owner, 2026-09-17): "Navigation stops driving if I leave it — we will have to adjust that eventually."**
+  `MapNavigationActivity.onStop` calls `probe.stop("screen left")` by design. Revisit (popups such as ConversationPromptActivity or the
+  privacy override dialog, other RoboGuard screens, driving from background logic).
+
+- **Detection flicker without movement (owner, probe-20260917-153521, VERIFIED from the log):** DETECTED (good 100–177, inliers 20–64)
+  then ~0.1 s later "lost (good 0, inliers 0)", repeatedly. Cause: the pink frame gate, not ORB. The calendar's region passed with exactly
+  "3 sides" (= minSides) in almost every summary, occasionally 4; in the lost passes it dropped to 2 sides → rejected → no search area → ORB
+  not run (0/0, fast ~0.1 s pass). Calendar close → 22–29 % overexposed, bleaching parts of the pink line; tight bounds stretched by stray
+  pixels. A persistent other pink blob ~100×230 px (always "no frame") is in the room. **Fix (installed, not yet run):** ColorMarker
+  `minSideCoverage` 0.4 → 0.3; `boundsTrim` 2 % of pink pixels per axis end for `bounds`; `holdMs` 1500: a region with minSides−1 sides
+  whose bounds overlap (intersection / smaller area ≥ 0.4) a frame accepted without hold in the last 1.5 s is accepted (`MarkerRegion.held`;
+  held accepts do not refresh the memory). Object test "lost" lines now append the pink stats of that pass; region text shows "held".
+- Owner (installed, not yet run): consistency now **3 of the last 4 passes** (`CalendarDetectionSettings.CONSISTENCY_NEEDED/WINDOW`, used by
+  the monitor and the object test's consistency switch). Calendar camera view has "Inliers required: N" −10/−1/+1/+10 →
+  `CalendarMonitor.setMinInliers` (4–200, SharedPreferences `robocontrol_calendar_monitor`/`min_inliers`, applies from the next pass,
+  logged "inliers required N"); the object test keeps its own separate stepper.
+- **Owner 2026-09-17:** consistency now **2 of the last 2 passes** (two consecutive detections; was 3/4 → 2/3 → 2/2). Owner thickened the
+  pink outline on the calendar. **Speed-ups (installed, not yet measured):** (1) `ColorMarker.analysisScale` 0.5: colour analysis on the
+  frame downscaled with INTER_AREA (640×360); pixel settings stay in full-frame units and are converted (area ×0.25, margin ×0.5, closing
+  3×3), regions/pixel counts reported in full-frame units; hold memory in analysis units. Argument: YUV 4:2:0 has one chroma sample per
+  2×2 px, so no colour information is lost, only luma is averaged. Previous colour step 50–140 ms at full res. (2) `CameraFrame.preview` is
+  now lazy (`by lazy`): the camera thread only copies planes + Y statistics; YUV→ARGB runs when a frame is actually checked or shown
+  (previously every frame at ~15 fps on the camera thread).
+- **Monitor v3 (owner: "still fails bad during movement", installed, not yet run):** (1) `ColorMarker.requireWhiteInside` (default on,
+  `minWhiteShare` 0.5): inside the pink bounds minus the border band, ≥ 50 % pixels with S ≤ 60 and V ≥ 140 (after white balance);
+  `MarkerRegion.whiteShare`, `rejectReason` "frame"/"white"; object test toggle + white % in stats. (2) `CalendarDetectionSettings.WORKERS`
+  = 2: two parallel workers, each own ORB + ColorMarker, each takes the newest untaken frame (AtomicLong CAS); results combined in frame
+  order (older frames finishing late do not enter the history, counted "out of order"). (3) Owner's stepped confirmation: passes run with
+  the confirm threshold X − 10 (`CONFIRM_INLIER_DROP`, min 4); level 2 = best inliers ≥ X, level 1 = ≥ X − 10; announce when the last 2
+  passes (in frame order) are [2, ≥1], then 15 s cooldown. (4) Test mode `announceEveryDetection` (saved, DEFAULT ON): speak on every
+  level-2 pass while not already speaking (speakingSince, cleared by TTS end/failure, 6 s safety). Camera view toggle "Every detection" /
+  "2 in a row + 15 s", shows confirm threshold, passes/s, white %, reject reasons. (5) Logcat summary every 2 s: camera fps, passes/s,
+  avg/colour ms, detected, regions, rejected frame/white, best inliers.
+- **Why detection was slow (logcat 2026-09-17 22:36, VERIFIED):** per pass WITHOUT a pink area 125–165 ms = YUV→ARGB in a Kotlin per-pixel
+  loop 80–100 ms + colour step 45–65 ms (bitmapToMat of the full bitmap + half-res analysis); only ~12–15 passes/s with 2 workers. Robot CPU
+  ~91 % busy overall (top: roboguard 268 %, exe_chassis_remote 140 %, audioserver 77 %, cameraserver 40 %, visionsdk 26 %). **Fix (installed,
+  VERIFIED 22:38):** `CameraFrame` stores Y + raw U/V plane copies; stats (meanStdDev/threshold), tight half-res chroma, `rgbMat(half)` (native
+  merge + `COLOR_YCrCb2RGB`, full-range JFIF formulas) and `preview` (matToBitmap) are all lazy; `ColorMarker.find(CameraFrame)` uses the
+  native half-res colour directly (no bitmap). Result: pass without pink area 33–40 ms (colour 33–40 ms), 26–30 passes/s = every camera frame.
+  ORB stage timing (resize/keypoints/knn/ratio/homography) is logged by the monitor per 2 s ("timing per pass") but was not yet measured with
+  the calendar in view. Stream bandwidth is not the bottleneck (our per-frame cost is two memcpy's; lower resolution would hurt range).
+  The display colours of the new conversion are not yet checked by eye.
+- **ORB timing with the calendar in view (logcat 22:41 before / 22:52 after the batchDistance change, VERIFIED):** before: pass with pink area
+  ~400–600 ms = keypoints 24–125 + knnMatch 239–289 + ratio test (Java per-pair MatOfDMatch.toArray) 33–58 + homography 36–185.
+  `ORB.match` now uses `Core.batchDistance(NORM_HAMMING, K=2)` + IntArray ratio test (same exact kNN, BFMatcher removed): ratio test 1–10 ms.
+  But after: ~900–950 ms = keypoints 112–189 + knn 186–418 + homography 281–503 → ALL stages slower, incl. homography which did not change →
+  CPU contention/heat, not the matcher: colour-only passes now ran for every frame (30/s, roboguard 172 % even without calendar), 2 workers +
+  OpenCV's own worker threads, RobotOS chassis 110 %, audio 73 %, camera 38 %; SoC sensors 82–95 °C. Fix (installed, not yet measured):
+  `MAX_PASSES_PER_SECOND` = 12 shared start-slot limit for the workers. Cooldown 15 s → 3 s (owner); view label shows the constant.
+- **Rotation problem (owner: detection fails as soon as the calendar is slightly rotated; robot camera looks up).** Likely cause in our gate,
+  not only ORB: side coverage and white-inside used image-axis bounds, so a rotated/skewed pink frame has its lines off the bands → "frame"
+  rejection before ORB runs. **Fix (installed, not yet run):** `ColorMarker.orientedShape`: principal axes (PCA) of the group's pink pixels
+  give a rotated u/v system; extents = trimmed 2–98 % of u and v; side coverage (band 12 % of the shorter extent) and white share (inner
+  rectangle) measured in that system. Axis-aligned `bounds` still used for boxes, search crop and hold overlap. Perspective (trapezoid) is
+  only tolerated via the band. ORB descriptors themselves are rotation-invariant in-plane but not for strong out-of-plane tilt.
+- Reference comparison (owner: keep only the better image): logcat had only 6 announcements, all strongest = `cal_prop_thick_outline`
+  (inliers 31–64, median 42) vs `cal_prop_thick_outline_2`. Monitor now logs every 2 s "inliers per reference": avg, best, strongest-in count
+  over passes with a pink area.
+- **Run 22:55–22:57 (logcat, VERIFIED), mode "2 in a row + 3 s", X = 20 (confirm 10):** 9 announcements. First three (22:56:20–31) weak:
+  logged confirming pass 12/18/13 inliers, 2 s windows best 17–37, avg per reference only 5–9, pink area in only 40–70 % of passes, white
+  rejections 5–19 → owner reports bad detections at the start; later ones strong (confirm 28–48, windows best 38–55, pink area every pass).
+  Speed with calendar in view still ~2–2.5 passes/s, pass 690–970 ms = keypoints 106–166 + knn 231–558 + homography 93–444; idle 11.5
+  passes/s at 15–20 ms. Reference comparison: weak phase (88 passes) thick_outline avg 6.7 / best 33 / strongest 23 vs thick_outline_2 avg
+  7.9 / best 37 / strongest 41; strong phase (68 passes) thick_outline avg 25.1 / best 49 / strongest 42 vs _2 avg 22.2 / best 55 /
+  strongest 20.
+- **Owner approved (installed, not yet run):** default inliers 30, `CONFIRM_INLIER_DROP` 5 (confirm 25); pref key renamed `min_inliers_v2`
+  so the old saved 20 is dropped. Owner moved `cal_prop_thick_outline_2.jpg` to `assets/ORB_img/current_but_unused/` → only
+  `cal_prop_thick_outline` is loaded. `markerGatedPass(orbGate: Semaphore?)`: only one worker runs ORB at a time; a worker that finds a pink
+  area while ORB is busy returns `skipped` (not added to history/stats; counted "skipped (ORB busy)" in the 2 s summary). Colour checks
+  still run in both workers (max 12 passes/s total).
+- **ORB speed-ups 1 + 3 (owner: "implement that", installed, not yet measured):** `OrbConfig.pyramidLevels` (default 8; calendar 4),
+  `homographyMethod` (default RANSAC; calendar `Calib3d.USAC_DEFAULT`, maxIters 1000, confidence 0.995). `markerGatedPass` scales each pink
+  search area by referenceLongSide / pinkBoundsLongSide (clamped 0.5–4; the reference `cal_prop_thick_outline` 419×640 has the pink line at
+  its edges) via `ORB.evaluateRegion(scale=)`; shrinking uses INTER_AREA. The object test shares `CalendarDetectionSettings.orb`, so its
+  full-frame/tile modes now also use 4 levels (weaker there). Idea 2 (fewer features) not done yet.
+- **After 4 levels + USAC + size scaling (logcat 23:13, VERIFIED):** calendar in view: pass 360–610 ms = colour 45–100 + keypoints 114–151 +
+  knn 127–352 + homography 2–9 (was 93–444) + resize 1–6; accuracy held (inliers avg 27–45, best 37–62; announcements 30/34/43). While
+  ORB runs, the other worker's passes are "skipped (ORB busy)" 15–17 per 2 s, but each still ran the full colour step first (~60–100 ms) →
+  ~0.5 core wasted competing with ORB. Remaining costs: brute-force matching (3000 frame × reference keypoints) and keypoint detection (3000).

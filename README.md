@@ -155,6 +155,92 @@ Same as for the other probes: the log file name is shown in the first line on th
 
 Add the findings to ```CLAUDE.md``` under "Sensor on/off switches": for each sensor and each method (SDK or Android), whether it really switched the sensor.
 
+## Testing object detection
+
+Checks whether ORB (`robocontrol/vision/ORB.kt`) finds a known object in the robot's live camera image. Every image in
+`app/src/main/java/com/example/robocontrol/assets/ORB_img/` is a reference; its file name without extension is the object name
+(e.g. `Calendar_prop.jpeg` → "Calendar_prop"). Camera frames are only held in memory; nothing is saved.
+
+### Preparation
+
+1. Put a photo of the object in `assets/ORB_img` (flat, well textured objects work best: calendars, posters, book covers),
+   build and install the app.
+2. In RoboGuard's privacy settings the camera must be **on**.
+3. Tap **RG Object Test** on the robot's home screen (not via adb, otherwise the camera stream gets no SDK service).
+
+### Running the test
+
+| Step | Do | Expected |
+|---|---|---|
+| **1** | Wait for the status line | `ready: Calendar_prop`; the log lists keypoints per reference (≥ ~200 is good, < 100 is weak) |
+| **2** | Tap *Start camera + detection* | Live camera image on the right; if it is sideways, pick 90° / 270° under *Rotate preview* |
+| **3** | Hold the object in front of the robot at ~0.5–1 m | Green outline and yellow box with the name and inlier count; log `DETECTED …` |
+| **4** | Tilt, move further away, cover half of it | Note when the box disappears (log `lost …` with the numbers) |
+| **5** | Point the camera at other things | No box; `inliers` should stay well below 12 |
+
+The stats line shows good matches and inliers per reference and how long one detection takes. Detected = at least
+15 good matches and 12 inliers (`OrbConfig`). Too many false boxes → raise `minInliers`; object not found although visible
+→ lower it or use a better reference photo (sharp, straight on, object filling the image).
+
+### Pink marker (colour as a second identifier)
+
+For objects with a pink line around them (e.g. the calendar). Switch **Only search near pink marker** to *On*: ORB then
+searches only the areas close to pink pixels (white rectangle on the preview; thin pink = the pink pixels themselves) and
+skips the full frame and the tiles. Without pink in view nothing can be detected.
+
+| Step | Do | Expected |
+|---|---|---|
+| **P1** | Pink marker *On*, calendar in view | A white rectangle around the calendar; stats `regions 1 [W×H/…px]` |
+| **P2** | Wait | Box around the calendar; `(pink box)` = enough inliers but the outline was distorted, the box is the pink line |
+| **P3** | Turn the robot away from the calendar (whiteboard only) | No white rectangle, no box (`regions 0`) |
+| **P4** | No white rectangle although the pink line is visible | Lower *minimum saturation* (35) or raise the margin |
+| **P5** | White rectangles on other pinkish things | Raise *minimum saturation* (80); note what they were |
+
+## Testing speaker change detection
+
+Checks whether the robot can tell **one person talking** from **more than one person talking**, using speaker change
+detection (`robocontrol/conversation`). It notices when the voice changes from one moment to the next. It does not
+recognise who is speaking, and it stores no audio: the log contains only numbers (levels, distances, times, decisions).
+
+### Preparation
+
+1. Install the app and tap **RG Speaker Test** on the robot's home screen.
+2. In RoboGuard's privacy settings the microphone must be **on**, otherwise the test refuses to listen.
+3. A quiet room helps for the first run. Stand about 1 m in front of the robot.
+
+### The screen
+
+- **Left:** STOP, *Start listening (microphone)*, *Synthetic self-test*, *Synthetic demo*, and ✔/✘ buttons per scenario.
+- **Right, top:** the current decision in large letters: *no speech* (grey), *listening…* (blue, not enough speech yet),
+  *ONE speaker* (green) or *MORE THAN ONE speaker* (orange).
+- **Below:** live numbers, and a graph of the **KL2 distance** (blue line) between the last two 1.5 s blocks of speech. The
+  dashed orange line is the candidate threshold. A peak above it is checked with **ΔBIC**; if ΔBIC > 0 it counts as a change.
+- "More than one speaker" = at least 2 changes within the last 20 s.
+
+### Running the tests
+
+| Step | Do | Expected |
+|---|---|---|
+| **0 Self-test** | Tap *Synthetic self-test (fast)* | Log: four `PASS` lines and `self-test: 4/4 scenes PASS` (takes a few seconds) |
+| **0b Demo** | Tap *Synthetic demo (40 s, live)* and watch | ~12 s *ONE speaker*, a pause, then *MORE THAN ONE speaker* while the two synthetic voices alternate |
+| **1** | *Start listening*, one person talks continuously for 30 s | Stays *ONE speaker*; few or no `CHANGE` lines |
+| **2** | Two people take turns, a few sentences each, for about 1 min | Switches to *MORE THAN ONE speaker*; `CHANGE` lines near the turn changes |
+| **3** | Two people talk at the same time | Unknown: overlapping speech is the hard case; note what happens |
+| **4** | Nobody talks, only background noise | *no speech*, or at least no `CHANGE` lines |
+| **5** | One person talks, pauses 5 s, talks again | Stays *ONE speaker* |
+
+After each scenario tap ✔ or ✘ next to it, then *STOP*. The verdict goes into the log together with what the screen showed.
+
+### Getting the results
+
+```bash
+adb exec-out run-as com.example.roboguard ls files/voiceprobe/
+adb exec-out run-as com.example.roboguard cat files/voiceprobe/<probe-file>.log
+```
+
+`candidate at … s: KL2 …, ΔBIC … → CHANGE / rejected` lines show every decision. Too many wrong changes → raise
+`bicLambda` or `kl2Relative` in `ChangeDetectorConfig`; missed changes → lower them.
+
 ## Testing movement
 ```app/src/main/java/com/example/robocontrol/movementprobe``` is a test screen for driving the robot: it shows the robot's current map to scale, the robot's live position, the places saved in RobotOS, and points you add by tapping the map. You can then let the robot drive to any of them.
 

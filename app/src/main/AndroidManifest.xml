@@ -77,6 +77,13 @@
             android:exported="false"
             android:label="Navigation and Map" />
 
+        <!-- robocontrol.conversation: popup when more than one person is talking -->
+        <activity
+            android:name="com.example.robocontrol.conversation.ConversationPromptActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar" />
+
         <!-- robocontrol.movement: popup asking whether the robot may temporarily cross a private area -->
         <activity
             android:name="com.example.robocontrol.movement.PrivacyOverrideActivity"
@@ -90,6 +97,30 @@
             android:exported="true"
             android:label="RG Movement Test"
             android:taskAffinity="com.example.roboguard.movementprobe">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- robocontrol.objectprobe test screen: ORB object detection on the live camera -->
+        <activity
+            android:name="com.example.robocontrol.objectprobe.ObjectProbeActivity"
+            android:exported="true"
+            android:label="RG Object Test"
+            android:taskAffinity="com.example.roboguard.objectprobe">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- robocontrol.conversationprobe test screen: speaker change detection -->
+        <activity
+            android:name="com.example.robocontrol.conversationprobe.SpeakerProbeActivity"
+            android:exported="true"
+            android:label="RG Speaker Test"
+            android:taskAffinity="com.example.roboguard.speakerprobe">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

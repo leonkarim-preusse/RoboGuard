@@ -6,7 +6,6 @@ import android.os.Looper
 import android.util.Log
 import com.ainirobot.coreservice.client.ApiListener
 import com.ainirobot.coreservice.client.Definition
-import com.ainirobot.coreservice.client.RobotApi
 import com.ainirobot.coreservice.client.robotsetting.RobotSettingApi
 
 /**
@@ -100,15 +99,17 @@ object DefaultAppSetting {
         }
         fun run() = finish(runCatching(block).getOrElse { Result.Failed("error: $it") })
 
-        val api = RobotApi.getInstance()
-        if (api.isApiConnectedService()) {
-            Thread(::run, "DefaultAppSetting").start()
-            return
-        }
-        api.connectServer(context, object : ApiListener {
-            override fun handleApiConnected() { Thread(::run, "DefaultAppSetting").start() }
+        // The app-wide connection (RobotApiConnection): never a second connectServer.
+        RobotApiConnection.connect(context, object : ApiListener {
+            override fun handleApiConnected() {
+                RobotApiConnection.removeListener(this)
+                Thread(::run, "DefaultAppSetting").start()
+            }
             override fun handleApiDisconnected() {}
-            override fun handleApiDisabled() = finish(Result.Failed("RobotApi disabled (RoboGuard not in control?)"))
+            override fun handleApiDisabled() {
+                RobotApiConnection.removeListener(this)
+                finish(Result.Failed("RobotApi disabled (RoboGuard not in control?)"))
+            }
         })
         main.postDelayed({ finish(Result.Failed("RobotApi not connected after $CONNECT_TIMEOUT_MS ms")) }, CONNECT_TIMEOUT_MS)
     }
