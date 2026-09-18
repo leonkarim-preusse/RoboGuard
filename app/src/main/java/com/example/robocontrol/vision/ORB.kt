@@ -192,6 +192,13 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
     var lastKeypointPositions: List<ImagePoint> = emptyList()
         private set
 
+    /**
+     * Collect keypoint positions ([lastKeypointPositions]) for drawing. Off saves one small object per keypoint and pass
+     * (thousands per second), which the garbage collector otherwise has to clean up.
+     */
+    @Volatile
+    var collectDrawData: Boolean = true
+
     /** Time spent per stage since the last [takeTimings], in nanoseconds. For finding out where detection time goes. */
     class Timings {
         var resizeNs = 0L; var extractNs = 0L; var knnNs = 0L; var ratioNs = 0L; var homographyNs = 0L
@@ -504,7 +511,7 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
             timings.extractNs += System.nanoTime() - tExtract
             lastFrameKeypoints = keypoints.rows()
             val frameKeypoints = keypoints.toArray()
-            lastKeypointPositions = frameKeypoints.map { ImagePoint(it.pt.x, it.pt.y) }
+            lastKeypointPositions = if (collectDrawData) frameKeypoints.map { ImagePoint(it.pt.x, it.pt.y) } else emptyList()
             // A frame without texture (dark room, lens covered) has no usable descriptors.
             if (descriptors.rows() < 2) return selected.map { notFound(it.className, 0) }
             return selected.map { match(it, descriptors, frameKeypoints) }
