@@ -135,7 +135,12 @@ class CameraStream(
      * (640×480 also squeezes 16:9 into 4:3).
      */
     val width: Int = 1280,
-    val height: Int = 720
+    val height: Int = 720,
+    /**
+     * Frames per second passed on at most; RobotOS delivers ~30. Extra frames are closed without copying. Owner (2026-09-18): 20, to leave
+     * CPU for detection. The stream itself cannot be slowed (SurfaceShare has no frame-rate setting), only our handling of it.
+     */
+    val maxFps: Int = 20
 ) {
     /** The newest frame, or null before the first one. */
     val latest = AtomicReference<CameraFrame?>(null)
@@ -148,6 +153,8 @@ class CameraStream(
     private var reader: ImageReader? = null
     private var bean: SurfaceShareBean? = null
     private var lastError = 0
+    /** Earliest time the next frame is accepted (frame-rate limit). */
+    private var nextDueAt = 0L
 
     // Reused per frame on the camera thread (plane copies and output pixels), so no per-frame allocation except the outputs.
     private val yBytes = ByteArray(width * height)
@@ -162,11 +169,20 @@ class CameraStream(
     @Synchronized
     fun start(onError: (code: Int, message: String?) -> Unit): Int {
         if (reader != null) return 0
-        val t = HandlerThread("CameraStream").apply { start() }
+        // Only copies frames: background priority, so it does not compete with the detection threads for fast cores.
+        val t = HandlerThread("CameraStream", android.os.Process.THREAD_PRIORITY_BACKGROUND).apply { start() }
         val r = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
         r.setOnImageAvailableListener({ rd ->
             val image = runCatching { rd.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
             try {
+                val now = SystemClock.elapsedRealtime()
+                if (maxFps > 0) {
+                    // Schedule-based limit: frames arrive every ~33 ms, so "at least 50 ms apart" would give only 15 fps.
+                    // Advancing the due time by exactly 1000/maxFps keeps the average at maxFps.
+                    if (now < nextDueAt) return@setOnImageAvailableListener
+                    val interval = 1000L / maxFps
+                    nextDueAt = maxOf(nextDueAt + interval, now - interval)
+                }
                 latest.set(image.toFrame())
                 framesReceived++
             } finally {

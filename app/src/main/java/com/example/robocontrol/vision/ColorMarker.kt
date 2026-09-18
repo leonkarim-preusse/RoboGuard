@@ -66,7 +66,12 @@ class MarkerResult(
     val pinkShare: Double,
     val millis: Long,
     val overlay: Bitmap? = null,
-    val rejected: List<MarkerRegion> = emptyList()
+    val rejected: List<MarkerRegion> = emptyList(),
+    /**
+     * Time per step in ms: [0] colour image from the camera data, [1] white balance + HSV + colour range, [2] cleaning + grouping
+     * (closing, speck removal, dilation, connected components), [3] regions + shape checks. For finding where the pink search spends time.
+     */
+    val stageMs: LongArray = LongArray(4)
 )
 
 /**
@@ -116,6 +121,10 @@ class ColorMarker(
     var overlayColor: Int = 0xFF00E676.toInt(),
     var rejectedColor: Int = 0xFFFFEA00.toInt()
 ) {
+    // Reused between calls (same frame size every time): avoids ~1 MB of new arrays per check for the garbage collector.
+    private var labelBuf = IntArray(0)
+    private var cleanBuf = ByteArray(0)
+
     /** Bounds of frames accepted without hold, with the time (elapsedRealtime); for [holdMs]. */
     private var recentFrames: List<Pair<ImageRegion, Long>> = emptyList()
 
@@ -144,7 +153,8 @@ class ColorMarker(
         val rgb = frame.rgbMat(half = scale == 0.5)
         try {
             if (scale != 0.5 && scale < 1.0) Imgproc.resize(rgb, rgb, Size(), scale, scale, Imgproc.INTER_AREA)
-            return analyse(rgb, scale, withOverlay, t0)
+            val rgbMs = elapsed(t0)
+            return analyse(rgb, scale, withOverlay, t0).also { it.stageMs[0] = rgbMs }
         } finally {
             rgb.release()
         }
@@ -162,32 +172,34 @@ class ColorMarker(
             fun up(r: ImageRegion) = ImageRegion((r.x / scale).toInt(), (r.y / scale).toInt(),
                 kotlin.math.ceil(r.width / scale).toInt(), kotlin.math.ceil(r.height / scale).toInt())
             fun upPixels(n: Int) = (n / area).toInt()
+            val stage = LongArray(4)
+            var tStage = android.os.SystemClock.elapsedRealtime()
+            fun lap(i: Int) { val now = android.os.SystemClock.elapsedRealtime(); stage[i] = now - tStage; tStage = now }
             if (whiteBalance) balanceWhite(rgb)
             Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV)
             inRange(hsv, mask)
             val width = mask.cols(); val height = mask.rows()
-            val white: ByteArray? = if (!requireWhiteInside) null else {
-                val w = Mat()
-                try {
-                    Core.inRange(hsv, Scalar(0.0, 0.0, whiteMinValue.toDouble()), Scalar(180.0, whiteMaxSaturation.toDouble(), 255.0), w)
-                    ByteArray(width * height).also { w.get(0, 0, it) }
-                } finally {
-                    w.release()
-                }
-            }
             val total = Core.countNonZero(mask)
             val share = total.toDouble() / (width * height)
-            val raw = ByteArray(width * height).also { mask.get(0, 0, it) }
-            if (total < minRegion) return MarkerResult(emptyList(), share, elapsed(t0), overlay(withOverlay, raw, null, null, width, height))
+            // The raw mask is only needed for the drawn overlay.
+            val raw = if (withOverlay) ByteArray(width * height).also { mask.get(0, 0, it) } else null
+            lap(1)
+            if (total < minRegion) {
+                return MarkerResult(emptyList(), share, elapsed(t0), raw?.let { overlay(true, it, null, null, width, height) }, stageMs = stage)
+            }
 
             // Close small gaps along a thin line (a 2 px line breaks into pieces after chroma subsampling), then remove specks.
             Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, Imgproc.getStructuringElement(Imgproc.MORPH_RECT,
                 if (scale < 0.75) Size(3.0, 3.0) else Size(5.0, 5.0)))
             val specks = Imgproc.connectedComponentsWithStats(mask, labels, stats, centroids, 8, CvType.CV_32S)
-            val keep = BooleanArray(specks) { it != 0 && stats.get(it, Imgproc.CC_STAT_AREA)[0] >= minSpeck }
-            val labelData = IntArray(width * height).also { labels.get(0, 0, it) }
-            val clean = ByteArray(width * height)
-            for (i in labelData.indices) if (keep[labelData[i]]) clean[i] = 1
+            // All component stats in one copy (one JNI call per component was slow with many noise specks).
+            val statCols = stats.cols()
+            val statData = IntArray(specks * statCols).also { if (specks > 0) stats.get(0, 0, it) }
+            val keep = BooleanArray(specks) { it != 0 && statData[it * statCols + Imgproc.CC_STAT_AREA] >= minSpeck }
+            if (labelBuf.size != width * height) { labelBuf = IntArray(width * height); cleanBuf = ByteArray(width * height) }
+            val labelData = labelBuf.also { labels.get(0, 0, it) }
+            val clean = cleanBuf
+            for (i in labelData.indices) clean[i] = if (keep[labelData[i]]) 1 else 0
             mask.put(0, 0, clean)
 
             val grown = Mat()
@@ -196,6 +208,9 @@ class ColorMarker(
                 val k = 2 * margin + 1
                 Imgproc.dilate(mask, grown, Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(k.toDouble(), k.toDouble())))
                 val n = Imgproc.connectedComponentsWithStats(grown, groups, stats, centroids, 8, CvType.CV_32S)
+                val groupCols = stats.cols()
+                val groupStats = IntArray(n * groupCols).also { if (n > 0) stats.get(0, 0, it) }
+                lap(2)
                 // Pink pixels and their tight bounds per grown group.
                 val count = IntArray(n)
                 val minX = IntArray(n) { Int.MAX_VALUE }; val minY = IntArray(n) { Int.MAX_VALUE }
@@ -213,6 +228,16 @@ class ColorMarker(
                         if (y > maxY[g]) maxY[g] = y
                     }
                 }
+                // White pixels are only needed if some group is big enough to be checked.
+                val white: ByteArray? = if (!requireWhiteInside || (1 until n).none { count[it] >= minRegion }) null else {
+                    val w = Mat()
+                    try {
+                        Core.inRange(hsv, Scalar(0.0, 0.0, whiteMinValue.toDouble()), Scalar(180.0, whiteMaxSaturation.toDouble(), 255.0), w)
+                        ByteArray(width * height).also { w.get(0, 0, it) }
+                    } finally {
+                        w.release()
+                    }
+                }
                 val accepted = BooleanArray(n)
                 val regions = ArrayList<MarkerRegion>()
                 val rejected = ArrayList<MarkerRegion>()
@@ -226,12 +251,13 @@ class ColorMarker(
                     val shape = orientedShape(clean, labelData, g, loose, count[g], width, white)
                     val coverage = shape.coverage
                     val sides = coverage.count { it >= minSideCoverage }
-                    val search = ImageRegion(stats.get(g, Imgproc.CC_STAT_LEFT)[0].toInt(), stats.get(g, Imgproc.CC_STAT_TOP)[0].toInt(),
-                        stats.get(g, Imgproc.CC_STAT_WIDTH)[0].toInt(), stats.get(g, Imgproc.CC_STAT_HEIGHT)[0].toInt())
+                    val o = g * groupCols
+                    val search = ImageRegion(groupStats[o + Imgproc.CC_STAT_LEFT], groupStats[o + Imgproc.CC_STAT_TOP],
+                        groupStats[o + Imgproc.CC_STAT_WIDTH], groupStats[o + Imgproc.CC_STAT_HEIGHT])
                     val isFrame = !requireFrame || sides >= minSides
                     val held = !isFrame && sides >= minSides - 1 && recent.any { overlap(it.first, bounds) >= 0.4 }
                     val whiteShare = shape.whiteShare
-                    val whiteOk = white == null || whiteShare >= minWhiteShare
+                    val whiteOk = !requireWhiteInside || whiteShare >= minWhiteShare
                     val reason = when {
                         !isFrame && !held -> "frame"
                         !whiteOk -> "white"
@@ -250,7 +276,9 @@ class ColorMarker(
                 // Held regions do not refresh the memory, so a frame that stays incomplete is dropped after holdMs.
                 recentFrames = recent + freshFrames
                 regions.sortByDescending { it.pinkPixels }
-                return MarkerResult(regions, share, elapsed(t0), overlay(withOverlay, raw, clean, labelData to accepted, width, height), rejected)
+                lap(3)
+                val overlayBitmap = raw?.let { overlay(true, it, clean, labelData to accepted, width, height) }
+                return MarkerResult(regions, share, elapsed(t0), overlayBitmap, rejected, stage)
             } finally {
                 grown.release()
                 groups.release()

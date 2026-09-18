@@ -141,6 +141,9 @@ class SpeakerChangeDetector(
             thread = null
             return
         }
+        // Audio analysis needs little CPU per 10 ms hop; background priority leaves the fast cores to calendar detection (owner,
+        // 2026-09-18: service work should be low intensity). AudioRecord's own buffering keeps capture running if a hop is late.
+        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
         try {
             while (!Thread.currentThread().isInterrupted) {
                 var filled = 0

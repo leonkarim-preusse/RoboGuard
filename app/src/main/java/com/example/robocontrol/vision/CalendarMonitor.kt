@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.asCoroutineDispatcher
 
 /**
  * Watches the camera whenever RoboGuard runs (started by RobotServerService) and says [SENTENCE] when a calendar is detected in
@@ -73,6 +74,13 @@ object CalendarMonitor {
     val debug: StateFlow<DebugSnapshot?> = _debug.asStateFlow()
 
     private val debugViewers = AtomicInteger(0)
+
+    /**
+     * The camera view wants keypoints / pink mask (its layers). Off (default) = only boxes can be drawn, and the detection builds
+     * no drawing data at all.
+     */
+    @Volatile
+    var drawDetailsWanted = false
 
     @Volatile
     private var activeCamera: CameraStream? = null
@@ -219,6 +227,18 @@ object CalendarMonitor {
             "announce every detection ${_announceEveryDetection.value}")
         val camera = CameraStream()
         activeCamera = camera
+        // Dedicated detection threads with raised priority instead of the shared background pool. OpenCV's own helper
+        // threads (if its build uses any) are not affected; their count is logged.
+        val detectionThreads = java.util.concurrent.Executors.newFixedThreadPool(workers.size) { r ->
+            Thread({
+                runCatching { android.os.Process.setThreadPriority(CalendarDetectionSettings.WORKER_PRIORITY) }
+                    .onFailure { Log.w(TAG, "could not raise the detection thread priority: $it") }
+                Log.i(TAG, "detection thread priority ${android.os.Process.getThreadPriority(android.os.Process.myTid())}")
+                r.run()
+            }, "CalendarDetect")
+        }
+        val detectionDispatcher = detectionThreads.asCoroutineDispatcher()
+        Log.i(TAG, "OpenCV threads: ${runCatching { org.opencv.core.Core.getNumThreads() }.getOrDefault(-1)}")
         var streamError = false
         try {
             while (isActive) {
@@ -235,12 +255,13 @@ object CalendarMonitor {
                 }
                 Log.i(TAG, "watching")
                 _state.value = "watching"
-                detectUntilError(workers, camera) { streamError }
+                detectUntilError(workers, camera, detectionDispatcher) { streamError }
                 camera.stop()
                 if (isActive) delay(5_000)
             }
         } finally {
             activeCamera = null
+            detectionDispatcher.close()
             camera.stop()
             workers.forEach { it.first.release() }
             _debug.value = null
@@ -256,19 +277,23 @@ object CalendarMonitor {
         var passes = 0; var detected = 0; var msSum = 0L; var colourMsSum = 0L; var regions = 0
         var rejectedFrame = 0; var rejectedWhite = 0; var bestInliers = 0; var outOfOrder = 0
         var skipped = 0
+        /** Pink search step sums (ms) over all passes: colour image, colour ranges, cleaning + grouping, regions + shapes. */
+        val pinkStages = LongArray(4)
         var previewMsSum = 0L; var regionPasses = 0; var regionMsSum = 0L; val orb = ORB.Timings()
         /** Per reference image, over passes with a pink area: inlier sum, best, passes where it was the strongest. */
         val refInliers = HashMap<String, IntArray>()
     }
 
-    private suspend fun detectUntilError(workers: List<Pair<ORB, ColorMarker>>, camera: CameraStream, failed: () -> Boolean) = coroutineScope {
+    private suspend fun detectUntilError(
+        workers: List<Pair<ORB, ColorMarker>>, camera: CameraStream, dispatcher: kotlinx.coroutines.CoroutineDispatcher, failed: () -> Boolean
+    ) = coroutineScope {
         val taken = AtomicLong(0)
         val orbGate = java.util.concurrent.Semaphore(1)
         val nextStart = AtomicLong(0)
         val startInterval = 1000L / CalendarDetectionSettings.MAX_PASSES_PER_SECOND
         val log = PassLog()
         val jobs = workers.map { (orb, marker) ->
-            launch(Dispatchers.Default) {
+            launch(dispatcher) {
                 while (isActive) {
                     val f = camera.latest.get()
                     val prev = taken.get()
@@ -289,10 +314,12 @@ object CalendarMonitor {
                     if (!nextStart.compareAndSet(slot, nowStart + startInterval)) continue
                     if (!taken.compareAndSet(prev, f.timestampMs)) continue
                     val debugging = debugViewers.get() > 0
+                    val drawDetails = debugging && drawDetailsWanted
+                    orb.collectDrawData = drawDetails
                     val t0 = SystemClock.elapsedRealtime()
                     val pass = try {
                         // Run with the lower confirm threshold; onPass decides whether a result is a full or a confirm-level detection.
-                        markerGatedPass(orb, marker, f, CalendarDetectionSettings.MIN_GOOD_MATCHES, confirmInliers(), withOverlay = debugging, orbGate = orbGate)
+                        markerGatedPass(orb, marker, f, CalendarDetectionSettings.MIN_GOOD_MATCHES, confirmInliers(), withOverlay = drawDetails, orbGate = orbGate)
                     } catch (e: Exception) {
                         Log.w(TAG, "detection failed: $e")
                         continue
@@ -341,6 +368,10 @@ object CalendarMonitor {
                             "$name avg %.1f, best ${a[1]}, strongest in ${a[2]}".format(a[0].toDouble() / log.regionPasses) })
                     }
                     log.refInliers.clear()
+                    val ps = log.pinkStages
+                    Log.i(TAG, "pink search per pass: colour image %.1f + colour ranges %.1f + cleaning/grouping %.1f + regions/shapes %.1f ms".format(
+                        ps[0].toDouble() / n, ps[1].toDouble() / n, ps[2].toDouble() / n, ps[3].toDouble() / n))
+                    ps.fill(0)
                     log.previewMsSum = 0; log.regionPasses = 0; log.regionMsSum = 0
                     log.orb.resizeNs = 0; log.orb.extractNs = 0; log.orb.knnNs = 0; log.orb.ratioNs = 0; log.orb.homographyNs = 0
                     log.passes = 0; log.detected = 0; log.msSum = 0; log.colourMsSum = 0; log.regions = 0
@@ -355,6 +386,8 @@ object CalendarMonitor {
 
     @Volatile
     private var passesPerSecond = 0.0
+
+    private val orbFeatures get() = CalendarDetectionSettings.orb.maxFeatures
 
     /** Inliers a pass needs to confirm a previous full detection: X − [CalendarDetectionSettings.CONFIRM_INLIER_DROP]. */
     fun confirmInliers(): Int = (_minInliers.value - CalendarDetectionSettings.CONFIRM_INLIER_DROP).coerceAtLeast(CalendarDetectionSettings.MIN_INLIERS_LOWEST)
@@ -377,9 +410,14 @@ object CalendarMonitor {
             synchronized(log) { log.skipped++ }
             return
         }
+        // One line per ORB run on a pink area (numbers only), for inliers-vs-distance analysis (performance/plot.py).
+        for (c in pass.checks) {
+            Log.i(TAG, "check: frame ${c.frameSide} px, scale %.2f, keypoints ${c.keypoints}, good ${c.goodMatches}, inliers ${c.inliers}, features ${orbFeatures}".format(c.scale))
+        }
         synchronized(log) {
             log.passes++; log.msSum += ms; log.colourMsSum += pass.marker?.millis ?: 0
             log.previewMsSum += pass.previewMs
+            pass.marker?.stageMs?.forEachIndexed { i, v -> log.pinkStages[i] += v }
             if (pass.regions.isNotEmpty()) {
                 log.regionPasses++; log.regionMsSum += ms; log.orb.add(pass.orbTimings)
                 val strongest = pass.results.maxByOrNull { it.inliers }

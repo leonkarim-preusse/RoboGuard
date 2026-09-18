@@ -1277,3 +1277,50 @@ these beans have not been inspected yet.
   checks per second similar (~1.6 vs ~1.8/s) but consistency halved → "2 in a row" fails more; the owner's "works a lot worse" matches.
   Turning/obstacle phases were not clearly worse than straight driving in phase 1. Owner changed X during runs: 25→23→28→27 (3000 phase),
   27→23 (1000 phase), then 20/12.
+- **Priorities + load (owner 2026-09-18, installed, not yet measured):** CalendarMonitor workers on a dedicated 2-thread executor
+  ("CalendarDetect", `Process.setThreadPriority(CalendarDetectionSettings.WORKER_PRIORITY = THREAD_PRIORITY_URGENT_DISPLAY, −8)`, actual
+  priority + `Core.getNumThreads()` logged at start; OpenCV helper threads not affected). `CameraStream(maxFps = 20)`: extra frames are
+  closed without copying (SurfaceShare has no frame-rate setting); camera HandlerThread at THREAD_PRIORITY_BACKGROUND. SpeakerChangeDetector
+  thread at THREAD_PRIORITY_BACKGROUND (owner: service work low intensity). Camera view: only boxes by default (other layers off);
+  `CalendarMonitor.drawDetailsWanted` (set by the view's layers) gates keypoint-position collection (`ORB.collectDrawData`) and the pink
+  overlay; view preview polling 20 → 10 fps. UI thread priority not lowered (Android boosts the foreground app's UI thread; lowering it
+  risks freezes/ANRs), only its work reduced.
+- **Performance recording tool (owner 2026-09-18):** `performance/record.py [seconds] [--label x]` (host side, Python 3 + Pillow): reads
+  `/proc/<pid>/task/*/stat` and `/proc/*/stat` once per second via one adb shell loop (CPU % from utime+stime deltas, last core = field 39,
+  process names from cmdline), clears + reads the CalendarMonitor logcat, saves `performance/runs/<date>_<time>_<label>/data.json` +
+  `performance.png` (`performance/plot.py`: RoboGuard CPU per thread group, robot CPU per process group, step times per check, checks/s and
+  camera fps, per-thread table incl. share on fast cores 4–7). `top -H -b -o …` was useless on this robot (repeated its first values).
+  **First run 20260918_110333 (calendar mostly not in view, VERIFIED):** robot ≈ 497 % of 800 busy: chassis 150 %, audio 83 %, camera
+  services 71 %, RobotOS vision 39 %, other 95 %, RoboGuard 59 %. Inside RoboGuard: detection workers 15 % (priority −8 worked, 98 % of
+  busy samples on fast cores), camera copy 7 % (nice 10, still fast cores), GC 9 %, UI 0 % (view closed), 8 DefaultDispatch threads
+  ~3.4 % each (~27 %, source not yet identified: likely polling loops on Dispatchers.Default). Camera accepted only ~15 fps → limiter
+  changed to schedule-based (installed, not yet measured).
+- 2026-09-18 (owner, installed, not yet measured): calendar ORB 1000 features + FAST 10 (comparison with 2000/FAST 10; the 1000/FAST 15 run changed two things at once). Run 20260918_110333 was 2000/FAST 10 (settings line).
+- **1000 vs 2000 keypoints, FAST 10 (runs 20260918_110716 = 2000, 111818 = 1000; windows with ≥ 5 pink-area passes, VERIFIED):** keypoints
+  48 → 53 ms, matching 30 → 10 ms, homography 2 ms, whole check 108 → 96 ms, inliers per window avg-median 15.1 → 14.2, best-median 29 → 28
+  → 1000 kept; the earlier drop came from FAST 15. Keypoint time depends on pixels, not on the kept count.
+- **Installed, not yet measured:** ORB crop = pink bounds + max(10 px, 32 px / scale) (`ORB_MARGIN_PX`, `ORB_MIN_SCALED_BORDER_PX`; was the
+  40 px grouping margin). ColorMarker: stage timings (`MarkerResult.stageMs`: colour image, colour ranges, cleaning/grouping, shapes),
+  logged per 2 s ("pink search per pass …") and shown in the plot legend; reused label/clean buffers, bulk stats copy (no per-component JNI),
+  raw mask copied only for the overlay, white mask only when a group is big enough.
+- **Distance analysis (owner 2026-09-18, installed, not yet run):** `MarkerPass.checks: List<RegionCheck(frameSide, scale, keypoints,
+  goodMatches, inliers)>` per pink area ORB ran on; CalendarMonitor logs one line per check ("check: frame N px, scale s, keypoints k, good g,
+  inliers i, features f"). `performance/plot.py` adds two scatter panels (inliers and keypoints found vs pink frame long side, median per
+  50 px); `performance/compare.py <run> <run> [--name x]` → `performance/comparisons/<name>.png` (max 3 runs). Rendering checked with
+  synthetic data only.
+- 2026-09-18 (owner, installed): calendar ORB 1500 features, FAST 10 (distance comparison with 1000).
+- 2026-09-18 (owner, installed): calendar ORB 500 features, FAST 10.
+- **Range comparison 1000 vs 1500 features, FAST 10 (runs 20260918_113036 / 113514, VERIFIED; graphic performance/comparisons/
+  range-1000-vs-1500.png):** keypoint budget is FULL at every frame size ≥ ~120 px (areas are enlarged to reference size); < 100 px (4× limit)
+  only ~80–100 found. Inliers median by pink frame size, 1000 → 1500: 100–150 px 7 → 11, 150–200 px 11 → 14, 200–250 px 14 → 20, 250–300 px
+  14 → 43 (n 19/20); > 300 px too few 1500 samples. Cost per check with pink area: matching 10 → 19 ms, whole 69 → 78 ms (keypoints ~30 ms
+  in both, down from ~50 thanks to the 10 px ORB margin). Owner then switched to 500 features (installed).
+- 2026-09-18 (owner, installed): calendar ORB 2000 features, FAST 10, MAX_REGION_SCALE 4 → 8.
+- **500 features run (20260918_114310, VERIFIED; comparison performance/comparisons/range-500-1000-1500.png):** matching 3 ms, whole check
+  60 ms (vs 69 / 78 for 1000 / 1500). Inliers median: < 200 px frame size 0 (1000: 7–11, 1500: 11–14); 200–250 px 13; 250–300 px 20
+  (1000: 14, 1500: 43). → 500 loses the far range completely; near/mid similar. Ranking so far by inliers: 1500 > 1000 > 500.
+- **Driving cost (run 20260918_114852_range-2000kp-8x, VERIFIED; chassis load as driving proxy):** windows with ≥ 10 pink checks: chassis
+  ≥ 180 % (7 windows) keypoints 47 / matching 46 / whole 127 ms vs chassis < 180 % (31) 34 / 31 / 91 ms; robot total ~650–670 % of 800
+  either way; RoboGuard 200–250 % with the calendar in view. Owner: back to 1500 features (installed; 8× limit kept). record.py now also
+  reads RoboGuardNav (drive Started/ARRIVED/FAILED/STOP, AvoidingObstacle/Cleared) and plot.py shades driving (light blue) and obstacle
+  avoidance (light orange) in all time panels.

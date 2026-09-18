@@ -53,14 +53,18 @@ import kotlin.math.min
 
 /** Drawing layers of the camera debug view. Same meaning as in the object test. */
 private data class CameraLayers(
-    val keypoints: Boolean = true,
-    val inliers: Boolean = true,
+    // Owner (2026-09-18): only the bounding box by default; the others cost drawing and detection time and can be switched on.
+    val keypoints: Boolean = false,
+    val inliers: Boolean = false,
     val boxes: Boolean = true,
-    val pinkMask: Boolean = true,
-    val pinkBounds: Boolean = true,
-    val searchArea: Boolean = true,
-    val darkenOutside: Boolean = true
-)
+    val pinkMask: Boolean = false,
+    val pinkBounds: Boolean = false,
+    val searchArea: Boolean = false,
+    val darkenOutside: Boolean = false
+) {
+    /** Layers that need drawing data from the detection (keypoint positions, pink mask). */
+    val needsDetails: Boolean get() = keypoints || pinkMask
+}
 
 private val REFERENCE_COLORS = listOf(Color(0xFFFFEB3B), Color(0xFF00E5FF), Color(0xFFFF4081), Color(0xFF76FF03), Color(0xFF448AFF), Color(0xFFE040FB))
 private fun colorFor(name: String) = REFERENCE_COLORS[Math.floorMod(name.hashCode(), REFERENCE_COLORS.size)]
@@ -84,14 +88,17 @@ fun CalendarCameraScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
     val minInliers by CalendarMonitor.minInliers.collectAsState()
     val everyDetection by CalendarMonitor.announceEveryDetection.collectAsState()
     var layers by remember { mutableStateOf(CameraLayers()) }
+    LaunchedEffect(layers.needsDetails) { CalendarMonitor.drawDetailsWanted = layers.needsDetails }
+    DisposableEffect(Unit) { onDispose { CalendarMonitor.drawDetailsWanted = false } }
     var showNumbers by rememberSaveable { mutableStateOf(true) }
-    // Live preview ~20 fps from the monitor's latest frame; overlays come from the latest detection pass.
+    // Live preview ~10 fps from the monitor's latest frame (kept low: every shown frame is converted and drawn on the UI
+    // thread); overlays come from the latest detection pass.
     var frame by remember { mutableStateOf<CameraFrame?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
             val f = CalendarMonitor.latestFrame()
             if (f !== frame) frame = f
-            delay(50)
+            delay(100)
         }
     }
 
