@@ -1,4 +1,4 @@
-package com.example.robocontrol.sensorprobe
+package com.example.testing.sensorprobe
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -38,7 +38,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
-import com.example.robocontrol.voiceprobe.ProbeLog
+import com.example.testing.voiceprobe.ProbeLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job

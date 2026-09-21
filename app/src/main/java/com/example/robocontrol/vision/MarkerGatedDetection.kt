@@ -23,6 +23,9 @@ object CalendarDetectionSettings {
     val MIN_REGION_SCALE: Double get() = DetectionSettings.general.minRegionScale
     val MAX_REGION_SCALE: Double get() = DetectionSettings.general.maxRegionScale
     val ORB_MARGIN_PX: Int get() = DetectionSettings.general.orbMarginPx
+
+    /** Pink areas whose long side is below this (frame pixels) are ignored; see [markerGatedPass]. */
+    val MIN_REGION_LONG_SIDE_PX: Int get() = DetectionSettings.general.minRegionLongSidePx
     val SCALE_REGION_TO_REFERENCE: Boolean get() = DetectionSettings.general.scaleRegionToReference
     val USE_PINK_MARKER: Boolean get() = DetectionSettings.general.usePinkMarker
     val MARKER_MARGIN_PX: Int get() = DetectionSettings.pink.marginPx
@@ -125,6 +128,10 @@ fun markerGatedPass(
     // The pink line runs along the reference image's edges, so its long side ≈ the reference's long side (640 px after loading).
     val referenceSide = orb.referenceMap.values.maxOfOrNull { max(it.image.width, it.image.height) } ?: 640
     for (region in regions) {
+        // Too small to be the object: below this the crop is enlarged several times and carries no detail, but ORB still
+        // finds a few keypoints and can match them (robot, 2026-09-21: 32-74 px specks announced as a calendar while no
+        // calendar was in the room). The calendar at wall distance measured ~310 px.
+        if (max(region.bounds.width, region.bounds.height) < CalendarDetectionSettings.MIN_REGION_LONG_SIDE_PX) continue
         val scale = if (!CalendarDetectionSettings.SCALE_REGION_TO_REFERENCE) 1.0
         else (referenceSide.toDouble() / max(region.bounds.width, region.bounds.height).coerceAtLeast(1))
             .coerceIn(CalendarDetectionSettings.MIN_REGION_SCALE, CalendarDetectionSettings.MAX_REGION_SCALE)

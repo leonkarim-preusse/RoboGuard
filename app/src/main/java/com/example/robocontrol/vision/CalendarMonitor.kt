@@ -7,6 +7,7 @@ import com.example.robocontrol.audio.OrionStarTts
 import com.example.robocontrol.audio.TtsFailure
 import com.example.robocontrol.audio.TtsListener
 import com.example.robocontrol.sensorcontrol.SensorChangeListener
+import com.example.robocontrol.sensorcontrol.SituationalChangeListener
 import com.example.robocontrol.sensorcontrol.Sensors
 import com.example.robocontrol.system.RobotApiConnection
 import com.example.robocontrol.system.SdkControl
@@ -42,6 +43,9 @@ import kotlinx.coroutines.asCoroutineDispatcher
 object CalendarMonitor {
 
     private const val TAG = "CalendarMonitor"
+
+    /** Name of the phone's situational switch that turns object detection on. */
+    const val PIXELATE_OBJECTS = "Pixelate Objects"
 
     /** Spoken when a calendar was recognised; wording in assets/texts/texts.json ("speech.calendar_detected"). */
     val sentence: String get() = UiText.get("speech.calendar_detected")
@@ -136,8 +140,16 @@ object CalendarMonitor {
     @Volatile
     private var cooldownUntil = 0L
 
+    /** Last reason logged by [reevaluate], so the same line is not repeated on every settings change. */
+    private var lastReason: String? = "not started"
+
     private val sensorListener = SensorChangeListener { name, _ ->
         if (name.equals("camera", ignoreCase = true)) reevaluate()
+    }
+
+    /** The phone's "Pixelate Objects" switch decides whether objects are detected at all. */
+    private val situationalListener = SituationalChangeListener { name, _ ->
+        if (name.equals(PIXELATE_OBJECTS, ignoreCase = true)) reevaluate()
     }
 
     /** Starts watching (idempotent). Call from RobotServerService.onCreate. */
@@ -150,6 +162,7 @@ object CalendarMonitor {
         _announceEveryDetection.value = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_EVERY_DETECTION, true)
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         Sensors.get(appContext).addListener(sensorListener)
+        Sensors.get(appContext).addSituationalListener(situationalListener)
         Log.i(TAG, "started")
         reevaluate()
     }
@@ -160,6 +173,7 @@ object CalendarMonitor {
         if (scope == null) return
         stopLoop("service stopped")
         runCatching { Sensors.get(appContext).removeListener(sensorListener) }
+        runCatching { Sensors.get(appContext).removeSituationalListener(situationalListener) }
         runCatching { tts?.disconnect() }
         tts = null
         scope?.cancel()
@@ -178,10 +192,18 @@ object CalendarMonitor {
         if (scope == null) return
         val cameraAllowed = Sensors.get(appContext).getSensors().entries
             .firstOrNull { it.key.equals("camera", ignoreCase = true) }?.value != false
+        // Owner, 2026-09-21: object detection is a feature of Pixelate Objects. Off (or never sent by the phone) means
+        // the robot does not look for objects — WITHOUT switching the camera itself off; that stays the sensor setting.
+        val pixelate = Sensors.get(appContext).isSituationalEnabled(PIXELATE_OBJECTS) == true
         val reason = when {
+            !pixelate -> "Pixelate Objects is off in the privacy settings"
             !cameraAllowed -> "camera switched off in the privacy settings"
             probeUsingCamera -> "a test screen is using the camera"
             else -> null
+        }
+        if (reason != lastReason) {
+            lastReason = reason
+            Log.i(TAG, reason?.let { "not watching: $it" } ?: "conditions met, watching")
         }
         if (reason == null) startLoop() else {
             stopLoop(reason)

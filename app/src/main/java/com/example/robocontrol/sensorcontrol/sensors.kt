@@ -19,6 +19,16 @@ fun interface SensorChangeListener {
 }
 
 /**
+ * Called when a situational setting changes ("Discretion Mode", "Pixelate Objects").
+ *
+ * These are not sensors: they do not switch the microphone or the camera on or off, they only say whether a feature that
+ * USES them may run. Discretion Mode gates the conversation detection, Pixelate Objects the object detection.
+ */
+fun interface SituationalChangeListener {
+    fun onSituationalChanged(name: String, enabled: Boolean)
+}
+
+/**
  * The robot's current sensor permissions, as set by the user in the RoboGuard phone app.
  *
  * Flow:
@@ -49,6 +59,16 @@ class Sensors private constructor(private val context: Context) {
     val states: StateFlow<Map<String, Boolean>> = _states.asStateFlow()
 
     private val listeners = CopyOnWriteArrayList<SensorChangeListener>()
+
+    private val _situational = MutableStateFlow(readSituationalFile())
+
+    /**
+     * Situational setting -> on, e.g. {"Discretion Mode": true, "Pixelate Objects": false}. A setting that is not in the
+     * map has never been sent by the phone and counts as off, so nothing starts watching or listening by itself.
+     */
+    val situational: StateFlow<Map<String, Boolean>> = _situational.asStateFlow()
+
+    private val situationalListeners = CopyOnWriteArrayList<SituationalChangeListener>()
 
     private val switches = SensorSwitches(context)
 
@@ -126,11 +146,54 @@ class Sensors private constructor(private val context: Context) {
         }.onFailure { Log.e(TAG, "could not save $key=$enabled", it) }.isSuccess
     }
 
-    /** Applies the sensor part of a full settings object, as received by `POST /save`. */
-    fun update(settings: AppSettings) = update(settings.sensors)
+    /**
+     * Is a situational setting on? Names are matched case-insensitively, because the robot's own defaults write
+     * "pixelate objects" while the capabilities list and the phone use "Pixelate Objects".
+     *
+     * @return null if the phone has never sent this setting; callers treat that as off.
+     */
+    fun isSituationalEnabled(name: String): Boolean? =
+        _situational.value.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+
+    /**
+     * Applies the situational settings of a save. Unlike [update] this switches NO hardware: the microphone and the
+     * camera stay exactly as the sensor settings say. It only tells the features that use them whether they may run.
+     */
+    @Synchronized
+    fun updateSituational(values: Map<String, Boolean>) {
+        val previous = _situational.value
+        _situational.value = values.toMap()
+        val changed = values.filter { (name, on) -> previous[name] != on }
+        if (changed.isEmpty()) return
+        Log.i(TAG, "situational settings changed: $changed")
+        for ((name, on) in changed) {
+            for (listener in situationalListeners) {
+                runCatching { listener.onSituationalChanged(name, on) }
+                    .onFailure { Log.e(TAG, "situational listener failed for $name=$on", it) }
+            }
+        }
+    }
+
+    /** Registers [listener] for future changes of the situational settings. */
+    fun addSituationalListener(listener: SituationalChangeListener) {
+        situationalListeners += listener
+    }
+
+    fun removeSituationalListener(listener: SituationalChangeListener) {
+        situationalListeners -= listener
+    }
+
+    /** Applies a full settings object, as received by `POST /save`: sensors (with hardware) and situational settings. */
+    fun update(settings: AppSettings) {
+        updateSituational(settings.situationalSettings)
+        update(settings.sensors)
+    }
 
     /** Re-reads `privacy_settings.json` and applies it, for callers that do not have the settings object. */
-    fun reload() = update(readSettingsFile())
+    fun reload() {
+        updateSituational(readSituationalFile())
+        update(readSettingsFile())
+    }
 
     /**
      * Registers [listener] for future changes.
@@ -155,6 +218,15 @@ class Sensors private constructor(private val context: Context) {
         return runCatching { json.decodeFromString<AppSettings>(file.readText()).sensors }
             .onFailure { Log.e(TAG, "could not read ${file.name}, using defaults", it) }
             .getOrDefault(DEFAULT_SENSORS)
+    }
+
+    /** Situational settings from the settings file; empty (= everything off) while the phone has not saved any. */
+    private fun readSituationalFile(): Map<String, Boolean> {
+        val file = getSettingsFile(context)
+        if (!file.exists()) return emptyMap()
+        return runCatching { json.decodeFromString<AppSettings>(file.readText()).situationalSettings }
+            .onFailure { Log.e(TAG, "could not read the situational settings from ${file.name}", it) }
+            .getOrDefault(emptyMap())
     }
 
     companion object {

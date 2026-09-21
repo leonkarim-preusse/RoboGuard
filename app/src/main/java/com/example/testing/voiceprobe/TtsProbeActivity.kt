@@ -1,4 +1,4 @@
-package com.example.robocontrol.voiceprobe
+package com.example.testing.voiceprobe
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -39,7 +39,7 @@ import kotlinx.coroutines.launch
  * Not part of RoboGuard's UI.
  *
  * Start it on the robot with
- *   adb shell am start -n com.example.roboguard/com.example.robocontrol.voiceprobe.TtsProbeActivity
+ *   adb shell am start -n com.example.roboguard/com.example.testing.voiceprobe.TtsProbeActivity
  * The full procedure is in README.md, "Testing text-to-speech".
  *
  * Only one test runs at a time; test buttons are disabled while one is running. ✔/✘, Stop and

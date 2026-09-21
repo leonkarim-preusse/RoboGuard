@@ -47,6 +47,12 @@ data class OrbConfig(
     val ratioTest: Float = 0.75f,
     val minGoodMatches: Int = 15,
     val minInliers: Int = 12,
+    /**
+     * Keypoints the FRAME (or the crop) must have before it is matched at all. A crop with almost no texture cannot carry a
+     * real match, but it can still produce one: with a handful of keypoints the ratio test and RANSAC degenerate (robot,
+     * 2026-09-21). 0 = no minimum.
+     */
+    val minFrameKeypoints: Int = 0,
     val ransacReprojThreshold: Double = 5.0,
     val minAreaPx: Double = 400.0,
     val fastThreshold: Int = 20,
@@ -537,8 +543,10 @@ class ORB(
             lastFrameKeypoints = keypoints.rows()
             val frameKeypoints = keypoints.toArray()
             lastKeypointPositions = if (collectDrawData) frameKeypoints.map { ImagePoint(it.pt.x, it.pt.y) } else emptyList()
-            // A frame without texture (dark room, lens covered) has no usable descriptors.
-            if (descriptors.rows() < 2) return selected.map { notFound(it.className, 0) }
+            // A frame without texture (dark room, lens covered, a tiny crop) has no usable descriptors.
+            if (descriptors.rows() < 2 || frameKeypoints.size < config.minFrameKeypoints) {
+                return selected.map { notFound(it.className, 0) }
+            }
             return selected.map { match(it, descriptors, frameKeypoints) }
         } finally {
             keypoints.release()
@@ -687,13 +695,28 @@ class ORB(
             val rows = distances.rows()
             val dist = IntArray(rows * 2).also { if (rows > 0) distances.get(0, 0, it) }
             val idx = IntArray(rows * 2).also { if (rows > 0) indices.get(0, 0, it) }
+            // One frame keypoint may be claimed by at most ONE reference feature: keep the closest.
+            // Without this, a crop with very few keypoints matches hundreds of reference features onto the same handful of
+            // points; the ratio test passes by chance and findHomography collapses them into a degenerate transform with a
+            // huge inlier count. Measured on the robot 2026-09-21: 9 frame keypoints, "446 good matches, 336 inliers" on a
+            // 32 px speck with no calendar in the room. After the rule, good matches can never exceed the frame's keypoints.
+            val bestForFrame = HashMap<Int, Int>(frameKeypoints.size * 2)
+            val bestDistance = HashMap<Int, Int>(frameKeypoints.size * 2)
             for (i in 0 until rows) {
                 val bestIdx = idx[2 * i]
                 if (bestIdx < 0 || idx[2 * i + 1] < 0) continue
                 if (dist[2 * i] < settings.ratioTest * dist[2 * i + 1]) {
-                    referencePoints += reference.keypoints[i].pt
-                    framePoints += frameKeypoints[bestIdx].pt
+                    val d = dist[2 * i]
+                    val previous = bestDistance[bestIdx]
+                    if (previous == null || d < previous) {
+                        bestDistance[bestIdx] = d
+                        bestForFrame[bestIdx] = i
+                    }
                 }
+            }
+            for ((frameIdx, referenceIdx) in bestForFrame) {
+                referencePoints += reference.keypoints[referenceIdx].pt
+                framePoints += frameKeypoints[frameIdx].pt
             }
         } finally {
             distances.release()

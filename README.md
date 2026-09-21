@@ -20,7 +20,7 @@ This is the source code for the robot application of roboguard. Check [here](htt
 3. ```Main Activity.kt``` controls the UI and ```RobotServerService``` controls the server therefore they control the application flow
 
 ## Testing the voice probes
-The voice probes under ```app/src/main/java/com/example/robocontrol/voiceprobe``` are hardware tests for detecting whether more than one person is speaking. They answer three questions before the detector is built:
+The voice probes under ```app/src/main/java/com/example/testing/voiceprobe``` are hardware tests for detecting whether more than one person is speaking. They answer three questions before the detector is built:
 1. Can the app record audio itself while the robot's own speech service is running, and how many real microphones does it get?
 2. What does the robot's speech service report to an app (voice activity, volume, "multiple mode")?
 3. Does the robot report the direction a voice came from?
@@ -239,7 +239,7 @@ adb exec-out run-as com.example.roboguard cat files/voiceprobe/<probe-file>.log
 `bicLambda` or `kl2Relative` in `ChangeDetectorConfig`; missed changes → lower them.
 
 ## Testing movement
-```app/src/main/java/com/example/robocontrol/movementprobe``` is a test screen for driving the robot: it shows the robot's current map to scale, the robot's live position, the places saved in RobotOS, and points you add by tapping the map. You can then let the robot drive to any of them.
+```app/src/main/java/com/example/testing/movementprobe``` is a test screen for driving the robot: it shows the robot's current map to scale, the robot's live position, the places saved in RobotOS, and points you add by tapping the map. You can then let the robot drive to any of them.
 
 ### Preparation
 1. A map must exist and be active on the robot (created with the robot's map tool). The robot must know where it is on that map (localized)

@@ -10,6 +10,7 @@ import com.example.robocontrol.audio.OrionStarTts
 import com.example.robocontrol.audio.TtsFailure
 import com.example.robocontrol.audio.TtsListener
 import com.example.robocontrol.sensorcontrol.SensorChangeListener
+import com.example.robocontrol.sensorcontrol.SituationalChangeListener
 import com.example.robocontrol.sensorcontrol.Sensors
 import com.example.robocontrol.system.SdkControl
 import com.example.robocontrol.text.UiText
@@ -43,13 +44,18 @@ object ConversationMonitor {
     private const val TAG = "ConversationMonitor"
 
     /**
-     * "More than one speaker" must last this long before the robot reacts. Owner first chose 2 s; shortened to 1 s
-     * (owner, 2026-09-17) because the evidence rule already needs several changes and the hold mostly added latency.
+     * "More than one speaker" must last this long before the robot reacts. Owner first chose 2 s, then 1 s
+     * (2026-09-17), and switched it OFF for now (2026-09-21): the evidence rule already needs several speaker changes
+     * before the state flips, so the hold only added latency on top of that. 0 = react to the first snapshot that says
+     * MULTIPLE_SPEAKERS, i.e. within the detector's 100 ms publishing interval.
      */
-    const val MULTIPLE_FOR_MS = 1_000L
+    const val MULTIPLE_FOR_MS = 0L
 
     /** Minimum time between two prompts. */
     const val MIN_PROMPT_GAP_MS = 2 * 60_000L
+
+    /** Name of the phone's situational switch that turns conversation detection on. */
+    const val DISCRETION_MODE = "Discretion Mode"
 
     /** Default pause of the detection. Owner: 30 minutes. */
     const val DEFAULT_PAUSE_MINUTES = 30
@@ -111,8 +117,16 @@ object ConversationMonitor {
     private var promptedThisConversation = false
     private var lastPromptAt = Long.MIN_VALUE / 2
 
+    /** Last reason logged by [reevaluate], so the same line is not repeated on every settings change. */
+    private var lastReason: String? = "not started"
+
     private val sensorListener = SensorChangeListener { name, _ ->
         if (name.equals("microphone", ignoreCase = true)) reevaluate()
+    }
+
+    /** The phone's "Discretion Mode" switch decides whether conversations are detected at all. */
+    private val situationalListener = SituationalChangeListener { name, _ ->
+        if (name.equals(DISCRETION_MODE, ignoreCase = true)) reevaluate()
     }
 
     /** Starts monitoring (idempotent). Call from RobotServerService.onCreate. */
@@ -122,6 +136,7 @@ object ConversationMonitor {
         appContext = context.applicationContext
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         Sensors.get(appContext).addListener(sensorListener)
+        Sensors.get(appContext).addSituationalListener(situationalListener)
         _status.value = _status.value.copy(started = true)
         Log.i(TAG, "started")
         reevaluate()
@@ -133,6 +148,7 @@ object ConversationMonitor {
         if (scope == null) return
         stopDetector("service stopped")
         runCatching { Sensors.get(appContext).removeListener(sensorListener) }
+        runCatching { Sensors.get(appContext).removeSituationalListener(situationalListener) }
         runCatching { tts?.disconnect() }
         tts = null
         scope?.cancel()
@@ -194,12 +210,21 @@ object ConversationMonitor {
             .firstOrNull { it.key.equals("microphone", ignoreCase = true) }?.value != false
         val permission = appContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val paused = pausedUntil?.let { it > System.currentTimeMillis() } == true
+        // Owner, 2026-09-21: conversation detection is a feature of Discretion Mode. Off (or never sent by the phone)
+        // means the robot does not listen for conversations — WITHOUT switching the microphone itself off; that stays
+        // the sensor setting's job, so speech recognition and the other users of the microphone are untouched.
+        val discretion = Sensors.get(appContext).isSituationalEnabled(DISCRETION_MODE) == true
         val reason = when {
+            !discretion -> "Discretion Mode is off in the privacy settings"
             !micAllowed -> "microphone switched off in the privacy settings"
             !permission -> "RECORD_AUDIO not granted"
             paused -> "paused"
             probeUsingMicrophone -> "a test screen is using the microphone"
             else -> null
+        }
+        if (reason != lastReason) {
+            lastReason = reason
+            Log.i(TAG, reason?.let { "not listening: $it" } ?: "conditions met, listening")
         }
         if (reason == null) startDetector() else stopDetector(reason)
         _status.value = _status.value.copy(listening = detector != null, reason = reason, pausedUntil = if (paused) pausedUntil else null)
@@ -259,7 +284,8 @@ object ConversationMonitor {
             promptedThisConversation = true
             lastPromptAt = now
         }
-        Log.i(TAG, "more than one speaker for ${MULTIPLE_FOR_MS} ms: showing prompt")
+        Log.i(TAG, if (MULTIPLE_FOR_MS == 0L) "more than one speaker: showing prompt"
+        else "more than one speaker for $MULTIPLE_FOR_MS ms: showing prompt")
         runCatching {
             appContext.startActivity(
                 Intent(appContext, ConversationPromptActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

@@ -23,6 +23,7 @@ data class ObjectSettings(
     val maxReferenceSide: Int = 640,
     val ratioTest: Double = 0.75,
     val minGoodMatches: Int = 15,
+    val minFrameKeypoints: Int = 60,
     val minInliers: Int = 20,
     val confirmInlierDrop: Int = 8,
     val ransacReprojThreshold: Double = 5.0,
@@ -33,6 +34,7 @@ data class ObjectSettings(
     val scaleRegionToReference: Boolean = true,
     val minRegionScale: Double = 0.5,
     val maxRegionScale: Double = 8.0,
+    val minRegionLongSidePx: Int = 100,
     val orbMarginPx: Int = 10
 ) {
     /** Inliers a confirming check needs (never below [ORB_MIN_INLIERS]). */
@@ -43,6 +45,7 @@ data class ObjectSettings(
         maxReferenceSide = maxReferenceSide,
         ratioTest = ratioTest.toFloat(),
         minGoodMatches = minGoodMatches,
+        minFrameKeypoints = minFrameKeypoints,
         minInliers = minInliers,
         ransacReprojThreshold = ransacReprojThreshold,
         minAreaPx = minAreaPx,
@@ -218,6 +221,7 @@ object DetectionSettings {
                 "maxReferenceSide" -> result.copy(maxReferenceSide = value.asInt(result.maxReferenceSide))
                 "ratioTest" -> result.copy(ratioTest = value.asDouble(result.ratioTest))
                 "minGoodMatches" -> result.copy(minGoodMatches = value.asInt(result.minGoodMatches))
+                "minFrameKeypoints" -> result.copy(minFrameKeypoints = value.asInt(result.minFrameKeypoints))
                 "minInliers" -> result.copy(minInliers = value.asInt(result.minInliers))
                 "confirmInlierDrop" -> result.copy(confirmInlierDrop = value.asInt(result.confirmInlierDrop))
                 "ransacReprojThreshold" -> result.copy(ransacReprojThreshold = value.asDouble(result.ransacReprojThreshold))
@@ -228,6 +232,7 @@ object DetectionSettings {
                 "scaleRegionToReference" -> result.copy(scaleRegionToReference = value.asBoolean(result.scaleRegionToReference))
                 "minRegionScale" -> result.copy(minRegionScale = value.asDouble(result.minRegionScale))
                 "maxRegionScale" -> result.copy(maxRegionScale = value.asDouble(result.maxRegionScale))
+                "minRegionLongSidePx" -> result.copy(minRegionLongSidePx = value.asInt(result.minRegionLongSidePx))
                 "orbMarginPx" -> result.copy(orbMarginPx = value.asInt(result.orbMarginPx))
                 // Whole-picture settings: valid under "general", meaningless under an image.
                 in WHOLE_PICTURE_KEYS -> {
