@@ -19,6 +19,12 @@ import com.example.robocontrol.audio.TtsFailure
 import com.example.robocontrol.audio.TtsListener
 import com.example.robocontrol.sensorcontrol.Sensors
 import com.example.robocontrol.conversation.ConversationMonitor
+import com.example.robocontrol.text.UiText
+import com.example.robocontrol.movement.NavigationHub
+import com.example.robocontrol.movement.navigationCommand
+import com.example.robocontrol.movement.navigationMapJson
+import com.example.robocontrol.movement.navigationMapPng
+import com.example.robocontrol.movement.navigationStateJson
 import com.example.robocontrol.vision.CalendarMonitor
 import com.ainirobot.coreservice.client.RobotApi
 import kotlinx.coroutines.CancellationException
@@ -160,6 +166,8 @@ class RobotServerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // Screen and speech texts come from assets/texts/texts.json; load them before anything can show or say something.
+        UiText.init(applicationContext)
 
         // Ensure a unique robot ID exists for hostname generation
         val sharedPrefs = getSharedPreferences("robot_prefs", Context.MODE_PRIVATE)
@@ -173,11 +181,11 @@ class RobotServerService : Service() {
         // Setup notification channel for foreground service
         val channelId = "robot_server_channel"
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.createNotificationChannel(NotificationChannel(channelId, "RoboGuard Server", NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel(channelId, UiText.get("service.notification.server_channel"), NotificationManager.IMPORTANCE_LOW))
 
         val notification = Notification.Builder(this, channelId)
-            .setContentTitle("RoboGuard Server")
-            .setContentText("Host: $robotHostname.local")
+            .setContentTitle(UiText.get("service.notification.server_title"))
+            .setContentText(UiText.get("service.notification.server_host", "host" to "$robotHostname.local"))
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .build()
 
@@ -201,6 +209,8 @@ class RobotServerService : Service() {
         ConversationMonitor.start(applicationContext)
         // Calendar detection: watches the camera while RoboGuard runs (and the privacy settings allow the camera)
         CalendarMonitor.start(applicationContext)
+        // One navigation for the robot screen and the phone app; drives continue when the robot shows another screen.
+        NavigationHub.start(applicationContext)
     }
 
     /**
@@ -316,7 +326,7 @@ class RobotServerService : Service() {
 
                                 // The popup brings RoboGuard to the front; RobotOS gives SDK control back only a moment later.
                                 this@RobotServerService.notification("Settings Saved, check RoboGuard App for details!")
-                                this@RobotServerService.showPopup("Privacy Settings Saved")
+                                this@RobotServerService.showPopup(UiText.get("popup.settings_saved"))
                                 // Sensors (general settings only, rooms ignored for now) and speech wait for that control.
                                 // The phone gets its answer right away.
                                 applySettingsWhenInControl(settings)
@@ -327,10 +337,31 @@ class RobotServerService : Service() {
                             } catch (e: Exception) {
                                 Log.e("Server", "Failed to save settings: $e")
                                 // Bring RoboGuard to the front so the robot is allowed to say that saving failed.
-                                runCatching { this@RobotServerService.showPopup("Privacy Settings could not be saved") }
-                                speakWhenInControl("Einstellungen konnten nicht gespeichert werden, versuchen Sie es bitte erneut")
+                                runCatching { this@RobotServerService.showPopup(UiText.get("popup.settings_failed")) }
+                                speakWhenInControl(UiText.get("speech.settings_save_failed"))
                                 call.respond(HttpStatusCode.InternalServerError, "Error: ${e.message}")
                             }
+                        }
+
+                        // The "Navigation and Map" screen for the phone app. Same authentication as every other route:
+                        // secureGet/securePost -> requireClientAuth (client id + HMAC over the payload). The server binds
+                        // 0.0.0.0 like all its routes, so these are reachable from the robot's own network and no further.
+                        secureGet("/nav/state", applicationContext) {
+                            call.respondText(navigationStateJson(), ContentType.Application.Json)
+                        }
+                        secureGet("/nav/map.json", applicationContext) {
+                            call.respondText(navigationMapJson(), ContentType.Application.Json)
+                        }
+                        secureGet("/nav/map.png", applicationContext) {
+                            val png = navigationMapPng()
+                            if (png == null) call.respond(HttpStatusCode.ServiceUnavailable, "no map loaded")
+                            else call.respondBytes(png, ContentType.Image.PNG)
+                        }
+                        securePost("/nav/command", applicationContext) { payload ->
+                            // The phone's name is only a label for the robot's screen; the signature decided who may call.
+                            val client = call.request.headers["X-Client-name"] ?: "phone"
+                            val (status, answer) = navigationCommand(payload, client)
+                            call.respondText(answer, ContentType.Application.Json, status)
                         }
                     }
                 }
@@ -478,6 +509,7 @@ class RobotServerService : Service() {
         serviceScope.cancel()
         ConversationMonitor.stop()
         CalendarMonitor.stop()
+        NavigationHub.stop()
         runCatching { tts?.disconnect() }
         super.onDestroy()
     }
@@ -504,8 +536,8 @@ class RobotServerService : Service() {
             waitForSdkControl()
             val sensorsApplied = applySensorSettings(settings)
             speakGerman(
-                if (sensorsApplied) "Einstellungen wurden aktualisiert"
-                else "Einstellungen wurden gespeichert, aber die Sensoren konnten nicht umgeschaltet werden"
+                if (sensorsApplied) UiText.get("speech.settings_updated")
+                else UiText.get("speech.settings_sensors_failed")
             )
         }
     }
@@ -668,11 +700,11 @@ class RobotServerService : Service() {
     private fun notification(message: String) {
         val channelId = "robot_status_channel"
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val channel = NotificationChannel(channelId, "RoboGuard Status", NotificationManager.IMPORTANCE_HIGH)
+        val channel = NotificationChannel(channelId, UiText.get("service.notification.status_channel"), NotificationManager.IMPORTANCE_HIGH)
         notificationManager.createNotificationChannel(channel)
 
         val builder = Notification.Builder(this, channelId)
-            .setContentTitle("RoboGuard")
+            .setContentTitle(UiText.get("service.notification.status_title"))
             .setContentText(message)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setAutoCancel(true)

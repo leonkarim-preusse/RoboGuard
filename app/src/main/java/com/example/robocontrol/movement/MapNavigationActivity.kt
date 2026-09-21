@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import com.example.robocontrol.text.UiText
 import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.min
@@ -92,8 +93,13 @@ class MapNavigationActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        log = NavigationLog()
-        probe = MapNavigation(applicationContext, log, lifecycleScope)
+        // Screen texts come from assets/texts/texts.json (no-op if the service already loaded them).
+        UiText.init(applicationContext)
+        // The navigation runs in the service (NavigationHub), so the phone app sees the same state and a drive does not
+        // stop when this screen closes. Started here as well in case the service is not up yet.
+        NavigationHub.start(applicationContext)
+        log = NavigationHub.log
+        probe = NavigationHub.current ?: MapNavigation(applicationContext, log, lifecycleScope).also { it.start() }
 
         // Plain MaterialTheme: robocontrol must not depend on roboguard's theme.
         setContent {
@@ -103,23 +109,34 @@ class MapNavigationActivity : ComponentActivity() {
         }
     }
 
-    /** A robot must never keep driving while nobody sees the screen that controls it. */
+    /**
+     * Leaving the screen no longer stops the robot: the navigation belongs to the service and the phone app may be steering.
+     * Stopping is the person's decision (STOP here or on the phone) or the privacy rules'.
+     */
     override fun onStop() {
-        if (started) probe.stop("screen left")
         super.onStop()
     }
 
     override fun onDestroy() {
-        probe.shutdown()
+        // The navigation keeps running in the service; only an unshared fallback instance would need shutting down.
+        if (NavigationHub.current == null) probe.shutdown()
         super.onDestroy()
     }
 
-    /** Starts [MapNavigation] once, after the storage permission question has been answered either way. */
+    /**
+     * The navigation runs in the service and is already started; this only reloads the map once the storage permission
+     * question has been answered (the map file needs that permission).
+     */
     private fun startOnce() {
         if (started) return
         started = true
-        probe.start()
+        probe.reload()
     }
+
+    /** "yes" / "NO" / "?" for the localization state, from the text file. */
+    private fun localizedText(localized: Boolean?) = UiText.get(
+        when (localized) { true -> "nav.label.yes"; false -> "nav.label.no"; null -> "nav.label.unknown" }
+    )
 
     @Composable
     private fun NavigationScreen() {
@@ -141,20 +158,21 @@ class MapNavigationActivity : ComponentActivity() {
         val zoneSaveWarning by probe.zoneSaveWarning.collectAsState()
         val zonesLoaded by probe.zonesLoaded.collectAsState()
         val pointStoreError by probe.pointStoreError.collectAsState()
+        val remoteControl by NavigationHub.remoteControl.collectAsState()
         val storageMessage = zoneStoreError ?: pointStoreError ?: zoneSaveWarning
         var confirmResetLocations by remember { mutableStateOf(false) }
         if (confirmResetLocations) {
             AlertDialog(
                 onDismissRequest = { confirmResetLocations = false },
-                title = { Text("Reset saved locations?") },
-                text = { Text("The saved locations of this map cannot be read. Resetting deletes them; save the locations again afterwards.") },
+                title = { Text(UiText.get("nav.dialog.reset_locations.title")) },
+                text = { Text(UiText.get("nav.dialog.reset_locations.text")) },
                 confirmButton = {
                     Button(
                         onClick = { probe.resetSavedLocations(); confirmResetLocations = false },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White)
-                    ) { Text("Delete") }
+                    ) { Text(UiText.get("nav.button.delete")) }
                 },
-                dismissButton = { TextButton(onClick = { confirmResetLocations = false }) { Text("Cancel") } }
+                dismissButton = { TextButton(onClick = { confirmResetLocations = false }) { Text(UiText.get("nav.button.cancel")) } }
             )
         }
         val canDrive = selected != null && zonesLoaded && zoneStoreError == null
@@ -162,21 +180,20 @@ class MapNavigationActivity : ComponentActivity() {
         if (confirmClearAreas) {
             AlertDialog(
                 onDismissRequest = { confirmClearAreas = false },
-                title = { Text(if (zoneStoreError != null) "Reset private areas?" else "Delete all private areas?") },
+                title = { Text(UiText.get(if (zoneStoreError != null) "nav.dialog.reset_areas.title" else "nav.dialog.clear_areas.title")) },
                 text = {
                     Text(
-                        if (zoneStoreError != null) "The saved private areas of this map cannot be read. Resetting deletes them; " +
-                            "draw the areas again afterwards."
-                        else "All private areas of map \"${mapName ?: "?"}\" are deleted, also from storage."
+                        if (zoneStoreError != null) UiText.get("nav.dialog.reset_areas.text")
+                        else UiText.get("nav.dialog.clear_areas.text", "map" to (mapName ?: UiText.get("nav.label.unknown")))
                     )
                 },
                 confirmButton = {
                     Button(
                         onClick = { probe.clearPrivateAreas(); confirmClearAreas = false },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White)
-                    ) { Text("Delete") }
+                    ) { Text(UiText.get("nav.button.delete")) }
                 },
-                dismissButton = { TextButton(onClick = { confirmClearAreas = false }) { Text("Cancel") } }
+                dismissButton = { TextButton(onClick = { confirmClearAreas = false }) { Text(UiText.get("nav.button.cancel")) } }
             )
         }
 
@@ -190,15 +207,15 @@ class MapNavigationActivity : ComponentActivity() {
         confirmDeleteArea?.let { name ->
             AlertDialog(
                 onDismissRequest = { confirmDeleteArea = null },
-                title = { Text("Delete private area \"$name\"?") },
-                text = { Text("The robot may then drive through this area again.") },
+                title = { Text(UiText.get("nav.dialog.delete_area.title", "area" to name)) },
+                text = { Text(UiText.get("nav.dialog.delete_area.text")) },
                 confirmButton = {
                     Button(
                         onClick = { probe.removePrivateArea(name); confirmDeleteArea = null },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White)
-                    ) { Text("Delete") }
+                    ) { Text(UiText.get("nav.button.delete")) }
                 },
-                dismissButton = { TextButton(onClick = { confirmDeleteArea = null }) { Text("Cancel") } }
+                dismissButton = { TextButton(onClick = { confirmDeleteArea = null }) { Text(UiText.get("nav.button.cancel")) } }
             )
         }
         // A drive stopped at a private area asks on the screen: open the popup once per question.
@@ -250,13 +267,25 @@ class MapNavigationActivity : ComponentActivity() {
 
         // Debug: camera stream of the calendar detection, shown in place of this screen (same activity, so driving continues).
         var cameraView by rememberSaveable { mutableStateOf(false) }
+        var speakerView by rememberSaveable { mutableStateOf(false) }
+        if (speakerView) {
+            com.example.robocontrol.conversation.SpeakerDebugScreen(onBack = { speakerView = false }) {
+                Button(
+                    onClick = { probe.stop("STOP pressed") },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
+                    modifier = Modifier.fillMaxWidth().height(56.dp)
+                ) { Text(UiText.get("nav.button.stop"), fontSize = 20.sp) }
+            }
+            return
+        }
+
         if (cameraView) {
             com.example.robocontrol.vision.CalendarCameraScreen(onBack = { cameraView = false }) {
                 Button(
                     onClick = { probe.stop("STOP pressed") },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth().height(56.dp)
-                ) { Text("STOP", fontSize = 20.sp) }
+                ) { Text(UiText.get("nav.button.stop"), fontSize = 20.sp) }
             }
             return
         }
@@ -274,49 +303,49 @@ class MapNavigationActivity : ComponentActivity() {
                         onClick = { probe.stop("STOP pressed") },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
                         modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING
-                    ) { Text("STOP", fontSize = 16.sp) }
+                    ) { Text(UiText.get("nav.button.stop"), fontSize = 16.sp) }
                     OutlinedButton(
                         onClick = {
                             probe.cancelDrawingArea()
                             mapFullscreen = false
                         },
                         modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING
-                    ) { Text("Exit full screen", fontSize = 13.sp) }
+                    ) { Text(UiText.get("nav.button.exit_fullscreen"), fontSize = 13.sp) }
                     val corners = drawingVertices
                     if (corners == null) {
                         Button(enabled = canDrive, onClick = { probe.driveToSelected() }, modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING) {
-                            Text(selected?.let { "Drive to ${it.name}" } ?: "Drive to… (select a location)", fontSize = 13.sp)
+                            Text(selected?.let { UiText.get("nav.button.drive_to", "location" to it.name) } ?: UiText.get("nav.button.drive_to_none"), fontSize = 13.sp)
                         }
                         Button(
                             enabled = zonesLoaded && zoneStoreError == null,
                             onClick = { probe.startDrawingArea() },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828), contentColor = Color.White),
                             modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING
-                        ) { Text("Draw private area", fontSize = 13.sp) }
+                        ) { Text(UiText.get("nav.button.draw_area"), fontSize = 13.sp) }
                     } else {
                         Button(
                             enabled = corners.size >= 3,
                             onClick = { nameAreaFor = AreaKind.DRAWN },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828), contentColor = Color.White),
                             modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING
-                        ) { Text("Finish area (${corners.size} corners)", fontSize = 13.sp) }
+                        ) { Text(UiText.get("nav.button.finish_area", "corners" to corners.size), fontSize = 13.sp) }
                         OutlinedButton(enabled = corners.isNotEmpty(), onClick = { probe.undoDrawingVertex() }, modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING) {
-                            Text("Undo corner", fontSize = 13.sp)
+                            Text(UiText.get("nav.button.undo_corner"), fontSize = 13.sp)
                         }
-                        OutlinedButton(onClick = { probe.cancelDrawingArea() }, modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING) { Text("Cancel", fontSize = 13.sp) }
+                        OutlinedButton(onClick = { probe.cancelDrawingArea() }, modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING) { Text(UiText.get("nav.button.cancel_drawing"), fontSize = 13.sp) }
                     }
                     OutlinedButton(enabled = mapView.zoom > 1f, onClick = { mapView.reset() }, modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING) {
-                        Text("Reset zoom", fontSize = 13.sp)
+                        Text(UiText.get("nav.button.reset_zoom"), fontSize = 13.sp)
                     }
                 }
                 storageMessage?.let { message ->
                     Text(message, color = Color.White, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().background(Color(0xFFD32F2F)).padding(6.dp))
                 }
                 Text(
-                    (if (drawingVertices != null) "DRAWING: tap the map to add corners of the private area · " else "") +
-                        (if (showDebug) "Navigation: $navState · Localized: ${when (localized) { true -> "yes"; false -> "NO"; null -> "?" }} · " +
-                            "Private areas: ${privateZones.size} · Zoom ×%.1f · ".format(mapView.zoom) else "") +
-                        "Double-tap or two fingers: zoom",
+                    (if (drawingVertices != null) UiText.get("nav.label.drawing_hint") else "") +
+                        (if (showDebug) UiText.get("nav.label.fullscreen_debug", "state" to navState, "localized" to localizedText(localized),
+                            "areas" to privateZones.size, "zoom" to "%.1f".format(mapView.zoom)) else "") +
+                        UiText.get("nav.label.fullscreen_hint"),
                     fontSize = 13.sp,
                     modifier = Modifier.padding(vertical = 4.dp)
                 )
@@ -342,12 +371,23 @@ class MapNavigationActivity : ComponentActivity() {
                     onClick = { probe.stop("STOP pressed") },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
                     modifier = Modifier.height(56.dp)
-                ) { Text("STOP", fontSize = 20.sp) }
+                ) { Text(UiText.get("nav.button.stop"), fontSize = 20.sp) }
                 Button(
                     enabled = canDrive,
                     onClick = { probe.driveToSelected() },
                     modifier = Modifier.weight(1f).height(56.dp)
-                ) { Text(selected?.let { "Drive to ${it.name}" } ?: "Drive to… (select a location)", maxLines = 2) }
+                ) { Text(selected?.let { UiText.get("nav.button.drive_to", "location" to it.name) } ?: UiText.get("nav.button.drive_to_none"), maxLines = 2) }
+            }
+            // Always visible (not debug): someone is steering this robot from the phone app. The thesis asks for visible
+            // state — a person standing next to the robot should see that the commands come from another room.
+            remoteControl?.let { client ->
+                Text(
+                    UiText.get("nav.label.remote_control", "client" to client),
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    modifier = Modifier.fillMaxWidth().background(Color(0xFF1A73E8)).padding(6.dp)
+                )
+                Spacer(Modifier.height(6.dp))
             }
             // Always visible (not debug): problems with the saved private areas.
             storageMessage?.let { message ->
@@ -365,15 +405,15 @@ class MapNavigationActivity : ComponentActivity() {
             ) {
                 // Status lines are debug information; only the speed choice is always shown.
                 if (showDebug) {
-                    Text("Map: ${mapName ?: "?"}")
-                    Text("SDK control: ${if (sdkActive) "yes" else "NO (start RoboGuard from the home launcher)"}")
-                    Text("Localized: ${when (localized) { true -> "yes"; false -> "NO"; null -> "?" }}")
-                    Text("Robot: " + (pose?.let { "x %.2f  y %.2f  %.0f°  %s".format(it.x, it.y, Math.toDegrees(it.theta), it.status) } ?: "?"))
-                    Text("Navigation: $navState")
-                    Text("Selected: " + (selected?.let { "${it.name} (%.2f, %.2f)".format(it.position.x, it.position.y) } ?: "none, tap the map"))
+                    Text(UiText.get("nav.label.map", "map" to (mapName ?: UiText.get("nav.label.unknown"))))
+                    Text(UiText.get("nav.label.sdk_control", "state" to UiText.get(if (sdkActive) "nav.label.sdk_yes" else "nav.label.sdk_no")))
+                    Text(UiText.get("nav.label.localized", "state" to localizedText(localized)))
+                    Text(UiText.get("nav.label.robot", "pose" to (pose?.let { "x %.2f  y %.2f  %.0f°  %s".format(it.x, it.y, Math.toDegrees(it.theta), it.status) } ?: UiText.get("nav.label.unknown"))))
+                    Text(UiText.get("nav.label.navigation", "state" to navState))
+                    Text(UiText.get("nav.label.selected", "selection" to (selected?.let { "${it.name} (%.2f, %.2f)".format(it.position.x, it.position.y) } ?: UiText.get("nav.label.selected_none"))))
                 }
 
-                Text("Speed (next drive): ${speed.label}" + (speed.linear?.let { " – $it m/s" } ?: ""))
+                Text(UiText.get("nav.label.speed", "speed" to speed.label + (speed.linear?.let { " – $it m/s" } ?: "")))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     SpeedPreset.entries.forEach { preset ->
                         if (preset == speed) {
@@ -383,12 +423,12 @@ class MapNavigationActivity : ComponentActivity() {
                         }
                     }
                 }
-                if (showDebug) Text("Measured speed: ${measuredSpeed ?: "?"}", fontSize = 13.sp)
+                if (showDebug) Text(UiText.get("nav.label.measured_speed", "speed" to (measuredSpeed ?: UiText.get("nav.label.unknown"))), fontSize = 13.sp)
 
-                OutlinedButton(onClick = { probe.clearCustomPoints() }, modifier = Modifier.fillMaxWidth()) { Text("Clear tapped points") }
+                OutlinedButton(onClick = { probe.clearCustomPoints() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.clear_points")) }
 
-                Text("Privacy areas", fontWeight = FontWeight.Bold)
-                if (privateZones.isEmpty()) Text("none", fontSize = 13.sp)
+                Text(UiText.get("nav.label.privacy_areas"), fontWeight = FontWeight.Bold)
+                if (privateZones.isEmpty()) Text(UiText.get("nav.label.no_areas"), fontSize = 13.sp)
                 privateZones.forEach { zone ->
                     val expiresAt = activeOverrides.entries.firstOrNull { it.key.equals(zone.name, ignoreCase = true) }?.value
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -396,7 +436,7 @@ class MapNavigationActivity : ComponentActivity() {
                             Text(zone.name, fontSize = 14.sp)
                             if (expiresAt != null) {
                                 val left = ((expiresAt - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
-                                Text("temporarily allowed, %d:%02d left".format(left / 60, left % 60), fontSize = 12.sp, color = Color(0xFF2E7D32))
+                                Text(UiText.get("nav.label.area_allowed", "time" to "%d:%02d".format(left / 60, left % 60)), fontSize = 12.sp, color = Color(0xFF2E7D32))
                             }
                         }
                         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -406,14 +446,14 @@ class MapNavigationActivity : ComponentActivity() {
                                 onClick = { confirmDeleteArea = zone.name },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                 modifier = Modifier.height(32.dp)
-                            ) { Text("Delete", fontSize = 13.sp, color = Color(0xFFD32F2F)) }
+                            ) { Text(UiText.get("nav.button.delete"), fontSize = 13.sp, color = Color(0xFFD32F2F)) }
                             // ✕: only while crossing is temporarily allowed; ends that permission now.
                             if (expiresAt != null) {
                                 OutlinedButton(
                                     onClick = { probe.revokeCrossingPermission(zone.name) },
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                     modifier = Modifier.height(32.dp)
-                                ) { Text("✕", fontSize = 14.sp) }
+                                ) { Text(UiText.get("nav.button.revoke_permission"), fontSize = 14.sp) }
                             }
                         }
                     }
@@ -424,49 +464,50 @@ class MapNavigationActivity : ComponentActivity() {
                         onClick = { nameAreaFor = AreaKind.CIRCLE },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828), contentColor = Color.White),
                         modifier = Modifier.weight(1f)
-                    ) { Text("Set Point as Private Area", fontSize = 11.sp) }
+                    ) { Text(UiText.get("nav.button.set_private_area"), fontSize = 11.sp) }
                     OutlinedButton(
                         enabled = privateZones.isNotEmpty() || zoneStoreError != null,
                         onClick = { confirmClearAreas = true },
                         modifier = Modifier.weight(1f)
-                    ) { Text(if (zoneStoreError != null) "Reset private areas" else "Clear private areas", fontSize = 11.sp) }
+                    ) { Text(UiText.get(if (zoneStoreError != null) "nav.button.reset_areas" else "nav.button.clear_areas"), fontSize = 11.sp) }
                 }
 
-                Text("Saved places (RobotOS)", fontWeight = FontWeight.Bold)
+                Text(UiText.get("nav.label.places"), fontWeight = FontWeight.Bold)
                 places.forEach { PointButton(it, it == selected) }
-                Text("My locations (saved in RoboGuard)", fontWeight = FontWeight.Bold)
+                Text(UiText.get("nav.label.my_locations"), fontWeight = FontWeight.Bold)
                 custom.filter { it.persistent }.forEach { PointButton(it, it == selected) }
                 val tapped = custom.filter { !it.persistent }
                 if (tapped.isNotEmpty()) {
-                    Text("Tapped points (temporary)", fontWeight = FontWeight.Bold)
+                    Text(UiText.get("nav.label.tapped_points"), fontWeight = FontWeight.Bold)
                     tapped.forEach { PointButton(it, it == selected) }
                 }
                 OutlinedButton(
                     enabled = selected?.persistent == true,
                     onClick = { probe.deleteSelectedLocation() },
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("Delete selected location") }
+                ) { Text(UiText.get("nav.button.delete_location")) }
                 if (pointStoreError != null) {
                     OutlinedButton(onClick = { confirmResetLocations = true }, modifier = Modifier.fillMaxWidth()) {
-                        Text("Reset saved locations")
+                        Text(UiText.get("nav.button.reset_locations"))
                     }
                 }
 
                 // Always shown, directly above the debug switch.
                 Button(enabled = canSavePosition && pointStoreError == null, onClick = { showSaveDialog = true }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                    Text(if (canSavePosition) "Save current position…" else "Save current position (robot not localized)")
+                    Text(UiText.get(if (canSavePosition) "nav.button.save_position" else "nav.button.save_position_blocked"))
                 }
-                OutlinedButton(onClick = { probe.reload() }, modifier = Modifier.fillMaxWidth()) { Text("Reload map") }
+                OutlinedButton(onClick = { probe.reload() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.reload_map")) }
 
                 // Debug: technical status lines and the event log are hidden unless switched on.
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
                     Switch(checked = showDebug, onCheckedChange = { showDebug = it })
                     Spacer(Modifier.width(8.dp))
-                    Text("Show debug")
+                    Text(UiText.get("nav.label.debug"))
                 }
                 if (showDebug) {
-                    Button(onClick = { cameraView = true }, modifier = Modifier.fillMaxWidth()) { Text("Show camera stream") }
-                    OutlinedButton(onClick = { log.clearScreen() }, modifier = Modifier.fillMaxWidth()) { Text("Clear log") }
+                    Button(onClick = { cameraView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.show_camera")) }
+                    Button(onClick = { speakerView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.show_speaker")) }
+                    OutlinedButton(onClick = { log.clearScreen() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.clear_log")) }
                 }
             }
             }
@@ -505,10 +546,10 @@ class MapNavigationActivity : ComponentActivity() {
 
         AlertDialog(
             onDismissRequest = { if (!saving) onDismiss() },
-            title = { Text("Save current position") },
+            title = { Text(UiText.get("nav.dialog.save_position.title")) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Name for the robot's current position:")
+                    Text(UiText.get("nav.dialog.save_position.prompt"))
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it; error = null },
@@ -530,9 +571,9 @@ class MapNavigationActivity : ComponentActivity() {
                             if (result == null) onDismiss() else error = result
                         }
                     }
-                ) { Text(if (saving) "Saving…" else "Save") }
+                ) { Text(UiText.get(if (saving) "nav.button.saving" else "nav.button.save")) }
             },
-            dismissButton = { TextButton(enabled = !saving, onClick = onDismiss) { Text("Cancel") } }
+            dismissButton = { TextButton(enabled = !saving, onClick = onDismiss) { Text(UiText.get("nav.button.cancel")) } }
         )
     }
 
@@ -546,7 +587,7 @@ class MapNavigationActivity : ComponentActivity() {
         var error by remember { mutableStateOf<String?>(null) }
         AlertDialog(
             onDismissRequest = onDismiss,
-            title = { Text("Name the private area") },
+            title = { Text(UiText.get("nav.dialog.area_name.title")) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
@@ -566,9 +607,9 @@ class MapNavigationActivity : ComponentActivity() {
                         AreaKind.DRAWN -> probe.finishDrawingArea(name)
                     }
                     if (result == null) onDismiss() else error = result
-                }) { Text("Save") }
+                }) { Text(UiText.get("nav.button.save")) }
             },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = onDismiss) { Text(UiText.get("nav.button.cancel")) } }
         )
     }
 
@@ -607,7 +648,7 @@ class MapNavigationActivity : ComponentActivity() {
     ) {
         if (rendered == null) {
             Box(modifier.background(Color(0xFFEEEEEE)), contentAlignment = Alignment.Center) {
-                Text("No map loaded yet (see log)")
+                Text(UiText.get("nav.label.no_map"))
             }
             return
         }
@@ -737,7 +778,7 @@ class MapNavigationActivity : ComponentActivity() {
             // Preview only: a small hint in the corner. The full-screen map has its controls in a bar above it.
             if (viewState == null) {
                 Text(
-                    "Tap to enlarge",
+                    UiText.get("nav.label.map_hint"),
                     fontSize = 12.sp,
                     modifier = Modifier.align(Alignment.BottomStart).background(Color(0xCCFFFFFF)).padding(4.dp)
                 )

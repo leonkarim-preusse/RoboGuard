@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import com.example.roboguard.ui.theme.RoboGuardTheme
 import com.example.robocontrol.movement.MapNavigationActivity
 import com.example.robocontrol.system.DefaultAppSetting
+import com.example.robocontrol.text.UiText
 import kotlinx.coroutines.delay
 
 /**
@@ -42,6 +43,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Screen texts come from assets/texts/texts.json (no-op if the service already loaded them).
+        UiText.init(applicationContext)
         // Make RoboGuard the robot's default app, so RobotOS gives it SDK control whenever it is in the foreground
         // (not only after a launch from the home screen). Only writes if not already set; see DefaultAppSetting.
         DefaultAppSetting.ensureRoboGuardIsDefault(this)
@@ -90,7 +93,7 @@ class MainActivity : ComponentActivity() {
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
                                     Text(
-                                        text = "Scan with the RoboGuard App to copple!",
+                                        text = UiText.get("app.qr.hint"),
                                         fontSize = 18.sp,
                                         fontWeight = FontWeight.Bold,
                                         textAlign = TextAlign.Center,
@@ -115,7 +118,7 @@ class MainActivity : ComponentActivity() {
                                             onClick = { showSettings = true },
                                             modifier = Modifier.weight(1f)
                                         ) {
-                                            Text("Settings", fontSize = 16.sp)
+                                            Text(UiText.get("app.button.settings"), fontSize = 16.sp)
                                         }
                                         // Opens the map, driving and private areas screen from robocontrol.movement
                                         Button(
@@ -123,13 +126,13 @@ class MainActivity : ComponentActivity() {
                                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50), contentColor = Color.White),
                                             modifier = Modifier.weight(1f)
                                         ) {
-                                            Text("Navigation and Map", fontSize = 16.sp)
+                                            Text(UiText.get("app.button.navigation"), fontSize = 16.sp)
                                         }
                                     }
                                 }
                             }
                         } ?: Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("Waiting for Server...")
+                            Text(UiText.get("app.waiting_for_server"))
                         }
                     }
                 }
@@ -187,7 +190,7 @@ fun QRCodeDisplay(service: RobotServerService) {
         qrBitmap?.let { bitmap ->
             Image(
                 bitmap = bitmap.asImageBitmap(),
-                contentDescription = "QR Code",
+                contentDescription = UiText.get("app.qr.description"),
                 modifier = Modifier.fillMaxSize()
             )
         } ?: CircularProgressIndicator()
@@ -204,51 +207,51 @@ fun SettingsListScreen(service: RobotServerService, onBack: () -> Unit) {
 
     Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Button(onClick = onBack) { Text("Back") }
+            Button(onClick = onBack) { Text(UiText.get("settings.back")) }
             Spacer(modifier = Modifier.width(12.dp))
-            Text("Robot Privacy Settings", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text(UiText.get("settings.title"), fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             item {
-                Text("General", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                Text(UiText.get("settings.section.general"), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                SettingRow(name = "Sleep Timer", value = settings.sleepTime)
+                SettingRow(name = UiText.get("settings.sleep_timer"), value = settings.sleepTime)
             }
 
             item { Spacer(modifier = Modifier.height(12.dp)) }
 
             item {
-                Text("Global Sensors", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                Text(UiText.get("settings.section.sensors"), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
             }
             items(settings.sensors.toList()) { (sensor, enabled) ->
-                SettingRow(name = sensor, value = if (enabled) "ON" else "OFF")
+                SettingRow(name = sensor, value = if (enabled) UiText.get("settings.value.on") else UiText.get("settings.value.off"))
             }
 
             item { Spacer(modifier = Modifier.height(12.dp)) }
 
             item {
-                Text("Situational Settings", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                Text(UiText.get("settings.section.situational"), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
             }
             items(settings.situationalSettings.toList()) { (setting, enabled) ->
-                SettingRow(name = setting, value = if (enabled) "ON" else "OFF")
+                SettingRow(name = setting, value = if (enabled) UiText.get("settings.value.on") else UiText.get("settings.value.off"))
             }
 
             item { Spacer(modifier = Modifier.height(12.dp)) }
 
             item {
-                Text("Room Constraints", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                Text(UiText.get("settings.section.rooms"), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
             }
             settings.rooms.forEach { room ->
                 item {
                     Text(room.name, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp))
                     room.sensors.forEach { (sensor, enabled) ->
-                        SettingRow(name = "  $sensor", value = if (enabled) "ALLOWED" else "BLOCKED", isSmall = true)
+                        SettingRow(name = "  $sensor", value = if (enabled) UiText.get("settings.value.allowed") else UiText.get("settings.value.blocked"), isSmall = true)
                     }
                 }
             }
@@ -270,9 +273,10 @@ fun SettingRow(name: String, value: String, isSmall: Boolean = false) {
             text = value,
             fontSize = if (isSmall) 14.sp else 16.sp,
             fontWeight = FontWeight.Bold,
-            color = when(value) {
-                "ON", "ALLOWED" -> Color(0xFF4CAF50) // Green
-                "OFF", "BLOCKED" -> Color.Red
+            // Compared against the texts themselves, so the colours still fit after a wording or language change.
+            color = when (value) {
+                UiText.get("settings.value.on"), UiText.get("settings.value.allowed") -> Color(0xFF4CAF50) // Green
+                UiText.get("settings.value.off"), UiText.get("settings.value.blocked") -> Color.Red
                 else -> Color.Black
             }
         )

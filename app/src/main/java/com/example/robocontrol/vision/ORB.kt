@@ -78,6 +78,8 @@ data class OrbConfig(
 class ObjectReference internal constructor(
     val className: String,
     val image: GrayImage,
+    /** Settings this reference was read with and is matched with (per-image section of settings.json, else the general ones). */
+    val config: OrbConfig,
     internal val keypoints: Array<KeyPoint>,
     internal val descriptors: Mat
 ) {
@@ -173,7 +175,17 @@ data class AssetLoadReport(
  * @param config matching thresholds, also applied to the asset images
  * @throws IllegalStateException from the constructor if the OpenCV native library cannot be loaded
  */
-class ORB(context: Context, config: OrbConfig = OrbConfig()) {
+class ORB(
+    context: Context,
+    config: OrbConfig = OrbConfig(),
+    /**
+     * Settings for one reference image (file name without extension), e.g. from `assets/settings/settings.json`.
+     * null = use [config] for it. Returning null from [skipReference] is how an image is switched off.
+     */
+    private val configFor: (String) -> OrbConfig? = { null },
+    /** true = do not load this asset image at all (settings.json `enabled: false`). */
+    private val skipReference: (String) -> Boolean = { false }
+) {
 
     /**
      * Settings in use. [OrbConfig.contrastBoost] may be set directly; detector settings (maxFeatures, fastThreshold, grid) must
@@ -226,6 +238,17 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
     private fun createDetector(features: Int, fastThreshold: Int, levels: Int): OpenCvOrb =
         OpenCvOrb.create(features, 1.2f, levels.coerceIn(1, 12), 31, 0, 2, 0 /* HARRIS_SCORE */, 31, fastThreshold)
 
+    /** Detectors for references whose settings differ from [config]; keyed by the values that shape a detector. */
+    private val extraDetectors = HashMap<Triple<Int, Int, Int>, OpenCvOrb>()
+
+    private fun detectorFor(settings: OrbConfig): OpenCvOrb {
+        if (settings.maxFeatures == config.maxFeatures && settings.fastThreshold == config.fastThreshold &&
+            settings.pyramidLevels == config.pyramidLevels
+        ) return orb
+        val key = Triple(settings.maxFeatures, settings.fastThreshold, settings.pyramidLevels)
+        return extraDetectors.getOrPut(key) { createDetector(settings.maxFeatures, settings.fastThreshold, settings.pyramidLevels) }
+    }
+
     /**
      * Changes detector settings at runtime and re-extracts every stored reference from its stored image with them, so frames
      * and references are always described the same way.
@@ -245,24 +268,25 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
     }
 
     /** Detects keypoints and computes descriptors with the current settings (grid distribution if enabled). */
-    private fun extract(image: Mat, keypoints: MatOfKeyPoint, descriptors: Mat) {
-        if (!config.gridDistribution) {
-            orb.detectAndCompute(image, noMask, keypoints, descriptors)
+    private fun extract(image: Mat, keypoints: MatOfKeyPoint, descriptors: Mat, settings: OrbConfig = config) {
+        val detector = detectorFor(settings)
+        if (!settings.gridDistribution) {
+            detector.detectAndCompute(image, noMask, keypoints, descriptors)
             return
         }
         val candidates = MatOfKeyPoint()
         try {
             wideOrb.detect(image, candidates)
-            val cols = config.gridColumns
-            val rows = config.gridRows
-            val perCell = (config.maxFeatures + cols * rows - 1) / (cols * rows)
+            val cols = settings.gridColumns
+            val rows = settings.gridRows
+            val perCell = (settings.maxFeatures + cols * rows - 1) / (cols * rows)
             val cellW = image.cols().toDouble() / cols
             val cellH = image.rows().toDouble() / rows
             val kept = candidates.toArray()
                 .groupBy { kp -> minOf(rows - 1, (kp.pt.y / cellH).toInt()) * cols + minOf(cols - 1, (kp.pt.x / cellW).toInt()) }
                 .values.flatMap { cell -> cell.sortedByDescending { it.response }.take(perCell) }
             keypoints.fromList(kept)
-            orb.compute(image, keypoints, descriptors)
+            detector.compute(image, keypoints, descriptors)
         } finally {
             candidates.release()
         }
@@ -490,6 +514,7 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
     /** Frees all references and internal buffers. Do not use this instance afterwards. */
     @Synchronized
     fun release() {
+        extraDetectors.clear()
         clearReferences()
         noMask.release()
     }
@@ -555,6 +580,10 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
 
         for (file in files) {
             val className = file.substringBeforeLast('.')
+            if (skipReference(className)) {
+                rejected[file] = "switched off in settings.json (enabled: false)"
+                continue
+            }
             if (className in references) {
                 rejected[file] = "duplicate class name '$className', an earlier file already uses it"
                 continue
@@ -607,16 +636,18 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
 
     private fun addReferenceMat(className: String, gray: Mat): ObjectReference? {
         require(className.isNotBlank()) { "className must not be blank" }
-        val scaled = downscale(gray)
+        // Per-image settings from settings.json, else the general ones this ORB was built with.
+        val settings = configFor(className) ?: config
+        val scaled = downscale(gray, settings.maxReferenceSide)
         val keypoints = MatOfKeyPoint()
         val descriptors = Mat()
         try {
-            extract(scaled, keypoints, descriptors)
-            if (descriptors.rows() < config.minGoodMatches) {
+            extract(scaled, keypoints, descriptors, settings)
+            if (descriptors.rows() < settings.minGoodMatches) {
                 descriptors.release()
                 return null
             }
-            val reference = ObjectReference(className, scaled.toGrayImage(), keypoints.toArray(), descriptors)
+            val reference = ObjectReference(className, scaled.toGrayImage(), settings, keypoints.toArray(), descriptors)
             references.put(className, reference)?.release()
             return reference
         } finally {
@@ -626,10 +657,10 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
     }
 
     /** Scales so the longer side is at most [OrbConfig.maxReferenceSide]. Returns [gray] itself if already small. */
-    private fun downscale(gray: Mat): Mat {
+    private fun downscale(gray: Mat, maxSide: Int = config.maxReferenceSide): Mat {
         val longer = max(gray.cols(), gray.rows())
-        if (longer <= config.maxReferenceSide) return gray
-        val scale = config.maxReferenceSide.toDouble() / longer
+        if (longer <= maxSide) return gray
+        val scale = maxSide.toDouble() / longer
         val out = Mat()
         // INTER_AREA avoids aliasing when shrinking, which would create fake keypoints.
         Imgproc.resize(gray, out, Size(gray.cols() * scale, gray.rows() * scale), 0.0, 0.0, Imgproc.INTER_AREA)
@@ -638,6 +669,8 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
 
     /** Steps 2 and 3 of the class description for one reference. */
     private fun match(reference: ObjectReference, frameDescriptors: Mat, frameKeypoints: Array<KeyPoint>): ObjectMatch {
+        // Each reference is matched with its own settings (settings.json: per-image section, else the general ones).
+        val settings = reference.config
         // Exact brute-force Hamming kNN (k = 2), like BFMatcher.knnMatch, but via batchDistance: the results come back as two plain
         // int matrices instead of one Java Mat object per reference feature, which made matching the slowest step on the robot
         // (250–290 ms of a 600 ms pass, 2026-09-17).
@@ -657,7 +690,7 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
             for (i in 0 until rows) {
                 val bestIdx = idx[2 * i]
                 if (bestIdx < 0 || idx[2 * i + 1] < 0) continue
-                if (dist[2 * i] < config.ratioTest * dist[2 * i + 1]) {
+                if (dist[2 * i] < settings.ratioTest * dist[2 * i + 1]) {
                     referencePoints += reference.keypoints[i].pt
                     framePoints += frameKeypoints[bestIdx].pt
                 }
@@ -669,14 +702,14 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
 
         timings.ratioNs += System.nanoTime() - tRatio
         val good = referencePoints.size
-        if (good < config.minGoodMatches) return notFound(reference.className, good)
+        if (good < settings.minGoodMatches) return notFound(reference.className, good)
 
         val src = MatOfPoint2f().apply { fromList(referencePoints) }
         val dst = MatOfPoint2f().apply { fromList(framePoints) }
         val inlierMask = Mat()
         val tHomography = System.nanoTime()
-        val homography = Calib3d.findHomography(src, dst, config.homographyMethod, config.ransacReprojThreshold, inlierMask,
-            config.homographyMaxIters, config.homographyConfidence)
+        val homography = Calib3d.findHomography(src, dst, settings.homographyMethod, settings.ransacReprojThreshold, inlierMask,
+            settings.homographyMaxIters, settings.homographyConfidence)
         timings.homographyNs += System.nanoTime() - tHomography
         try {
             if (homography.empty()) return notFound(reference.className, good)
@@ -684,8 +717,8 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
             val corners = projectCorners(homography, reference.image.width, reference.image.height)
             val mask = ByteArray(inlierMask.rows()).also { inlierMask.get(0, 0, it) }
             val inlierPoints = framePoints.filterIndexed { i, _ -> i < mask.size && mask[i].toInt() != 0 }.map { ImagePoint(it.x, it.y) }
-            if (inliers < config.minInliers) return ObjectMatch(reference.className, false, good, inliers, corners, inlierPoints = inlierPoints)
-            val problem = outlineProblem(corners)
+            if (inliers < settings.minInliers) return ObjectMatch(reference.className, false, good, inliers, corners, inlierPoints = inlierPoints)
+            val problem = outlineProblem(corners, settings.minAreaPx)
             if (problem == null) return ObjectMatch(reference.className, true, good, inliers, corners, "outline", inlierPoints = inlierPoints)
             // Not detected. (Accepting the inliers' bounding box here was tried on the robot, 2026-09-17: many false detections
             // on the whiteboard without the calendar. A caller with a second identifier, e.g. a colour marker, may decide.)
@@ -718,7 +751,7 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
      * outline into a bow-tie or a sliver. A real, flat object seen by a camera projects to a
      * convex quadrilateral of reasonable size.
      */
-    private fun outlineProblem(corners: List<ImagePoint>): String? {
+    private fun outlineProblem(corners: List<ImagePoint>, minAreaPx: Double = config.minAreaPx): String? {
         if (corners.size != 4) return "non-convex"
         var sign = 0
         var doubleArea = 0.0
@@ -732,7 +765,7 @@ class ORB(context: Context, config: OrbConfig = OrbConfig()) {
             sign = s
             doubleArea += a.x * b.y - b.x * a.y // shoelace formula
         }
-        return if (abs(doubleArea) / 2 >= config.minAreaPx) null else "area"
+        return if (abs(doubleArea) / 2 >= minAreaPx) null else "area"
     }
 
     private fun notFound(className: String, goodMatches: Int) =

@@ -1,0 +1,72 @@
+{
+  "_readme": [
+    "Settings of the object detection (ORB + pink marker). Change a value here and the robot uses it after the next start — no code change.",
+    "\"general\" holds the settings for every reference image in assets/ORB_img.",
+    "\"images\" can override any of them for ONE image: use the file name (with or without extension, e.g. \"cal_prop_thick_outline.jpg\"). Everything not named there stays as in \"general\".",
+    "Per-image values that only concern that reference (keypoints of the reference picture, thresholds, whether it needs the pink frame) work exactly. Values that concern the whole camera picture (pink search, analysisScale, workers, passes per second) are taken from \"general\" only — an override there is ignored and logged.",
+    "Keys are read by the code; do not rename them. Unknown keys are ignored (and logged), so a typo does not stop the app."
+  ],
+  "orb": {
+    "general": {
+      "usePinkMarker": {
+        "value": true,
+        "note": "true = search ORB only inside pink frames (calendar with a pink border). false = search the whole camera picture (much slower, more false hits). Per image possible."
+      },
+      "maxFeatures": { "value": 1500, "note": "Keypoints ORB keeps per picture. More = more matches and more time; measured on the robot: 500 loses the far range, 1500 was the best trade-off. Per image possible (affects the reference picture)." },
+      "fastThreshold": { "value": 10, "note": "How strong a corner must be to count (OpenCV default 20). Lower = weaker corners count too, e.g. thin calendar lines; 15 lost accuracy on the robot. Per image possible." },
+      "pyramidLevels": { "value": 4, "note": "Scale levels ORB searches (factor 1.2 each). 4 covers ~1.7x size difference, enough because the pink frame tells the size; 8 for unknown sizes. Per image possible." },
+      "gridDistribution": { "value": false, "note": "true = spread the keypoints over a grid instead of keeping the strongest ones (helps when the background is rich in contrast). Per image possible." },
+      "gridColumns": { "value": 8, "note": "Grid columns when gridDistribution is true." },
+      "gridRows": { "value": 6, "note": "Grid rows when gridDistribution is true." },
+      "contrastBoost": { "value": false, "note": "true = raise local contrast (CLAHE) before the search; helps in dark rooms, costs time. Per image possible." },
+      "maxReferenceSide": { "value": 640, "note": "Reference pictures are scaled down to this longer side before their keypoints are taken. Per image possible." },
+      "ratioTest": { "value": 0.75, "note": "A match counts only if it is clearly better than the second-best one (0…1, lower = stricter). Per image possible." },
+      "minGoodMatches": { "value": 15, "note": "Matches needed before the robot even tries to fit the calendar into the picture. Per image possible." },
+      "minInliers": { "value": 20, "note": "Matching points that must agree for a detection. Higher = fewer false hits, shorter range. Per image possible." },
+      "confirmInlierDrop": { "value": 8, "note": "The check right after a detection needs this many inliers fewer (20 -> 12). Per image possible." },
+      "ransacReprojThreshold": { "value": 5.0, "note": "Pixels a match may be off and still count as agreeing. Per image possible." },
+      "minAreaPx": { "value": 400.0, "note": "Smaller outlines than this are treated as a wrong fit. Per image possible." },
+      "homographyMethod": { "value": "USAC_DEFAULT", "note": "How the calendar's position is fitted: USAC_DEFAULT (fast, current), RANSAC (classic), USAC_ACCURATE, USAC_MAGSAC. Per image possible." },
+      "homographyMaxIters": { "value": 1000, "note": "Maximum attempts of that fit. Per image possible." },
+      "homographyConfidence": { "value": 0.995, "note": "How sure the fit must be before it stops early (0…1). Per image possible." },
+      "scaleRegionToReference": { "value": true, "note": "true = enlarge/shrink the pink area so the calendar has the reference's size before ORB runs (makes distance almost irrelevant). General only: one pink area is searched for all images." },
+      "minRegionScale": { "value": 0.5, "note": "Smallest allowed factor for that scaling (close calendars are shrunk at most this much). General only." },
+      "maxRegionScale": { "value": 8.0, "note": "Largest allowed factor (far calendars). Above ~8 the picture is only blur. General only." },
+      "orbMarginPx": { "value": 10, "note": "Extra pixels around the pink frame that ORB still looks at (before scaling). Bigger = more pixels, slower. General only." },
+      "consistencyNeeded": { "value": 2, "note": "How many of the last checks must find the calendar before the robot speaks." },
+      "consistencyWindow": { "value": 2, "note": "How many latest checks are looked at for that (2 of 2 = twice in a row)." },
+      "cooldownSeconds": { "value": 3, "note": "Quiet time after the robot announced a calendar." },
+      "workers": { "value": 2, "note": "How many checks run in parallel (only one of them runs ORB at a time). Whole camera picture, not per image." },
+      "maxPassesPerSecond": { "value": 12, "note": "Upper limit of checks per second, so the robot's own services keep enough CPU. Whole camera picture, not per image." },
+      "maxRegions": { "value": 3, "note": "How many pink areas are searched per check (each one costs an ORB run). Whole camera picture." },
+      "pink": {
+        "_note": "The pink-frame search. These work on the whole camera picture, so \"images\" cannot override them.",
+        "marginPx": { "value": 40, "note": "Pink pieces closer than this are treated as one frame (border lines, labels)." },
+        "minSaturation": { "value": 50, "note": "How colourful a pixel must be to count as pink (0…255). Lower = pale pink counts too, more false pink." },
+        "whiteBalance": { "value": true, "note": "true = remove the camera's blue tint before the colour check (the robot renders white bluish)." },
+        "requireFrame": { "value": true, "note": "true = pink only counts when it runs along at least minSides sides (a frame), not as a blob." },
+        "minSides": { "value": 3, "note": "How many of the four sides must have pink." },
+        "minSideCoverage": { "value": 0.3, "note": "How much of a side must be covered with pink (0…1) for that side to count." },
+        "requireWhiteInside": { "value": true, "note": "true = inside the pink frame must be mostly white paper." },
+        "minWhiteShare": { "value": 0.5, "note": "How much of the inside must be white (0…1)." },
+        "analysisScale": { "value": 0.5, "note": "Colour search runs on the picture scaled by this (0.5 = half size, 4x faster, no colour loss)." },
+        "holdMs": { "value": 1500, "note": "After a complete frame, a slightly incomplete one at the same place still counts for this long (against flicker)." },
+        "minRegionPixels": { "value": 150, "note": "Pink pixels a frame needs at least (smaller = noise)." },
+        "minSpeckPixels": { "value": 12, "note": "Single pink specks smaller than this are thrown away before the search." }
+      }
+    },
+    "images": {
+      "_note": "One section per reference image in assets/ORB_img; the file name is the section name. Only the values you list are overridden. The example below is switched off by \"enabled\": false — set it to true or add your own section.",
+      "cal_prop_thick_outline.jpg": {
+        "enabled": { "value": true, "note": "false = this reference image is ignored completely (stays in the folder, is not searched for)." }
+      },
+      "example_poster_without_pink.jpg": {
+        "enabled": { "value": false, "note": "Example, switched off: shows how an image without a pink border would be set up." },
+        "usePinkMarker": { "value": false, "note": "This picture has no pink frame, so it is searched in the whole camera picture." },
+        "maxFeatures": { "value": 3000, "note": "A poster with lots of texture can use more keypoints." },
+        "pyramidLevels": { "value": 8, "note": "Without a pink frame the size is unknown, so more scale levels are needed." },
+        "minInliers": { "value": 30, "note": "Without the pink frame as a second check, demand more matching points." }
+      }
+    }
+  }
+}

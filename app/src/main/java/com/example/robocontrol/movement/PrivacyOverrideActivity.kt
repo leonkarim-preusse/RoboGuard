@@ -3,6 +3,7 @@ package com.example.robocontrol.movement
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import com.example.robocontrol.text.UiText
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.rememberScrollState
@@ -52,6 +53,8 @@ class PrivacyOverrideActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Screen texts come from assets/texts/texts.json (no-op if the service already loaded them).
+        UiText.init(applicationContext)
         // Only the buttons answer; a tap next to the popup must not count as "no".
         setFinishOnTouchOutside(false)
         requestId = PrivacyOverridePrompt.pending.value?.id
@@ -96,41 +99,41 @@ class PrivacyOverrideActivity : ComponentActivity() {
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text("Allow robot to temporarily cross \"$zoneName\"?", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Text(UiText.get("privacy_popup.title", "area" to zoneName), fontSize = 24.sp, fontWeight = FontWeight.Bold)
             if (!showCustom) {
-                Text("Yes allows it for ${minutesText(minutes)}.", fontSize = 16.sp)
+                Text(UiText.get("privacy_popup.explanation", "minutes" to minutesText(minutes)), fontSize = 16.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
                         onClick = { answer(minutes) },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50), contentColor = Color.White),
                         contentPadding = COMPACT_PADDING,
                         modifier = Modifier.weight(1f).height(50.dp)
-                    ) { OneLine("Yes", 20) }
+                    ) { OneLine(UiText.get("privacy_popup.yes"), 20) }
                     Button(
                         onClick = { answer(null) },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
                         contentPadding = COMPACT_PADDING,
                         modifier = Modifier.weight(1f).height(50.dp)
-                    ) { OneLine("No", 16) }
+                    ) { OneLine(UiText.get("privacy_popup.no"), 16) }
                 }
                 OutlinedButton(
                     onClick = { showCustom = true },
                     contentPadding = COMPACT_PADDING,
                     modifier = Modifier.fillMaxWidth().height(44.dp)
-                ) { OneLine("Custom time", 16) }
+                ) { OneLine(UiText.get("privacy_popup.custom_time"), 16) }
             } else {
-                Text("Allow for how long? (currently ${minutesText(minutes)})", fontSize = 16.sp)
+                Text(UiText.get("privacy_popup.choose_time", "minutes" to minutesText(minutes)), fontSize = 16.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PRESET_MINUTES.forEach { preset ->
                         val chosen = preset == minutes
                         val select = { minutes = preset; showCustom = false }
                         if (chosen) {
                             Button(onClick = select, contentPadding = COMPACT_PADDING, modifier = Modifier.weight(1f).height(56.dp)) {
-                                OneLine("$preset min", 16)
+                                OneLine(UiText.get("privacy_popup.preset_minutes", "minutes" to preset), 16)
                             }
                         } else {
                             OutlinedButton(onClick = select, contentPadding = COMPACT_PADDING, modifier = Modifier.weight(1f).height(56.dp)) {
-                                OneLine("$preset min", 16)
+                                OneLine(UiText.get("privacy_popup.preset_minutes", "minutes" to preset), 16)
                             }
                         }
                     }
@@ -141,7 +144,7 @@ class PrivacyOverrideActivity : ComponentActivity() {
                     OutlinedTextField(
                         value = typed,
                         onValueChange = { typed = it.filter(Char::isDigit).take(2) },
-                        label = { Text("Custom time in minutes (1–$MAX_MINUTES)") },
+                        label = { Text(UiText.get("privacy_popup.custom_label", "max" to MAX_MINUTES)) },
                         singleLine = true,
                         isError = typed.isNotEmpty() && !valid,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -152,10 +155,10 @@ class PrivacyOverrideActivity : ComponentActivity() {
                         onClick = { minutes = typedMinutes!!; showCustom = false },
                         contentPadding = COMPACT_PADDING,
                         modifier = Modifier.height(56.dp)
-                    ) { OneLine("Set", 18) }
+                    ) { OneLine(UiText.get("privacy_popup.set"), 18) }
                 }
                 OutlinedButton(onClick = { showCustom = false }, contentPadding = COMPACT_PADDING, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                    OneLine("Back", 18)
+                    OneLine(UiText.get("privacy_popup.back"), 18)
                 }
             }
         }
@@ -167,7 +170,8 @@ class PrivacyOverrideActivity : ComponentActivity() {
         Text(text, fontSize = sizeSp.sp, maxLines = 1, softWrap = false)
     }
 
-    private fun minutesText(minutes: Int) = if (minutes == 1) "1 minute" else "$minutes minutes"
+    private fun minutesText(minutes: Int) =
+        if (minutes == 1) UiText.get("privacy_popup.minutes_one") else UiText.get("privacy_popup.minutes_many", "minutes" to minutes)
 
     override fun onDestroy() {
         // Closed without an answer (e.g. the screen went away): that is a "no", the robot stays stopped.

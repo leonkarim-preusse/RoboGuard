@@ -12,6 +12,7 @@ import com.example.robocontrol.audio.TtsListener
 import com.example.robocontrol.sensorcontrol.SensorChangeListener
 import com.example.robocontrol.sensorcontrol.Sensors
 import com.example.robocontrol.system.SdkControl
+import com.example.robocontrol.text.UiText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,7 +28,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Listens for conversations whenever RoboGuard runs (started by RobotServerService) and, when more than one person has
- * been talking for [MULTIPLE_FOR_MS], shows [ConversationPromptActivity] and says [APOLOGY_SENTENCE]. The person can then
+ * been talking for [MULTIPLE_FOR_MS], shows [ConversationPromptActivity] and says [apologySentence]. The person can then
  * send the robot away (Navigation and Map), switch the microphone off, or pause this detection for a while.
  *
  * Listens only while all of these hold: RoboGuard's privacy settings allow the microphone, RECORD_AUDIO is granted, the
@@ -53,12 +54,11 @@ object ConversationMonitor {
     /** Default pause of the detection. Owner: 30 minutes. */
     const val DEFAULT_PAUSE_MINUTES = 30
 
-    /** Spoken with the prompt. Owner's wording. */
-    const val APOLOGY_SENTENCE = "Bitte entschuldigt die Störung, falls ihr möchtet dass ich den Raum verlasse oder mein " +
-        "Mikrofon stummschalte, lasst es mich bitte wissen."
+    /** Spoken with the prompt; wording in assets/texts/texts.json. */
+    val apologySentence: String get() = UiText.get("speech.conversation_apology")
 
-    /** Spoken when the microphone is muted from the prompt. Owner's wording. */
-    const val MIC_MUTED_SENTENCE = "Das Mikrofon kann über die App wieder eingeschaltet werden"
+    /** Spoken when the microphone is muted from the prompt; wording in assets/texts/texts.json. */
+    val micMutedSentence: String get() = UiText.get("speech.microphone_muted")
 
     /** What the monitor is doing, for screens and logs. */
     data class Status(
@@ -70,6 +70,30 @@ object ConversationMonitor {
         val pausedUntil: Long? = null,
         val state: ConversationState = ConversationState.NO_SPEECH
     )
+
+    /** Latest detector snapshot, for the speaker debug screen (empty while nothing is listening). */
+    private val _snapshot = MutableStateFlow(ConversationSnapshot())
+    val snapshot: StateFlow<ConversationSnapshot> = _snapshot.asStateFlow()
+
+    private val debugViewers = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * A debug screen is open: the detector also collects the audio timeline and the events (speaker changes, resets).
+     * Pair every call with [removeDebugViewer]; while nobody watches, nothing extra is collected or copied.
+     */
+    @Synchronized
+    fun addDebugViewer() {
+        debugViewers.incrementAndGet()
+        detector?.debugTimeline = true
+    }
+
+    @Synchronized
+    fun removeDebugViewer() {
+        if (debugViewers.decrementAndGet() <= 0) {
+            debugViewers.set(0)
+            detector?.debugTimeline = false
+        }
+    }
 
     private val _status = MutableStateFlow(Status())
     val status: StateFlow<Status> = _status.asStateFlow()
@@ -146,7 +170,7 @@ object ConversationMonitor {
         Sensors.get(appContext).setSensor("Microphone", false)
         reevaluate()
         // Tell how to undo it. Speech output does not need the microphone, so this works after muting.
-        scope?.launch { speak(MIC_MUTED_SENTENCE) }
+        scope?.launch { speak(micMutedSentence) }
     }
 
     /** Test screens that record themselves call this, so two recordings do not compete for the microphone. */
@@ -195,10 +219,12 @@ object ConversationMonitor {
                 when { c.countsAsChange -> "CHANGE"; c.accepted -> "(same group)"; else -> "" } +
                     if (c.groupBestRatioBefore > 0) " [group best before %.2f]".format(c.groupBestRatioBefore) else ""))
         }
+        d.debugTimeline = debugViewers.get() > 0
         detector = d
         var multipleSince: Long? = null
         watchJob = s.launch {
             d.snapshot.collect { snap ->
+                _snapshot.value = snap
                 if (snap.error != null) Log.w(TAG, "detector: ${snap.error}")
                 _status.value = _status.value.copy(state = snap.state)
                 if (snap.running && snap.speechSeconds == 0.0) promptedThisConversation = false // new conversation
@@ -218,6 +244,7 @@ object ConversationMonitor {
     private fun stopDetector(reason: String) {
         val d = detector ?: return
         detector = null
+        _snapshot.value = ConversationSnapshot()
         d.stop()
         watchJob?.cancel()
         watchJob = null
@@ -241,7 +268,7 @@ object ConversationMonitor {
             Log.e(TAG, "could not show the prompt", it)
             promptClosed()
         }
-        scope?.launch { speak(APOLOGY_SENTENCE) }
+        scope?.launch { speak(apologySentence) }
     }
 
     /** Speaks once RoboGuard has SDK control (the prompt brings it to the front first). Never throws. */
@@ -253,7 +280,7 @@ object ConversationMonitor {
                 Log.w(TAG, "speech service not connected, not spoken")
                 return
             }
-            speech.speakGerman(sentence, object : TtsListener {
+            speech.speakConfigured(sentence, object : TtsListener {
                 override fun onFailed(failure: TtsFailure) { Log.w(TAG, "not spoken: $failure") }
             })
         } catch (e: Exception) {

@@ -7,6 +7,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.TextView
+import com.example.robocontrol.text.UiText
 
 /**
  * A lightweight, transient Activity used to display floating notifications to the user.
@@ -15,9 +16,11 @@ import android.widget.TextView
 class PopupActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Screen texts come from assets/texts/texts.json (no-op if the service already loaded them).
+        UiText.init(applicationContext)
 
         // 1. Get the notification message from the starting Intent
-        val message = intent.getStringExtra("message") ?: "Notification"
+        val message = intent.getStringExtra("message") ?: UiText.get("popup.default")
 
         // 2. Create and configure a simple TextView UI
         val textView = TextView(this).apply {
