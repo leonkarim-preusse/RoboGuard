@@ -1,4 +1,4 @@
-package com.example.robocontrol.conversationprobe
+package com.example.testing.conversationprobe
 
 import android.content.Context
 import com.example.robocontrol.conversation.ChangeCandidate
@@ -15,7 +15,7 @@ import com.example.robocontrol.conversation.SpeechGate
 import com.example.robocontrol.conversation.DecisionRule
 import com.example.robocontrol.conversation.ConversationMonitor
 import com.example.robocontrol.sensorcontrol.Sensors
-import com.example.robocontrol.voiceprobe.ProbeLog
+import com.example.testing.voiceprobe.ProbeLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job

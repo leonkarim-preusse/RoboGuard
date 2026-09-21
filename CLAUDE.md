@@ -12,6 +12,10 @@ Thesis material (not in this repo): `~/Documents/bachelor Arbeit/` —
 ```
 app/src/main/java/com/example/
     roboguard/      existing app — DO NOT change without being asked
+    testing/        the on-robot test screens (moved out of robocontrol 2026-09-21 at the owner's
+                    request): voiceprobe/, sensorprobe/, movementprobe/, objectprobe/,
+                    conversationprobe/. Package com.example.testing.<probe>; nothing in roboguard or
+                    robocontrol imports it, the dependency only runs the other way.
     robocontrol/    added later, standalone
         movement/     robot movement + privacy zones (package com.example.robocontrol.movement)
         voiceprobe/   hardware probes for multi-speaker detection (added 2026-09-15)
@@ -187,10 +191,10 @@ Purpose: get camera frames **without** taking the camera from RobotOS's VisionSD
 app/libs/robotservice_12.3.jar   OrionStar SDK (local jar, not on Maven)
 ```
 
-### robocontrol/voiceprobe (2026-09-15, compiled, NOT yet run on hardware)
+### testing/voiceprobe (2026-09-15, compiled, NOT yet run on hardware)
 
 Test code, not product code. `VoiceProbeActivity` (Compose) is started with
-`adb shell am start -n com.example.roboguard/com.example.robocontrol.voiceprobe.VoiceProbeActivity`.
+`adb shell am start -n com.example.roboguard/com.example.testing.voiceprobe.VoiceProbeActivity`.
 - `MicAccessProbe`: tries 5 `AudioSource`s mono at 16 kHz, then 2/4/6/8 channels (index masks)
   at 16 and 48 kHz. Logs per-channel RMS and correlation to channel 0 (≈1.0 means duplicated,
   not a separate mic), plus input devices and active recordings. Keeps statistics only, never audio.
@@ -261,7 +265,7 @@ changes in 20 s; buffers zeroed on stop). Config in `ChangeDetectorConfig`.
 0 accepted (10–14 candidates all rejected by ΔBIC); A/B every 4 s: 7/7 changes within ±1 s, 0 false, KL2 peaks 190–280 vs one-voice
 mean ~3–4, ΔBIC 760–1090; A/B with 0.7 s pauses: 5/7 within ±1 s plus 2 changes found ~1.2–1.4 s early. Synthetic output needed
 gain 250 (first version peaked at −54 dBFS and never passed the speech gate). Real voices are NOT tested yet.
-**Test app:** `robocontrol/conversationprobe/SpeakerProbe.kt` + `SpeakerProbeActivity.kt`, launcher icon "RG Speaker Test"
+**Test app:** `testing/conversationprobe/SpeakerProbe.kt` + `SpeakerProbeActivity.kt`, launcher icon "RG Speaker Test"
 (taskAffinity com.example.roboguard.speakerprobe). Mic start refused if Sensors says Microphone=false; asks RECORD_AUDIO;
 "Synthetic self-test (fast)" (4 scenes, PASS/FAIL), "Synthetic demo (40 s, live)", ✔/✘ verdicts for 5 scenarios; big state banner,
 numbers, KL2 graph with threshold; ProbeLog gets numbers only. onStop stops listening. README: "Testing speaker change detection".
@@ -545,7 +549,7 @@ none of this has been run on hardware.
   `onError` immediately.
 - Not verified: whether a second `playText` while speaking queues or interrupts.
 - **Hardware test:** `voiceprobe/TtsProbe.kt` + `TtsProbeActivity` (compiled 2026-09-15, not yet
-  run). Start with `adb shell am start -n com.example.roboguard/com.example.robocontrol.voiceprobe.TtsProbeActivity`.
+  run). Start with `adb shell am start -n com.example.roboguard/com.example.testing.voiceprobe.TtsProbeActivity`.
   Test 0 "Say sentences" is a plain smoke test (3 English + 3 German sentences via `speakAndWait`).
   Procedure: README.md, "Testing text-to-speech". It settles every UNVERIFIED point above: voices
   installed (test 1), codeName vs codeValue (tests 2 and 3), queue vs interrupt (test 6), play-status
@@ -816,8 +820,8 @@ these beans have not been inspected yet.
      does mic mute affect RobotOS's speech service; does setCameraDisabled affect RobotOS vision; what happens
      with a second connectServer when another component (OrionStarBridge, probes) connects too.
    `DEFAULT_SENSORS` duplicates `getDefaultSettings()`; keep them in sync.
-   **Hardware test (compiled 2026-09-15, not yet run):** `robocontrol/sensorprobe/SensorProbe.kt` + `SensorProbeActivity`
-   (`adb shell am start -n com.example.roboguard/com.example.robocontrol.sensorprobe.SensorProbeActivity`).
+   **Hardware test (compiled 2026-09-15, not yet run):** `testing/sensorprobe/SensorProbe.kt` + `SensorProbeActivity`
+   (`adb shell am start -n com.example.roboguard/com.example.testing.sensorprobe.SensorProbeActivity`).
    Procedure: README.md, "Testing sensor switching". Each test goes through `Sensors.update` (in memory only, the
    file is untouched), waits 3 s, logs `switchReports`, then read-backs (queryRadarStatus / getSensorStatus /
    getHeadCameraStatus / isMicrophoneMute / getCameraDisabled / admin active) and effect checks (1 s mic RMS <
@@ -1039,7 +1043,7 @@ these beans have not been inspected yet.
    (robot had `RoboGuard_Lab-0916110443.json` with "Home" before the first run). MapNavigation: `pointStoreError` → red banner,
    "Save current position" disabled, "Reset saved locations" (confirm) deletes; driving stays allowed. MovementProbe only logs
    the error (its save/delete already fail because load runs first inside runCatching).
-   **Movement test (compiled 2026-09-16, not yet run):** `robocontrol/movementprobe/` (`MovementProbe`, `MovementProbeActivity`,
+   **Movement test (compiled 2026-09-16, not yet run):** `testing/movementprobe/` (`MovementProbe`, `MovementProbeActivity`,
    launcher icon "RG Movement Test"): map from RobotMapFile, live pose via `RobotApi.getCurrentPose()` every 0.5 s,
    `isRobotEstimate()`/`isActive()` every 2 s, saved places via `getPlaceList()`, tap map → custom point, drive via
    `OrionStarBridge.navigateTo(name)` / `navigateTo(Point2D)` (now implemented: `Pose(x, y, 0f)` + `startNavigation(reqId, Pose,
@@ -1270,6 +1274,11 @@ these beans have not been inspected yet.
 - **Owner (installed, not yet measured):** calendar ORB 1000 features, FAST 15 (object test shares it; its FAST choices now 20/15/10/5).
   Monitor workers wait (10 ms polls) while the ORB gate is taken instead of starting colour passes that would be skipped.
 - Owner (installed): default inliers 20, CONFIRM_INLIER_DROP 8 (confirm 12); pref key min_inliers_v3 (saved 25 dropped). Owner: still not perfect while moving.
+- **Conversation prompt hold OFF (owner 2026-09-21, installed, not yet run):** `ConversationMonitor.MULTIPLE_FOR_MS` 1000 -> **0**, so the prompt
+  appears on the first snapshot that says MULTIPLE_SPEAKERS (detector publishes every 100 ms). The remaining latency is the
+  evidence build-up inside the detector (~5 s in the 18:38/18:43 logs) and, for the SPOKEN sentence only, `SdkControl.awaitControl`
+  (isActive poll + 1 s settle) — the popup itself no longer waits for either. `MIN_PROMPT_GAP_MS` (2 min) and
+  "once per conversation" are unchanged.
 - **Inliers vs. movement analysis (logcat 23:10:45–23:21:40, VERIFIED; graph made in the session scratchpad, not in the repo).** Movement known
   only from RoboGuardNav events (drive Started→ARRIVED/FAILED/STOP; AvoidingObstacle→ObstacleCleared), no speed. Clear-view 2 s windows
   while driving (pink frame found in ≥ 80 % of checks): 3000 features / FAST 10: avg inliers median 37, best median 51, 32/49 checks
@@ -1406,3 +1415,77 @@ these beans have not been inspected yet.
     to be able to build it. `:app:compileDebugKotlin` passes on both sides.
   - Robot APK built and INSTALLED 2026-09-21 11:43 (110 MB debug, `adb install -r` Success), not yet run. The phone app is
     compiled but not installed by Claude.
+
+## Phone app: texts JSON + debug switch (owner request 2026-09-21, compiled, NOT installed)
+
+- `RoboGuardAndroidEnd/app/src/main/assets/texts/texts.json` (103 entries) + `roboguardandroid/UiText.kt` — same arrangement
+  and same file format as the robot's `assets/texts/texts.json`: `"key": { "text": …, "note": … }` under a `texts` object,
+  `{placeholder}` substitution, missing key → key shown + logged. `UiText.init(this)` in `MainActivity.onCreate`.
+  Converted: MainActivity (pairing screen, sensor/situational/sleep sections, info + sync dialogs, all buttons),
+  QRController (`isQRvalidScreen`, camera permission), NavigationScreen, NavigationModel (command answers).
+- **Internal values stay values:** sensor/situational names come from the robot and are matched, not translated;
+  the sleep durations are now `SLEEP_OPTIONS` ("Dont", "5 minutes", …, read by `parseSleepTimeToSeconds`) with
+  `sleepTimeText(value)` for display only — translating them in the JSON does not break the phone↔robot protocol.
+- `RoboGuardColors` (in UiText.kt): the app's colour code in one place — Header 0xFF1A73E8, Action (green) 0xFF4CAF50,
+  Danger red, Good 0xFF2E7D32, Warn 0xFFEF6C00, Allowed 0xFFFF9100, Idle, OwnPoint 0xFF7B1FA2, error banner
+  0xFFFFE5E5/0xFFB00020, Surface/LogBackground. NavigationScreen now uses those instead of its own hex values, wraps
+  itself in `RoboGuardAndroidTheme` and reuses `HeaderAppName(title)` (that composable got an optional title parameter).
+- **"Show debug" switch** at the bottom of the phone map screen (rememberSaveable), like the robot's: it hides the status
+  lines (map, localized/SDK control, navigation state, position, who is steering) AND the "Show robot log" button + log.
+  Always visible without debug: the connection banner, "navigation not running", and the three store errors — they are the
+  reasons the robot refuses to drive.
+- Key check: 103 keys, all used, none missing. `:app:assembleDebug` → 35 MB APK. NOT installed (the owner's Pixel 7a is
+  attached over adb as `adb-43021JEHN04311-AZhd5D…`, but installing on their phone was not asked for).
+
+## Situational settings gate the two detectors (owner 2026-09-21, installed, VERIFIED on the robot)
+
+- Owner: "Discretion Mode" from the phone switches **conversation detection** on, "Pixelate Objects" switches **object
+  detection** on; **neither may change whether the microphone or the camera are active** (that stays the sensor settings').
+- `sensorcontrol/sensors.kt`: new `SituationalChangeListener`, `Sensors.situational: StateFlow<Map<String, Boolean>>`,
+  `isSituationalEnabled(name)` (case-insensitive: the robot's own defaults write "pixelate objects", the phone
+  "Pixelate Objects"), `updateSituational(map)` (**never calls SensorSwitches** — no hardware is touched),
+  `addSituationalListener` / `removeSituationalListener`, `readSituationalFile()`. `update(settings: AppSettings)` now
+  applies both parts, `reload()` likewise. **A setting the phone has never sent counts as OFF**, so nothing listens or
+  watches by itself.
+- `ConversationMonitor`: constant `DISCRETION_MODE`, situational listener, and `reevaluate()` refuses first with
+  "Discretion Mode is off in the privacy settings". `CalendarMonitor`: same with `PIXELATE_OBJECTS` /
+  "Pixelate Objects is off in the privacy settings". Both now log the reason once per change
+  ("not listening: …" / "not watching: …" / "conditions met, …").
+- Robot's `files/RoboSettings/privacy_settings.json` (VERIFIED 2026-09-21): sensors {Camera=false, Microphone=true,
+  LIDAR=true}, situational {"Pixelate Objects": false, "Discretion Mode": false} — so after this install both detectors
+  are OFF until the phone saves them as true. Confirmed in Logcat right after the install.
+- Phone app (owner: comment out, do not delete): in `SensorCategory` the per-sensor room expansion is commented out —
+  the arrow `Icon`, the `if (sensorExpanded) { … }` block with the room checkboxes, and the row's `.clickable`. The rooms
+  are still built and still sent to the robot; only the way to fold them out is gone. Compiles; NOT installed.
+
+## Calendar false positives in an empty room — cause and fix (2026-09-21, VERIFIED numbers, installed)
+
+**Owner: "the robot is staring at the same place, detecting a calendar every few minutes, and there is no calendar in sight."**
+Logcat (process 21464, "2/2 passes" mode, X = 20 / confirm 12) had two announcements ~2 min apart:
+`20:49:07 good 51, inliers 24` and `20:51:14 good 19, inliers 14`. The per-check lines show what really happened:
+```
+check: frame 32 px, scale 8,00, keypoints  9, good 446, inliers 336
+check: frame 42 px, scale 8,00, keypoints 35, good  95, inliers  81
+check: frame 44 px, scale 8,00, keypoints 43, good  51, inliers  24   <- the announced one
+```
+- The accepted pink areas were **32–74 px** long side (the calendar on the wall measured ~310 px), always scaled by the full
+  `maxRegionScale` 8.
+- **good 446 with 9 frame keypoints is arithmetically impossible as a real match:** `match()` calls
+  `batchDistance(reference.descriptors, frameDescriptors)`, so goodMatches counts REFERENCE features (~2000), each picking its
+  two nearest neighbours among only 9 frame points. The ratio test then passes by chance and `findHomography` collapses
+  hundreds of reference points onto a few frame points — a degenerate transform with a huge inlier count. No inlier threshold
+  can filter that (336 > any threshold).
+- Between the announcements: `regions 0,0 · rejected frame 20–24 · best inliers 0`, i.e. the room constantly produces small
+  pink-ish blobs that the frame/white gate rejects, and every few minutes one slips through.
+
+**Fix (installed 2026-09-21, three guards):**
+1. `ORB.match`: **one frame keypoint may be claimed by at most one reference feature** (keep the closest). goodMatches can
+   therefore never exceed the frame's keypoint count, which removes the degenerate case at the root.
+2. `OrbConfig.minFrameKeypoints` (settings.json `minFrameKeypoints`, default **60**, per image possible): `evaluateGray`
+   returns notFound for every reference when the frame/crop has fewer keypoints.
+3. `markerGatedPass`: pink areas with a long side below `minRegionLongSidePx` (settings.json, general only, default **100**)
+   are skipped entirely (`CalendarDetectionSettings.MIN_REGION_LONG_SIDE_PX`).
+
+After the install (process 6916): `detected 0/23 · regions 0,0 · rejected frame 23 · best inliers 0` — the small blobs no
+longer reach ORB at all, and no "check:" lines are produced for them. **Still to verify: that a real calendar at wall
+distance is still detected** — it measured ~310 px, well above the 100 px floor, but that has not been re-tested.

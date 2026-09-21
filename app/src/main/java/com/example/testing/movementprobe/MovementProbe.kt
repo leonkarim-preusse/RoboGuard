@@ -1,4 +1,4 @@
-package com.example.robocontrol.movementprobe
+package com.example.testing.movementprobe
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -33,7 +33,7 @@ import com.example.robocontrol.movement.RobotMapFile
 import com.example.robocontrol.movement.RobotPose
 import com.example.robocontrol.movement.SavedPoint
 import com.example.robocontrol.movement.SavedPointStore
-import com.example.robocontrol.voiceprobe.ProbeLog
+import com.example.testing.voiceprobe.ProbeLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job

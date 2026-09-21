@@ -1,4 +1,4 @@
-package com.example.robocontrol.conversationprobe
+package com.example.testing.conversationprobe
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -49,7 +49,7 @@ import com.example.robocontrol.conversation.ConversationSnapshot
 import com.example.robocontrol.conversation.ConversationState
 import com.example.robocontrol.conversation.SpeechGate
 import com.example.robocontrol.conversation.DecisionRule
-import com.example.robocontrol.voiceprobe.ProbeLog
+import com.example.testing.voiceprobe.ProbeLog
 import kotlin.math.max
 
 /**

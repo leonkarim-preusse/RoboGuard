@@ -1,4 +1,4 @@
-package com.example.robocontrol.voiceprobe
+package com.example.testing.voiceprobe
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -42,7 +42,7 @@ import kotlinx.coroutines.withContext
  * This is not part of RoboGuard's UI and is not reachable from it.
  *
  * Start it on the robot with
- *   adb shell am start -n com.example.roboguard/com.example.robocontrol.voiceprobe.VoiceProbeActivity
+ *   adb shell am start -n com.example.roboguard/com.example.testing.voiceprobe.VoiceProbeActivity
  * The full procedure is in README.md, "Testing the voice probes".
  *
  * Buttons:

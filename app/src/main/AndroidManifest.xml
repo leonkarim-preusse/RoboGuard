@@ -12,7 +12,7 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    <!-- robocontrol.voiceprobe: hardware tests for multi-speaker detection -->
+    <!-- testing.voiceprobe: hardware tests for multi-speaker detection -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="com.ainirobot.coreservice.robotSettingProvider" />
     <!-- robocontrol.sensorcontrol: mute the microphone via AudioManager.setMicrophoneMute -->
@@ -46,9 +46,9 @@
         <activity android:name=".PopupActivity"
             android:theme="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar" />
 
-        <!-- robocontrol.voiceprobe test screen; exported so it can be started via adb -->
+        <!-- testing.voiceprobe test screen; exported so it can be started via adb -->
         <activity
-            android:name="com.example.robocontrol.voiceprobe.VoiceProbeActivity"
+            android:name="com.example.testing.voiceprobe.VoiceProbeActivity"
             android:exported="true"
             android:label="RG Voice Test"
             android:taskAffinity="com.example.roboguard.voiceprobe">
@@ -59,9 +59,9 @@
             </intent-filter>
         </activity>
 
-        <!-- robocontrol.voiceprobe TTS test screen -->
+        <!-- testing.voiceprobe TTS test screen -->
         <activity
-            android:name="com.example.robocontrol.voiceprobe.TtsProbeActivity"
+            android:name="com.example.testing.voiceprobe.TtsProbeActivity"
             android:exported="true"
             android:label="RG TTS Test"
             android:taskAffinity="com.example.roboguard.ttsprobe">
@@ -91,9 +91,9 @@
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar" />
 
-        <!-- robocontrol.movementprobe test screen: map, points, driving -->
+        <!-- testing.movementprobe test screen: map, points, driving -->
         <activity
-            android:name="com.example.robocontrol.movementprobe.MovementProbeActivity"
+            android:name="com.example.testing.movementprobe.MovementProbeActivity"
             android:exported="true"
             android:label="RG Movement Test"
             android:taskAffinity="com.example.roboguard.movementprobe">
@@ -103,9 +103,9 @@
             </intent-filter>
         </activity>
 
-        <!-- robocontrol.objectprobe test screen: ORB object detection on the live camera -->
+        <!-- testing.objectprobe test screen: ORB object detection on the live camera -->
         <activity
-            android:name="com.example.robocontrol.objectprobe.ObjectProbeActivity"
+            android:name="com.example.testing.objectprobe.ObjectProbeActivity"
             android:exported="true"
             android:label="RG Object Test"
             android:taskAffinity="com.example.roboguard.objectprobe">
@@ -115,9 +115,9 @@
             </intent-filter>
         </activity>
 
-        <!-- robocontrol.conversationprobe test screen: speaker change detection -->
+        <!-- testing.conversationprobe test screen: speaker change detection -->
         <activity
-            android:name="com.example.robocontrol.conversationprobe.SpeakerProbeActivity"
+            android:name="com.example.testing.conversationprobe.SpeakerProbeActivity"
             android:exported="true"
             android:label="RG Speaker Test"
             android:taskAffinity="com.example.roboguard.speakerprobe">
@@ -127,9 +127,9 @@
             </intent-filter>
         </activity>
 
-        <!-- robocontrol.sensorprobe test screen -->
+        <!-- testing.sensorprobe test screen -->
         <activity
-            android:name="com.example.robocontrol.sensorprobe.SensorProbeActivity"
+            android:name="com.example.testing.sensorprobe.SensorProbeActivity"
             android:exported="true"
             android:label="RG Sensor Test"
             android:taskAffinity="com.example.roboguard.sensorprobe">

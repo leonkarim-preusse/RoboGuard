@@ -1,4 +1,4 @@
-package com.example.robocontrol.sensorprobe
+package com.example.testing.sensorprobe
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -26,7 +26,7 @@ import com.example.robocontrol.sensorcontrol.Sensors
 import com.example.robocontrol.vision.CameraSnapshot
 import com.example.robocontrol.vision.SnapshotFailure
 import com.example.robocontrol.vision.SnapshotResult
-import com.example.robocontrol.voiceprobe.ProbeLog
+import com.example.testing.voiceprobe.ProbeLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow

@@ -1,4 +1,4 @@
-package com.example.robocontrol.movementprobe
+package com.example.testing.movementprobe
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -69,7 +69,7 @@ import com.example.robocontrol.movement.PgmMap
 import com.example.robocontrol.movement.Point2D
 import com.example.robocontrol.movement.RobotPose
 import com.example.robocontrol.movement.Zone
-import com.example.robocontrol.voiceprobe.ProbeLog
+import com.example.testing.voiceprobe.ProbeLog
 import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.min

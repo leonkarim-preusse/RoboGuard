@@ -137,6 +137,52 @@ Short and factual; details and raw numbers are in `CLAUDE.md` and the probe logs
   0.5 s to 3 s instead of hammering the network. 403 and 401 are shown as their own wording ("only inside the local
   network", "pairing no longer valid").
 
+## 10. Texts of the phone app (2026-09-21)
+
+- The phone app now reads every displayed text from `assets/texts/texts.json`, the same arrangement the robot has since
+  section 7: one entry per text with a note saying where it appears, placeholders in curly braces.
+- Both ends of RoboGuard are therefore worded in one readable file each — relevant for the user study (the participants
+  read the phone, not the code) and for a German version without touching Kotlin.
+- What is deliberately NOT a text: sensor names (they come from the robot and are matched), and the sleep durations
+  (they are turned into seconds for the robot). Translating them would break the protocol between phone and robot, so they
+  stay values and only their labels are texts.
+- The phone map screen got the robot's "Show debug" switch: status lines and the robot's event log sit behind it, while
+  anything that explains why the robot refuses to drive (offline, not localized, unreadable private areas) is always
+  visible. Colours follow the app's existing code (blue header, red for stopping and deleting, green for a yes),
+  collected in one `RoboGuardColors` object so both screens say the same thing with the same colour.
+
+## 11. Timing of the conversation question (2026-09-21)
+
+- The hold before the conversation question (1 s of "more than one speaker") is switched off for now, so the question
+  appears as soon as the detector says so. The remaining wait is the evidence rule inside the detector.
+
+## 12. Situational settings decide what is detected (2026-09-21)
+
+- The two situational switches of the phone app now have a real effect: **Discretion Mode** turns conversation detection
+  on, **Pixelate Objects** turns object detection on. Off — or never sent — means the robot does not run that detection.
+- Deliberately separate from the sensor switches: neither of them touches the microphone or the camera. A sensor says
+  whether the robot may sense at all; a situational setting says whether a feature that uses it may run. So "microphone on,
+  Discretion Mode off" is a legitimate state: the robot can still be spoken to, but it does not analyse conversations.
+- Default is off. Nothing starts listening or watching until the phone has sent that setting as true, which fits the
+  opt-out-by-default argument: a feature that processes what people say or what hangs on their wall has to be asked for.
+- Both monitors log why they are not running ("not listening: Discretion Mode is off in the privacy settings"), so the
+  state is inspectable instead of silent.
+- Per-room sensor settings are hidden in the phone app for now (commented out, not removed): a sensor is set for the whole
+  flat. The rooms are still sent to the robot, so the data model is unchanged.
+
+## 13. A calendar in an empty room (2026-09-21)
+
+- The robot announced a calendar every few minutes while standing still in a room that had none. The logs showed the cause:
+  the pink gate occasionally let a 30-70 px speck through, and ORB then "matched" it — in one check 9 keypoints in the
+  picture produced 446 matches and 336 agreeing points, which cannot happen in a real match.
+- Why it can happen: the matching runs from the reference picture into the camera picture, so about 2000 reference features
+  each pick their nearest neighbour among a handful of points; the usual distinctiveness test passes by chance, and the
+  geometric fit then folds all of them onto those few points. The result looks like an extremely strong detection.
+- Worth stating in the evaluation: a detection threshold ("how many points must agree") cannot defend against this, because
+  the degenerate case produces MORE agreement than a real one, not less. The defences are structural: one point can only be
+  matched once, a minimum amount of texture before matching at all, and a minimum size for the area that is searched.
+- All three are now in place, with the two numbers (60 keypoints, 100 px) in settings.json so a study run can report them.
+
 ## Open issues / to adjust later
 
 - ~~**Driving stops when the Navigation screen is left**~~ (solved 2026-09-21 by the service-owned navigation, see section 9).
