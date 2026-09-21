@@ -268,6 +268,17 @@ class MapNavigationActivity : ComponentActivity() {
         // Debug: camera stream of the calendar detection, shown in place of this screen (same activity, so driving continues).
         var cameraView by rememberSaveable { mutableStateOf(false) }
         var speakerView by rememberSaveable { mutableStateOf(false) }
+        var voiceView by rememberSaveable { mutableStateOf(false) }
+        if (voiceView) {
+            com.example.robocontrol.conversation.VoiceEnrolmentScreen(onBack = { voiceView = false }) {
+                Button(
+                    onClick = { probe.stop("STOP pressed") },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
+                    modifier = Modifier.fillMaxWidth().height(56.dp)
+                ) { Text(UiText.get("nav.button.stop"), fontSize = 20.sp) }
+            }
+            return
+        }
         if (speakerView) {
             com.example.robocontrol.conversation.SpeakerDebugScreen(onBack = { speakerView = false }) {
                 Button(
@@ -507,6 +518,7 @@ class MapNavigationActivity : ComponentActivity() {
                 if (showDebug) {
                     Button(onClick = { cameraView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.show_camera")) }
                     Button(onClick = { speakerView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.show_speaker")) }
+                    Button(onClick = { voiceView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.teach_voice")) }
                     OutlinedButton(onClick = { log.clearScreen() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.clear_log")) }
                 }
             }

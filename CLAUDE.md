@@ -1489,3 +1489,42 @@ check: frame 44 px, scale 8,00, keypoints 43, good  51, inliers  24   <- the ann
 After the install (process 6916): `detected 0/23 · regions 0,0 · rejected frame 23 · best inliers 0` — the small blobs no
 longer reach ORB at all, and no "check:" lines are produced for them. **Still to verify: that a real calendar at wall
 distance is still detected** — it measured ~310 px, well above the 100 px floor, but that has not been re-tested.
+
+## Voice fingerprinting: 3D-Speaker CAM++ + owner enrolment (owner request 2026-09-21, installed, not yet run on the robot)
+
+Owner's design: the robot stores ONE voiceprint, its owner's; every other voice is only compared ("owner or not") and
+forgotten. Change detection stays; a switch between the two methods is still to come.
+
+- **Model:** `3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx` from the sherpa-onnx model release, shipped as
+  `robocontrol/assets/speaker/campplus_en_voxceleb.onnx` (29.6 MB, sha256 357a834f702b8016…) with
+  `README_LICENSE.txt` next to it (3D-Speaker toolkit Apache-2.0, weights trained on VoxCeleb = research use).
+  Model I/O VERIFIED on the PC: input `x` float[N, T, 80], output `embedding` float[N, **512**] (not 192).
+  APK 75 MB → **99 MB**.
+- **`conversation/Fbank.kt` (new):** Kaldi-layout 80-dim log-mel fbank — DC removal, pre-emphasis 0.97, **Povey window**
+  ((0.5−0.5cos)^0.85), FFT 512, power spectrum, 80 triangular mel filters 20 Hz–8 kHz (mel = 1127·ln(1+f/700)), natural
+  log floored at the float epsilon, plus `cepstralMeanNormalise` (the 3D-Speaker pipeline subtracts the mean over time).
+  This is a SECOND front-end next to `Mfcc.kt` (12 cepstral coefficients for the change detector); the models need the
+  raw log-mel energies.
+  **VERIFIED twice:** (1) the Python reference of the same algorithm + the ONNX model on sherpa's sample recordings gives
+  same speaker 0.548 / 0.675, different speakers 0.087 / 0.102 / 0.236; (2) the Kotlin port compiled with kotlinc against
+  the same wav matches the Python features to 4 decimals on every sampled row.
+- **`conversation/SpeakerEmbedder.kt` (new):** ONNX Runtime wrapper in the `SileroVad` pattern (single-threaded session,
+  `close()`); `embed(samples)` → L2-normalised FloatArray(512) or null below 1 s of audio; `similarity(a, b)` = dot
+  product. Buffers zeroed after every call.
+- **`conversation/OwnerVoiceprint.kt` (new):** `Voiceprint` can only be **compared** (`similarityTo`) and **erased**
+  (`zero()`) — no getter, `toString` prints no values. `OwnerVoiceprintStore` (singleton) writes
+  `files/robocontrol/voice/owner.print`, AES-256-GCM through `KeystoreZoneCipher("robocontrol_owner_voiceprint")` (own key,
+  AAD `roboguard-voiceprint:owner.print`), temp file + fsync + rename; `info: StateFlow<VoiceprintInfo?>` exposes only
+  statistics (date, pieces, seconds, dimensions, self-similarity mean/worst, threshold).
+- **`conversation/VoiceEnrolment.kt` (new):** own thread, `AndroidMicSource` 16 kHz + `SileroVad` gate (p ≥ 0.5), keeps
+  ONLY speech, one embedding per **3 s of speech**, target **30 s**, ≥ 4 pieces; template = normalised mean, pieces below
+  0.45 similarity to the first centroid are dropped and the mean is taken again; `threshold = max(0.45, mean − 2σ)`.
+  Test mode compares each piece with the stored template and publishes only the similarity. Takes the mic from
+  `ConversationMonitor` via `setProbeUsingMicrophone`, zeroes every buffer in `finally`.
+- **`conversation/VoiceEnrolmentView.kt` (new):** Navigation and Map → Show debug → **"Teach owner's voice"**
+  (`nav.button.teach_voice`). Shows what is stored (date, pieces, seconds, dimensions, quality, threshold), records with a
+  progress bar over SPEECH seconds, "Try the voice" with a similarity bar and the threshold marked, delete with
+  confirmation, live Silero probability + level, and a privacy note. Asks for RECORD_AUDIO itself. 31 new text keys
+  (`voice.*`, `nav.button.teach_voice`).
+- NOT done yet: `OwnerVoiceDetector` (the detector that uses the template) and the debug switch between change detection
+  and fingerprinting. The enrolment screen's "Try the voice" is what gives the numbers to set the threshold from.

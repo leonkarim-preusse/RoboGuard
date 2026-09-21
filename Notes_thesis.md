@@ -183,6 +183,27 @@ Short and factual; details and raw numbers are in `CLAUDE.md` and the probe logs
   matched once, a minimum amount of texture before matching at all, and a minimum size for the area that is searched.
 - All three are now in place, with the two numbers (60 keypoints, 100 px) in settings.json so a study run can report them.
 
+## 14. Voice fingerprinting: the owner's voice (2026-09-21)
+
+- Decision (owner): the robot stores exactly ONE voiceprint — the owner's, who consents and can delete it. Every other
+  voice is compared against it, labelled "not the owner" and immediately forgotten. Change detection stays in the code;
+  the two methods will be switchable so the evaluation can compare them.
+- Model: CAM++ from 3D-Speaker (Apache-2.0 toolkit, VoxCeleb weights, research use), 29.6 MB, run on the robot with ONNX
+  Runtime. Nothing is sent anywhere. The app grew from 75 MB to 99 MB.
+- The front-end had to be written from scratch (Kaldi-style 80-band log-mel), because the neural model needs different
+  features than the change detector's MFCC. It was verified twice: against a Python reference with the model on sample
+  recordings (same speaker 0.55/0.68, different speakers 0.09-0.24), and the Kotlin port against that reference,
+  matching to four decimals.
+- Enrolment: 30 seconds of SPEECH (pauses do not count), split into 3 s pieces, each turned into a pattern; pieces that
+  do not fit the rest are dropped, so one cough or a second person in the room does not move the template. The decision
+  threshold is derived from how consistent the owner's own pieces were, not guessed.
+- What is stored, and what is not: only the averaged pattern, encrypted with its own key on the robot, deletable with one
+  button. The recording is never written; other people's patterns exist for a fraction of a second in a buffer that is
+  overwritten. The type holding the template offers no way to read it out — it can be compared and erased, nothing else.
+- The screen shows all of it: when the voice was taught, how many pieces, how consistent they were, where the threshold
+  sits, and a "try it" mode that displays the similarity live. That is the visibility the thesis argues for: a robot that
+  recognises its owner should be able to say so, and be switched off again.
+
 ## Open issues / to adjust later
 
 - ~~**Driving stops when the Navigation screen is left**~~ (solved 2026-09-21 by the service-owned navigation, see section 9).

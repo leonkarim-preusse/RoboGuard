@@ -283,6 +283,48 @@
       "text": "Speed (next drive): {speed}",
       "note": "Map screen: which speed the next drive uses"
     },
+    "nav.button.teach_voice": {
+      "text": "Teach owner's voice",
+      "note": "Navigation and Map, Show debug: opens the screen that records the owner's voice and stores it."
+    },
+    "voice.title": {
+      "text": "The robot's owner voice",
+      "note": "Headline of the voice screen."
+    },
+    "voice.explanation": {
+      "text": "The robot learns ONE voice: yours. It then only ever asks \"is this the owner or somebody else\" — it does not learn anybody else's voice and stores nothing about other people.",
+      "note": "Explanation under the headline of the voice screen."
+    },
+    "voice.button.back": { "text": "Back", "note": "Leaves the voice screen." },
+    "voice.button.record": { "text": "Record voice (30 s of speech)", "note": "Starts the recording that teaches the robot the owner's voice." },
+    "voice.button.record_again": { "text": "Record again (replaces the stored voice)", "note": "Same button once a voice is already stored." },
+    "voice.button.test": { "text": "Try the voice", "note": "Listens and shows how close what it hears is to the stored voice; stores nothing." },
+    "voice.button.stop": { "text": "Stop", "note": "Ends recording or trying." },
+    "voice.button.delete": { "text": "Delete voice", "note": "Deletes the stored voice." },
+    "voice.button.cancel": { "text": "Cancel", "note": "Closes a question without doing anything." },
+    "voice.dialog.delete.title": { "text": "Delete the stored voice?", "note": "Headline of the confirmation before deleting." },
+    "voice.dialog.delete.text": { "text": "The robot then no longer knows any voice and cannot tell the owner from anybody else until a new recording.", "note": "Text of that confirmation." },
+    "voice.error.permission": { "text": "Without permission for the microphone the robot cannot learn a voice.", "note": "Shown when the microphone permission was refused." },
+    "voice.stored.title": { "text": "Stored", "note": "Headline over what the robot has stored." },
+    "voice.stored.none": { "text": "No voice stored. The robot does not know its owner's voice.", "note": "Shown while nothing is stored." },
+    "voice.stored.date": { "text": "Taught on {date}", "note": "When the stored voice was recorded." },
+    "voice.stored.detail": { "text": "{pieces} pieces of speech, {seconds} s, {dimensions} values", "note": "What the stored voice consists of: number of pieces, seconds of speech, size of the stored pattern." },
+    "voice.stored.quality": { "text": "Pieces matched the pattern with {mean} on average (worst {worst}); from {threshold} a voice counts as the owner.", "note": "How consistent the recording was and where the decision threshold sits." },
+    "voice.now.title": { "text": "Right now", "note": "Headline over what is happening at the moment." },
+    "voice.now.idle": { "text": "Nothing running.", "note": "Shown while neither recording nor trying." },
+    "voice.now.recording": { "text": "Recording: {seconds} of {target} s of speech, {pieces} pieces", "note": "Progress while recording; only speech counts, pauses do not." },
+    "voice.hint.speak": { "text": "Please keep talking normally, from where you usually stand. Different sentences are better than one repeated.", "note": "Hint during the recording." },
+    "voice.now.testing_wait": { "text": "Listening — say something.", "note": "Shown while trying, before the first piece of speech is complete." },
+    "voice.now.owner": { "text": "Owner ({similarity})", "note": "Result of a try: the voice matched the stored one; {similarity} is how close, 1.00 = identical." },
+    "voice.now.other": { "text": "Somebody else ({similarity})", "note": "Result of a try: the voice did not match the stored one." },
+    "voice.now.pieces": { "text": "{pieces} pieces compared", "note": "How many pieces of speech have been compared in this try." },
+    "voice.now.saved": { "text": "Voice stored.", "note": "Shown after a successful recording." },
+    "voice.now.error": { "text": "Did not work: {error}", "note": "Shown when recording or storing failed." },
+    "voice.now.microphone": { "text": "Microphone: speech {probability}, level {level} dB", "note": "Live numbers so it is visible that the robot hears something." },
+    "voice.privacy": {
+      "text": "The recording is not kept: only a pattern of numbers is stored, encrypted on the robot, and it can be deleted here at any time. Other voices are compared and immediately forgotten.",
+      "note": "Privacy note at the bottom of the voice screen."
+    },
     "nav.label.remote_control": {
       "text": "Steered from the phone app: {client}",
       "note": "Blue bar on the navigation screen while someone controls the robot from the phone ({client} = the phone's name)."
