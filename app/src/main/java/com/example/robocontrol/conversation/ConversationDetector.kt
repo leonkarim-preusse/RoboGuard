@@ -18,6 +18,18 @@ enum class ConversationState {
 }
 
 /** What a detector currently reports. Only levels, distances, counts and times; nothing that characterises a voice. */
+/**
+ * One 10 ms audio frame for the debug screen: how loud it was, what Silero thought, and whether the gate counted it as speech.
+ * Only numbers — no audio is kept or copied out of the detector.
+ */
+data class AudioFrame(val timeMs: Long, val levelDb: Double, val probability: Double?, val speech: Boolean)
+
+/** Something worth marking on the debug timeline. */
+enum class ConversationEventKind { CHANGE, CANDIDATE_REJECTED, RESET, MULTIPLE }
+
+/** @property ratio BIC gain / penalty of a candidate (0 for resets and state flips) */
+data class ConversationEvent(val timeMs: Long, val kind: ConversationEventKind, val ratio: Double = 0.0)
+
 data class ConversationSnapshot(
     val state: ConversationState = ConversationState.NO_SPEECH,
     val running: Boolean = false,
@@ -39,6 +51,10 @@ data class ConversationSnapshot(
     val multipleByEvidence: Boolean = false,
     val decisionRule: DecisionRule = DecisionRule.EVIDENCE,
     val totalChanges: Int = 0,
+    /** Last ~15 s of audio frames, oldest first; only filled while a debug screen asked for it ([SpeakerChangeDetector.debugTimeline]). */
+    val timeline: List<AudioFrame> = emptyList(),
+    /** Events in that same span (speaker changes, rejected candidates, conversation resets). */
+    val events: List<ConversationEvent> = emptyList(),
     /** Recent KL2 values, oldest first, for a live graph. */
     val kl2History: List<Double> = emptyList(),
     /** Recent candidates, newest last (accepted = counted as a change). */
@@ -72,6 +88,18 @@ class SpeakerChangeDetector(
     /** Called on the audio thread for every evaluated candidate (for logging / tests). */
     private val onCandidate: (ChangeCandidate) -> Unit = {}
 ) : ConversationDetector {
+
+    /**
+     * Collect the audio timeline and events for a debug screen. Off by default: it costs a small ring buffer and copies
+     * ~1500 numbers into every snapshot.
+     */
+    @Volatile
+    var debugTimeline: Boolean = false
+
+    private var lastState = ConversationState.NO_SPEECH
+
+    private val timeline = ArrayDeque<AudioFrame>()
+    private val events = ArrayDeque<ConversationEvent>()
 
     private val _snapshot = MutableStateFlow(ConversationSnapshot())
     override val snapshot: StateFlow<ConversationSnapshot> = _snapshot.asStateFlow()
@@ -175,8 +203,16 @@ class SpeakerChangeDetector(
 
                 val levelDb = mfcc.compute(frame, features)
                 val candidate = detector.onFrame(timeMs, levelDb, features, speechProbability)
+                if (debugTimeline) {
+                    timeline.addLast(AudioFrame(timeMs, levelDb, speechProbability, detector.lastFrameWasSpeech))
+                    while (timeline.size > TIMELINE_FRAMES) timeline.removeFirst()
+                    while (events.isNotEmpty() && timeMs - events.first().timeMs > TIMELINE_FRAMES * 10L) events.removeFirst()
+                } else if (timeline.isNotEmpty()) {
+                    timeline.clear(); events.clear()
+                }
                 if (detector.conversationResets != resetsSeen) {
                     resetsSeen = detector.conversationResets
+                    if (debugTimeline) events.addLast(ConversationEvent(timeMs, ConversationEventKind.RESET))
                     acceptedTimes.clear()
                     kl2History.clear()
                     evidence = 0.0
@@ -197,6 +233,10 @@ class SpeakerChangeDetector(
                     if (candidate.countsAsChange) {
                         acceptedTimes.addLast(candidate.timeMs)
                         totalChanges++
+                    }
+                    if (debugTimeline) {
+                        events.addLast(ConversationEvent(candidate.timeMs,
+                            if (candidate.countsAsChange) ConversationEventKind.CHANGE else ConversationEventKind.CANDIDATE_REJECTED, candidate.ratio))
                     }
                     if (candidate.bicPenalty > 0) {
                         evidence = evidenceAt(timeMs) + candidate.evidenceAdded(config.evidenceBaseRatio)
@@ -221,6 +261,10 @@ class SpeakerChangeDetector(
                         detector.speechFrames < 2L * config.windowFrames -> ConversationState.LISTENING
                         else -> ConversationState.ONE_SPEAKER
                     }
+                    if (debugTimeline && state == ConversationState.MULTIPLE_SPEAKERS && lastState != ConversationState.MULTIPLE_SPEAKERS) {
+                        events.addLast(ConversationEvent(timeMs, ConversationEventKind.MULTIPLE))
+                    }
+                    lastState = state
                     _snapshot.value = ConversationSnapshot(
                         state = state,
                         running = true,
@@ -238,6 +282,8 @@ class SpeakerChangeDetector(
                         multipleByCount = multipleByCount,
                         multipleByEvidence = multipleByEvidence,
                         decisionRule = config.decisionRule,
+                        timeline = if (debugTimeline) timeline.toList() else emptyList(),
+                        events = if (debugTimeline) events.toList() else emptyList(),
                         totalChanges = totalChanges,
                         kl2History = kl2History.toList(),
                         candidates = candidates.toList(),
@@ -270,5 +316,8 @@ class SpeakerChangeDetector(
         const val PUBLISH_MS = 100L
         const val HISTORY = 300
         const val CANDIDATES = 30
+
+        /** Frames kept for the debug timeline: 1500 × 10 ms = 15 s. */
+        const val TIMELINE_FRAMES = 1500
     }
 }

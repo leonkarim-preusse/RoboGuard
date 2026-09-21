@@ -1324,3 +1324,85 @@ these beans have not been inspected yet.
   either way; RoboGuard 200–250 % with the calendar in view. Owner: back to 1500 features (installed; 8× limit kept). record.py now also
   reads RoboGuardNav (drive Started/ARRIVED/FAILED/STOP, AvoidingObstacle/Cleared) and plot.py shades driving (light blue) and obstacle
   avoidance (light orange) in all time panels.
+
+## Texts in one JSON (owner request 2026-09-21, compiled + installed, not yet seen on the robot)
+
+- **Scope (owner choice):** product UI + spoken sentences — RoboGuard's own screens, Navigation and Map, privacy/conversation pop-ups,
+  calendar camera view, service notifications. The five RG … Test screens keep their hard-coded strings.
+- `robocontrol/assets/texts/texts.json` (ships as `assets/texts/texts.json`), 163 entries, ONE text per key (owner: "each text should
+  just have a variable, not for two languages"; a first two-file en/de version and a two-languages-per-key version were discarded):
+  `"key": { "text": "…", "note": "where it appears" }`, plus `_readme` and `meta.speechLanguage` (de_DE/en_US → voice for the
+  `speech.*` sentences).
+- `robocontrol/text/UiText.kt`: `init(context)` (called in RobotServerService.onCreate and in every product activity, idempotent),
+  `get(key, vararg "name" to value)` with `{name}` placeholders, `getOrNull`, `keys`, `reload()`. Missing key → the key is shown and
+  logged (tag UiText). No override file, no language switch: the file in assets is the single place to edit (owner: "keep it in the assets").
+- Converted: MainActivity (incl. the ON/ALLOWED colour rule, now compared against the texts), PopupActivity, RobotServerService
+  (notification channels/titles, popups, spoken sentences), MapNavigation(+Activity) (all labels, dialogs, error/banner texts, spoken
+  sentences), PrivacyOverrideActivity, ConversationPromptActivity + ConversationMonitor (`apologySentence`/`micMutedSentence` now
+  properties), CalendarMonitor (`sentence`), CalendarCameraView. `OrionStarTts.speakConfigured(text)` picks the voice from
+  `meta.speechLanguage`; callers moved from `speakGerman`.
+- Key check (script in the session): 163 keys, all used, none missing (the three "yes/NO/?" hits are in the movement TEST screen, out of scope).
+
+## Speaker debug screen + settings.json (owner request 2026-09-21, compiled + installed, not yet run)
+
+- **Silero assets moved:** `robocontrol/assets/silero/silero_vad.onnx` + LICENSE; `SileroVad.MODEL_ASSET = "silero/silero_vad.onnx"`.
+- **Speaker debug screen:** `conversation/SpeakerDebugView.kt` `SpeakerDebugScreen(onBack, topControls)`, opened from Navigation and Map →
+  Show debug → "Show speaker detection" (same activity as the camera view, so driving continues; STOP passed in as topControls).
+  Detector side: `ConversationSnapshot.timeline: List<AudioFrame(timeMs, levelDb, probability, speech)>` (1500 frames = 15 s) and
+  `events: List<ConversationEvent(timeMs, kind, ratio)>` with kinds CHANGE / CANDIDATE_REJECTED / RESET / MULTIPLE; collected only while
+  `SpeakerChangeDetector.debugTimeline` is true, set by `ConversationMonitor.addDebugViewer/removeDebugViewer`; `ConversationMonitor.snapshot`
+  mirrors the detector snapshot. Drawing: level line (−90…0 dBFS), Silero probability with its threshold, green background where the gate
+  counted speech (white = cut out), coloured event marks; event list with seconds ago and ratio. Numbers only, no audio kept.
+- **`robocontrol/assets/settings/settings.json` + `vision/DetectionSettings.kt`:** every ORB/pink value with a `note`, written as
+  `{ "value": …, "note": "…" }` (plain values also accepted). `orb.general` = defaults for all references; `orb.images.<file name>` overrides
+  single values for one reference (`enabled`, `usePinkMarker`, keypoints, FAST, levels, thresholds, homography, …). Whole-picture keys
+  (pink block, workers, maxPassesPerSecond, maxRegions, consistency, cooldown, region scaling, orbMarginPx) are general only; naming them per
+  image logs a warning and is ignored, as are unknown keys. Missing/broken file → built-in defaults + error log (tag DetectionSettings).
+- **Wiring:** `CalendarDetectionSettings` is now a thin read-only bridge onto `DetectionSettings` (values are `get()`s, so an edited file
+  takes effect on the next start). `ORB(context, config, configFor, skipReference)`: per-reference `OrbConfig` (own detector per
+  features/FAST/levels combination, cached), `ObjectReference.config`, and `match()` uses the reference's own thresholds; assets with
+  `enabled: false` are not loaded ("switched off in settings.json"). `markerGatedPass(thresholds: (String) -> Pair<Int, Int>, classNames)`.
+  `CalendarMonitor.detectionPass` splits the references: pink-gated ones go through `markerGatedPass`, references with
+  `usePinkMarker: false` are searched with `orb.evaluate` on the whole frame in the same pass.
+- Texts file now 186 entries (speaker view + the new buttons).
+
+
+## Navigation and Map on the phone (2026-09-21, compiled on both sides, NOT run on hardware)
+
+- **`robocontrol/movement/NavigationHub.kt` (new):** the ONE `MapNavigation` of the process, owned by `RobotServerService`
+  (`NavigationHub.start(applicationContext)` in onCreate, `stop()` in onDestroy). Holds the shared `NavigationLog` and
+  `remoteControl: StateFlow<String?>` (name of the phone that sent the last command, cleared after `REMOTE_ACTIVE_MS` = 30 s).
+  `MapNavigationActivity` now uses `NavigationHub.current` (own instance only as a fallback), **no longer stops the drive in
+  onStop** (this closes the open issue "Navigation stops driving if I leave it"), and `startOnce()` only calls `probe.reload()`.
+- **`robocontrol/movement/NavigationRoutes.kt` (new):** handlers `navigationStateJson()`, `navigationMapJson()`,
+  `navigationMapPng()`, `navigationCommand(payload, client)` plus `ApplicationCall.refuseIfNotLocal()` / `isLocalAddress()`.
+  Mounted in `RobotServerService`'s routing block with the EXISTING helpers `secureGet` / `securePost`, so authentication is
+  unchanged (`requireClientAuth`: `X-Client-Id` + HMAC over the payload, empty string for GET). Routes: `GET /nav/state`,
+  `GET /nav/map.json`, `GET /nav/map.png`, `POST /nav/command`.
+  **Local-network check built and then REMOVED again (owner 2026-09-21: "is local is not really necessary right? Since the
+  server only hosts on the local network anyways?" — correct):** the server binds `0.0.0.0:8443` for ALL its routes, so /nav
+  is reachable exactly where /save and /capabilities already are; a "remote host must be private/link-local/loopback" test
+  only restated that, and would have refused a phone in the same room on an IPv6 network (global addresses, no NAT).
+  What keeps strangers out is the pairing (client id + HMAC).
+  `POST /nav/command` actions: select, point, drive, stop, speed, clearPoints, saveLocation, deleteLocation, areaCircle,
+  drawStart, drawUndo, drawCancel, drawFinish, deleteArea, revokeArea, answerPrivacy, reload, resetLocations, resetAreas.
+  Every command answers with the NEW state plus `ok`/`message` (the robot's own refusal wording). `allowArea` deliberately
+  does NOT exist: a crossing permission is only granted by answering the robot's question (`answerPrivacy`).
+  State JSON: map, localized, sdkControl, navState, speed, measuredSpeed, remoteControl, now (robot clock), pose, selected,
+  places, points, areas (name, allowedUntil, corners), privacyMargin, drawing, areasLoaded, the three store errors, question
+  (id/area) and the last 40 log lines. map.json carries widthPx/heightPx/resolution/minX/maxX/minY/maxY (top row = highest y).
+- Robot screen: blue bar `nav.label.remote_control` ("Steered from the phone app: …") while a phone is steering.
+- **Phone app `~/AndroidStudioProjects/RoboGuardAndroidEnd` (owner: "no absolutely change the Phone app"):**
+  - `RobotAPI.kt`: `NavCall` (Ok / Unreachable / Refused), `navState()`, `navMapInfo()`, `navMapImage()`, `navCommand(body)`,
+    all signed with the existing `createSignature` + `ensureConnection()` (mDNS fallback). Any exception → `Unreachable`.
+  - `NavigationModel.kt` (new): serializable state classes, `NavConnection`, `NavigationClient` (poll every 500 ms; 3 s while
+    offline; map picture fetched once per map name; command answers replace the state at once).
+  - `NavigationScreen.kt` (new): map picture with the robot's pose, places, tapped points, private areas (orange while
+    temporarily allowed) and the area being drawn; tap = `point`; drive/STOP, speed presets, place list, save/delete position,
+    area create/delete/revoke, the crossing question as a dialog, the robot's log, connection dot + offline banner with
+    "Try again".
+  - `MainActivity.kt`: green button "Navigation and Map" in StartUI → full-screen `NavigationScreen`.
+  - The phone repo had **no `gradle/wrapper/gradle-wrapper.properties`** (only the jar); copied from this repo (Gradle 8.13)
+    to be able to build it. `:app:compileDebugKotlin` passes on both sides.
+  - Robot APK built and INSTALLED 2026-09-21 11:43 (110 MB debug, `adb install -r` Success), not yet run. The phone app is
+    compiled but not installed by Claude.

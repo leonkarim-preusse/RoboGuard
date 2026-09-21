@@ -89,7 +89,56 @@ Short and factual; details and raw numbers are in `CLAUDE.md` and the probe logs
   - Result on the robot: pending.
 - Next ideas (not done): alternative algorithms (e.g. SIFT/AKAZE) to be discussed later.
 
+## 7. Texts and wording (2026-09-21)
+
+- All texts the robot shows or says (product screens, pop-ups, spoken sentences) come from one file `assets/texts/texts.json`: one entry per text with the text itself and a note explaining where it appears.
+- Reason: wording and language can be changed in one place, without touching code — useful for the user study (instructions, robot sentences) and for a German/English version.
+- Loader `robocontrol/text/UiText.kt`: reads the file once, `UiText.get("key", "placeholder" to value)`; placeholders in curly braces stay readable in the file; missing key → the key name appears on screen, so a gap is visible.
+- Speech: `meta.speechLanguage` in the same file picks the voice (de_DE / en_US) for the spoken sentences.
+- Test/probe screens keep their hard-coded texts on purpose (developer tools, not part of the study).
+
+## 8. Debug screens and settings file (2026-09-21)
+
+- **Speaker detection debug screen** (Navigation and Map → Show debug → "Show speaker detection"): shows the last 15 s of microphone input — loudness, Silero's speech probability and, as a green background, the frames the gate counted as speech (white = what Silero cut out). Marks for counted voice changes, rejected candidates, conversation resets and "more than one speaker", plus the current numbers (evidence, KL2, speech seconds) and an event list.
+  - The timeline is only collected while the screen is open; no audio is stored, only numbers per 10 ms frame.
+  - Purpose for the thesis: makes visible why a conversation was (not) detected — especially what the neural speech gate discards.
+- **Detection settings in `assets/settings/settings.json`**: all ORB and pink-marker values (keypoints, FAST, pyramid levels, thresholds, scaling, homography method, pink search, workers, consistency, cooldown) with a note per value.
+  - `general` applies to every reference image; a section under `images` named after a reference file overrides single values for that image only (e.g. more keypoints, other thresholds, `enabled: false`, or `usePinkMarker: false` = search this picture in the whole camera image instead of inside pink frames).
+  - Values that describe the whole camera picture (pink search, workers, passes per second) are general only; naming them per image is ignored and logged.
+  - Reason: the user study needs different objects with different demands without code changes, and the thesis can report the exact settings of each run.
+- Silero model moved to `assets/silero/` (own folder next to `texts/`, `settings/`, `ORB_img/`).
+
+## 9. Navigation and Map on the phone (2026-09-21)
+
+- Goal: the person should be able to see and steer the robot's "Navigation and Map" screen from the phone app — the same map,
+  the same position, the same private areas, synchronized in both directions.
+- **The navigation moved out of the screen into the service** (`movement/NavigationHub.kt`, started in `RobotServerService`):
+  one `MapNavigation` for the robot screen and the phone, so both see the same state. Side effect: a drive no longer stops
+  when the robot shows another screen (the open issue below is thereby solved); stopping is now a decision of the person
+  (STOP on either screen) or of the privacy rules.
+- **Robot server**: new routes `GET /nav/state`, `GET /nav/map.json`, `GET /nav/map.png`, `POST /nav/command`
+  (`movement/NavigationRoutes.kt`). They are mounted with the server's EXISTING `secureGet` / `securePost` helpers, i.e.
+  the same check as `/save`: client id plus an HMAC signature over the request body (empty string for GET). No second
+  authentication mechanism was introduced.
+- **Reach**: the routes are as reachable as the rest of the server, which binds all interfaces on port 8443 — in a flat that
+  is the WiFi and nothing beyond it. An extra "caller must have a private address" check was built and removed again: it only
+  repeated what the network already decides, and on an IPv6 network (global addresses, no NAT) it would have refused a phone
+  standing in the same room. The protection is the pairing: without the client id and the HMAC signature over the payload,
+  no call is accepted, wherever it comes from.
+- **The phone decides nothing.** It sends the same commands the robot's own buttons send; targets in private areas are still
+  refused by the robot, the in-motion check still stops it, and the "may I cross this area?" question can be answered on the
+  robot screen or on the phone (whichever answers first). A phone that is out of range therefore cannot weaken the rules.
+- **Visible state** (thesis argument): while the phone is steering, the robot's own screen shows a blue bar "Steered from the
+  phone app: <phone name>" (30 s after the last command it disappears). Deleting a private area from the phone is written
+  into the robot's event log.
+- **Error handling on the phone**: the connection state is its own thing (`NavConnection`): connected / connecting /
+  offline / refused. When the robot server cannot be found, the last known state stays on screen with a red banner naming
+  the likely cause (same WiFi? robot switched on?), the age of the data and a "Try again" button; polling slows from
+  0.5 s to 3 s instead of hammering the network. 403 and 401 are shown as their own wording ("only inside the local
+  network", "pairing no longer valid").
+
 ## Open issues / to adjust later
 
+- ~~**Driving stops when the Navigation screen is left**~~ (solved 2026-09-21 by the service-owned navigation, see section 9).
 - **Driving stops when the Navigation screen is left** (`MapNavigationActivity.onStop` → stop, on purpose: "a robot must never keep driving while nobody sees the screen that controls it"). Owner (2026-09-17): must be adjusted eventually, e.g. for popups, other RoboGuard screens or background tasks during a drive. Debug camera view was therefore built inside the navigation screen.
 

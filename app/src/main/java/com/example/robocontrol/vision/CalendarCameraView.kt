@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.robocontrol.text.UiText
 import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
@@ -105,17 +106,23 @@ fun CalendarCameraScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
     Row(Modifier.fillMaxSize().padding(12.dp)) {
         Column(Modifier.width(300.dp).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             topControls()
-            OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text("Back", fontSize = 16.sp) }
-            Text("Calendar detection: $state", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-            Text("Settings: features ${CalendarDetectionSettings.orb.maxFeatures}, FAST ${CalendarDetectionSettings.orb.fastThreshold}, " +
-                "grid ${if (CalendarDetectionSettings.orb.gridDistribution) "on" else "off"}, thresholds " +
-                "${CalendarDetectionSettings.MIN_GOOD_MATCHES}/$minInliers, pink margin " +
-                "${CalendarDetectionSettings.MARKER_MARGIN_PX} px, white inside ≥ ${(CalendarDetectionSettings.MIN_WHITE_SHARE * 100).toInt()} %, " +
-                "${CalendarDetectionSettings.WORKERS} workers", fontSize = 12.sp)
-            Text("Speak \"Kalender entdeckt\"", fontSize = 13.sp)
-            ToggleRow("Every detection" to everyDetection, "2 in a row + ${CalendarMonitor.COOLDOWN_MS / 1000} s" to !everyDetection) { i -> CalendarMonitor.setAnnounceEveryDetection(i == 0) }
+            OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text(UiText.get("camera_view.back"), fontSize = 16.sp) }
+            Text(UiText.get("camera_view.state", "state" to state), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(UiText.get("camera_view.settings",
+                "features" to CalendarDetectionSettings.orb.maxFeatures,
+                "fast" to CalendarDetectionSettings.orb.fastThreshold,
+                "grid" to if (CalendarDetectionSettings.orb.gridDistribution) "on" else "off",
+                "good" to CalendarDetectionSettings.MIN_GOOD_MATCHES,
+                "inliers" to minInliers,
+                "margin" to CalendarDetectionSettings.MARKER_MARGIN_PX,
+                "white" to (CalendarDetectionSettings.MIN_WHITE_SHARE * 100).toInt(),
+                "workers" to CalendarDetectionSettings.WORKERS), fontSize = 12.sp)
+            Text(UiText.get("camera_view.speak_heading", "sentence" to CalendarMonitor.sentence), fontSize = 13.sp)
+            ToggleRow(UiText.get("camera_view.every_detection") to everyDetection,
+                UiText.get("camera_view.two_in_a_row", "seconds" to CalendarMonitor.COOLDOWN_MS / 1000) to !everyDetection) { i -> CalendarMonitor.setAnnounceEveryDetection(i == 0) }
             // Inlier requirement of the calendar monitor (saved; applies from the next pass).
-            Text("Inliers required: $minInliers (confirming pass: ${(minInliers - CalendarDetectionSettings.CONFIRM_INLIER_DROP).coerceAtLeast(CalendarDetectionSettings.MIN_INLIERS_LOWEST)})",
+            Text(UiText.get("camera_view.inliers_required", "required" to minInliers,
+                "confirm" to (minInliers - CalendarDetectionSettings.CONFIRM_INLIER_DROP).coerceAtLeast(CalendarDetectionSettings.MIN_INLIERS_LOWEST)),
                 fontWeight = FontWeight.Bold, fontSize = 14.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 val pad = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
@@ -130,9 +137,9 @@ fun CalendarCameraScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                 val full = bestInliers != null && bestInliers >= minInliers
                 Text(
                     when {
-                        full -> "DETECTED in this pass"
-                        bestInliers != null -> "confirm level only ($bestInliers inliers)"
-                        else -> "not detected in this pass"
+                        full -> UiText.get("camera_view.detected")
+                        bestInliers != null -> UiText.get("camera_view.confirm_only", "inliers" to bestInliers)
+                        else -> UiText.get("camera_view.not_detected")
                     },
                     color = if (full) Color(0xFF2E7D32) else if (bestInliers != null) Color(0xFFEF6C00) else Color.Gray, fontWeight = FontWeight.Bold, fontSize = 14.sp
                 )
@@ -151,19 +158,21 @@ fun CalendarCameraScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                             (r.outlineRejected?.let { " [outline $it]" } ?: ""), fontSize = 12.sp, color = colorFor(r.className).takeIf { r.detected } ?: Color.Unspecified)
                     }
                 }
-            } ?: Text(if (state == "watching") "waiting for the first detection pass…" else "no detection running", fontSize = 13.sp)
-            Text("Show on camera image (tap to toggle)", fontSize = 13.sp)
-            ToggleRow("Keypoints" to layers.keypoints, "Inliers" to layers.inliers) { i -> layers = if (i == 0) layers.copy(keypoints = !layers.keypoints) else layers.copy(inliers = !layers.inliers) }
-            ToggleRow("Boxes" to layers.boxes, "Pink (green)" to layers.pinkMask) { i -> layers = if (i == 0) layers.copy(boxes = !layers.boxes) else layers.copy(pinkMask = !layers.pinkMask) }
-            ToggleRow("Pink bounds" to layers.pinkBounds, "Search area" to layers.searchArea) { i -> layers = if (i == 0) layers.copy(pinkBounds = !layers.pinkBounds) else layers.copy(searchArea = !layers.searchArea) }
-            ToggleRow("Darken outside" to layers.darkenOutside, "Numbers" to showNumbers) { i -> if (i == 0) layers = layers.copy(darkenOutside = !layers.darkenOutside) else showNumbers = !showNumbers }
-            Text("Legend: blue dots = keypoints, big dots = inliers (reference colour), green = pink marker, yellow = rejected pink, " +
-                "orange = search area, thin pink = pink line bounds", fontSize = 11.sp, color = Color.Gray)
+            } ?: Text(UiText.get(if (state == "watching") "camera_view.waiting" else "camera_view.not_running"), fontSize = 13.sp)
+            Text(UiText.get("camera_view.layers_heading"), fontSize = 13.sp)
+            ToggleRow(UiText.get("camera_view.layer.keypoints") to layers.keypoints, UiText.get("camera_view.layer.inliers") to layers.inliers) { i -> layers = if (i == 0) layers.copy(keypoints = !layers.keypoints) else layers.copy(inliers = !layers.inliers) }
+            ToggleRow(UiText.get("camera_view.layer.boxes") to layers.boxes, UiText.get("camera_view.layer.pink") to layers.pinkMask) { i -> layers = if (i == 0) layers.copy(boxes = !layers.boxes) else layers.copy(pinkMask = !layers.pinkMask) }
+            ToggleRow(UiText.get("camera_view.layer.pink_bounds") to layers.pinkBounds, UiText.get("camera_view.layer.search_area") to layers.searchArea) { i -> layers = if (i == 0) layers.copy(pinkBounds = !layers.pinkBounds) else layers.copy(searchArea = !layers.searchArea) }
+            ToggleRow(UiText.get("camera_view.layer.darken") to layers.darkenOutside, UiText.get("camera_view.layer.numbers") to showNumbers) { i -> if (i == 0) layers = layers.copy(darkenOutside = !layers.darkenOutside) else showNumbers = !showNumbers }
+            Text(UiText.get("camera_view.legend"), fontSize = 11.sp, color = Color.Gray)
         }
         Spacer(Modifier.width(12.dp))
         Box(Modifier.weight(1f).fillMaxHeight().background(Color.Black), contentAlignment = Alignment.Center) {
             val f = frame
-            if (f == null) Text(if (state == "watching") "waiting for camera…" else "no camera stream ($state)", color = Color.White)
+            if (f == null) Text(
+                if (state == "watching") UiText.get("camera_view.waiting_camera") else UiText.get("camera_view.no_camera", "state" to state),
+                color = Color.White
+            )
             else CameraCanvas(f, snapshot, layers)
         }
     }

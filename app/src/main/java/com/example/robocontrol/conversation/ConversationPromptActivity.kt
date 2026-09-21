@@ -34,6 +34,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.robocontrol.movement.MapNavigationActivity
+import com.example.robocontrol.text.UiText
 
 /**
  * Popup shown by [ConversationMonitor] when more than one person has been talking: offers to leave the room (opens
@@ -44,6 +45,8 @@ class ConversationPromptActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Screen texts come from assets/texts/texts.json (no-op if the service already loaded them).
+        UiText.init(applicationContext)
         setFinishOnTouchOutside(false)
         setContent { MaterialTheme { Prompt() } }
         // After setContent: the dialog theme would otherwise keep the window narrow.
@@ -68,7 +71,7 @@ class ConversationPromptActivity : ComponentActivity() {
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text("Conversation detected", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(UiText.get("conversation_popup.title"), fontSize = 20.sp, fontWeight = FontWeight.Bold)
             if (!choosingTime) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -79,7 +82,7 @@ class ConversationPromptActivity : ComponentActivity() {
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50), contentColor = Color.White),
                         contentPadding = padding,
                         modifier = Modifier.weight(1f).height(height)
-                    ) { OneLine("Leave room", 15) }
+                    ) { OneLine(UiText.get("conversation_popup.leave_room"), 15) }
                     Button(
                         onClick = {
                             ConversationMonitor.microphoneOff()
@@ -88,7 +91,7 @@ class ConversationPromptActivity : ComponentActivity() {
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
                         contentPadding = padding,
                         modifier = Modifier.weight(1f).height(height)
-                    ) { OneLine("Mute mic", 15) }
+                    ) { OneLine(UiText.get("conversation_popup.mute_mic"), 15) }
                 }
                 Button(
                     onClick = {
@@ -97,17 +100,17 @@ class ConversationPromptActivity : ComponentActivity() {
                     },
                     contentPadding = padding,
                     modifier = Modifier.fillMaxWidth().height(height)
-                ) { OneLine("Don't ask again for $minutes min", 15) }
+                ) { OneLine(UiText.get("conversation_popup.pause", "minutes" to minutes), 15) }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { choosingTime = true }, contentPadding = padding, modifier = Modifier.weight(1f).height(height)) {
-                        OneLine("Other time", 15)
+                        OneLine(UiText.get("conversation_popup.other_time"), 15)
                     }
                     OutlinedButton(onClick = { finish() }, contentPadding = padding, modifier = Modifier.weight(1f).height(height)) {
-                        OneLine("Close", 15)
+                        OneLine(UiText.get("conversation_popup.close"), 15)
                     }
                 }
             } else {
-                Text("Pause detection for (now $minutes min):", fontSize = 15.sp)
+                Text(UiText.get("conversation_popup.choose_time", "minutes" to minutes), fontSize = 15.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf(5, 15, 30, 60, 120).forEach { option ->
                         val pick = { minutes = option; choosingTime = false }
@@ -124,17 +127,17 @@ class ConversationPromptActivity : ComponentActivity() {
                     OutlinedTextField(
                         value = typed,
                         onValueChange = { typed = it.filter(Char::isDigit).take(4) },
-                        label = { Text("Minutes") },
+                        label = { Text(UiText.get("conversation_popup.minutes_field")) },
                         singleLine = true,
                         isError = typed.isNotEmpty() && !valid,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.weight(1f)
                     )
                     Button(enabled = valid, onClick = { minutes = typedMinutes!!; choosingTime = false }, contentPadding = padding, modifier = Modifier.height(height)) {
-                        OneLine("Set", 15)
+                        OneLine(UiText.get("conversation_popup.set"), 15)
                     }
                     OutlinedButton(onClick = { choosingTime = false }, contentPadding = padding, modifier = Modifier.height(height)) {
-                        OneLine("Back", 15)
+                        OneLine(UiText.get("conversation_popup.back"), 15)
                     }
                 }
             }

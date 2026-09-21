@@ -121,10 +121,10 @@ class ObjectProbeActivity : ComponentActivity() {
      */
     private val markerOn = MutableStateFlow(true)
     private val markerMargin = MutableStateFlow(CalendarDetectionSettings.MARKER_MARGIN_PX)
-    private val markerSaturation = MutableStateFlow(CalendarDetectionSettings.MARKER_COLOR.saturationMin)
-    private val markerWhiteBalance = MutableStateFlow(CalendarDetectionSettings.WHITE_BALANCE)
-    private val markerRequireFrame = MutableStateFlow(CalendarDetectionSettings.REQUIRE_FRAME)
-    private val markerWhiteInside = MutableStateFlow(CalendarDetectionSettings.REQUIRE_WHITE_INSIDE)
+    private val markerSaturation = MutableStateFlow(com.example.robocontrol.vision.DetectionSettings.pink.minSaturation)
+    private val markerWhiteBalance = MutableStateFlow(com.example.robocontrol.vision.DetectionSettings.pink.whiteBalance)
+    private val markerRequireFrame = MutableStateFlow(com.example.robocontrol.vision.DetectionSettings.pink.requireFrame)
+    private val markerWhiteInside = MutableStateFlow(com.example.robocontrol.vision.DetectionSettings.pink.requireWhiteInside)
     private val markerRegions = MutableStateFlow<List<MarkerRegion>>(emptyList())
 
     /** Green mask of the pink pixels found in the latest pink pass (frame size), or null. */
@@ -453,7 +453,7 @@ class ObjectProbeActivity : ComponentActivity() {
         marker.whiteBalance = markerWhiteBalance.value
         marker.requireFrame = markerRequireFrame.value
         marker.requireWhiteInside = markerWhiteInside.value
-        val pass = markerGatedPass(o, marker, f, minGood, minInl, MAX_MARKER_REGIONS, withOverlay = layers.value.pinkMask)
+        val pass = markerGatedPass(o, marker, f, { minGood to minInl }, MAX_MARKER_REGIONS, withOverlay = layers.value.pinkMask)
         val found = pass.marker
         val regions = pass.regions
         markerRegions.value = regions

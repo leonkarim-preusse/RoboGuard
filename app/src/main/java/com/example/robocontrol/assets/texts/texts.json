@@ -1,0 +1,763 @@
+{
+  "_readme": [
+    "Every text RoboGuard shows on the robot's screen or says out loud. One entry per text: change \"text\" and the robot shows/says the new wording — no code change, no rebuild of the logic.",
+    "\"note\" only explains where the text appears; it is never shown.",
+    "Another language: translate the \"text\" values in this file (and set meta.speechLanguage to the voice the spoken sentences should use).",
+    "Placeholders in curly braces are filled in by the app ({area}, {minutes}, …). Keep them, otherwise the value disappears; their position in the sentence may change.",
+    "Keys (the names on the left) are used by the code — do not rename them."
+  ],
+  "meta": {
+    "speechLanguage": "de_DE",
+    "_note": "Voice for every speech.* sentence: \"de_DE\" or \"en_US\". The spoken sentences below are German, so de_DE."
+  },
+  "texts": {
+    "app.qr.hint": {
+      "text": "Scan with the RoboGuard App to copple!",
+      "note": "Main screen: line above the pairing QR code"
+    },
+    "app.qr.description": {
+      "text": "QR code",
+      "note": "Main screen: spoken description of the QR image for accessibility tools"
+    },
+    "app.button.settings": {
+      "text": "Settings",
+      "note": "Main screen: opens the list of the current privacy settings"
+    },
+    "app.button.navigation": {
+      "text": "Navigation and Map",
+      "note": "Main screen: opens the map screen where the robot is sent to places"
+    },
+    "app.waiting_for_server": {
+      "text": "Waiting for Server...",
+      "note": "Main screen: shown until the robot's own server has started"
+    },
+    "settings.title": {
+      "text": "Robot Privacy Settings",
+      "note": "Settings list: headline"
+    },
+    "settings.back": {
+      "text": "Back",
+      "note": "Settings list: returns to the main screen"
+    },
+    "settings.section.general": {
+      "text": "General",
+      "note": "Settings list: section heading above the sleep timer"
+    },
+    "settings.section.sensors": {
+      "text": "Global Sensors",
+      "note": "Settings list: section heading, sensors for the whole flat"
+    },
+    "settings.section.situational": {
+      "text": "Situational Settings",
+      "note": "Settings list: section heading, e.g. discretion mode"
+    },
+    "settings.section.rooms": {
+      "text": "Room Constraints",
+      "note": "Settings list: section heading, per-room rules"
+    },
+    "settings.sleep_timer": {
+      "text": "Sleep Timer",
+      "note": "Settings list: name of the sleep time entry"
+    },
+    "settings.value.allowed": {
+      "text": "ALLOWED",
+      "note": "Settings list: a sensor is allowed in this room"
+    },
+    "settings.value.blocked": {
+      "text": "BLOCKED",
+      "note": "Settings list: a sensor is not allowed in this room"
+    },
+    "settings.value.on": {
+      "text": "ON",
+      "note": "Settings list: a setting is switched on"
+    },
+    "settings.value.off": {
+      "text": "OFF",
+      "note": "Settings list: a setting is switched off"
+    },
+    "service.notification.server_channel": {
+      "text": "RoboGuard Server",
+      "note": "Android notification category for the always-running server notice"
+    },
+    "service.notification.server_title": {
+      "text": "RoboGuard Server",
+      "note": "Notification while the server runs: headline"
+    },
+    "service.notification.server_host": {
+      "text": "Host: {host}",
+      "note": "Notification while the server runs: the robot's network name the phone app connects to"
+    },
+    "service.notification.status_channel": {
+      "text": "RoboGuard Status",
+      "note": "Android notification category for short status messages"
+    },
+    "service.notification.status_title": {
+      "text": "RoboGuard",
+      "note": "Short status notification: headline"
+    },
+    "popup.default": {
+      "text": "Notification",
+      "note": "Pop-up on the robot screen when no message was given (should not happen)"
+    },
+    "popup.settings_saved": {
+      "text": "Privacy Settings Saved",
+      "note": "Pop-up after the phone app saved new settings"
+    },
+    "popup.settings_failed": {
+      "text": "Privacy Settings could not be saved",
+      "note": "Pop-up when saving the settings from the phone failed"
+    },
+    "speech.settings_updated": {
+      "text": "Einstellungen wurden aktualisiert",
+      "note": "Spoken after new settings arrived and the sensors were switched"
+    },
+    "speech.settings_sensors_failed": {
+      "text": "Einstellungen wurden gespeichert, aber die Sensoren konnten nicht umgeschaltet werden",
+      "note": "Spoken when the settings were saved but a sensor could not be switched"
+    },
+    "speech.settings_save_failed": {
+      "text": "Einstellungen konnten nicht gespeichert werden, versuchen Sie es bitte erneut",
+      "note": "Spoken when the settings from the phone could not be saved at all"
+    },
+    "speech.position_unknown": {
+      "text": "Ich kann meine Position gerade nicht bestimmen und halte deshalb an.",
+      "note": "Spoken when a drive stops or is refused because the robot does not know where it is"
+    },
+    "speech.privacy_stop": {
+      "text": "Dieser Weg führt mich durch einen als privat gekennzeichneten Bereich, darum bleibe ich vorerst stehen. Wenn du mir temporär erlauben möchtest den privaten Bereich zu betreten, dann kannst du das an meinem Bildschirm tun.",
+      "note": "Spoken when the robot stops in front of a private area or refuses to drive into one"
+    },
+    "speech.privacy_allowed": {
+      "text": "Ich darf {area} für {minutes} betreten und setze meinen Weg fort",
+      "note": "Spoken after the person allowed crossing a private area; {minutes} comes from speech.minutes_one / speech.minutes_many"
+    },
+    "speech.privacy_denied": {
+      "text": "Keine Erlaubnis für {area} erteilt, stoppe Navigation",
+      "note": "Spoken after the person refused crossing a private area"
+    },
+    "speech.minutes_one": {
+      "text": "eine Minute",
+      "note": "Used inside speech.privacy_allowed when exactly one minute was allowed"
+    },
+    "speech.minutes_many": {
+      "text": "{minutes} Minuten",
+      "note": "Used inside speech.privacy_allowed for two or more minutes"
+    },
+    "speech.conversation_apology": {
+      "text": "Bitte entschuldigt die Störung, falls ihr möchtet dass ich den Raum verlasse oder mein Mikrofon stummschalte, lasst es mich bitte wissen.",
+      "note": "Spoken with the pop-up when more than one person has been talking"
+    },
+    "speech.microphone_muted": {
+      "text": "Das Mikrofon kann über die App wieder eingeschaltet werden",
+      "note": "Spoken after the microphone was switched off from the conversation pop-up"
+    },
+    "speech.calendar_detected": {
+      "text": "Kalender entdeckt",
+      "note": "Spoken when the calendar was recognised by the camera"
+    },
+    "nav.button.stop": {
+      "text": "STOP",
+      "note": "Map screen: stops the robot immediately"
+    },
+    "nav.button.drive_to": {
+      "text": "Drive to {location}",
+      "note": "Map screen: starts the drive to the selected place"
+    },
+    "nav.button.drive_to_none": {
+      "text": "Drive to… (select a location)",
+      "note": "Map screen: shown instead of nav.button.drive_to while nothing is selected"
+    },
+    "nav.button.exit_fullscreen": {
+      "text": "Exit full screen",
+      "note": "Map screen, full-screen map: back to the normal view"
+    },
+    "nav.button.draw_area": {
+      "text": "Draw private area",
+      "note": "Map screen, full-screen map: start marking a private area by tapping corners"
+    },
+    "nav.button.finish_area": {
+      "text": "Finish area ({corners} corners)",
+      "note": "Map screen: closes the area being drawn"
+    },
+    "nav.button.undo_corner": {
+      "text": "Undo corner",
+      "note": "Map screen: removes the last tapped corner of the area being drawn"
+    },
+    "nav.button.cancel_drawing": {
+      "text": "Cancel",
+      "note": "Map screen: stops drawing the area without creating it"
+    },
+    "nav.button.reset_zoom": {
+      "text": "Reset zoom",
+      "note": "Map screen, full-screen map: back to the whole map"
+    },
+    "nav.button.clear_points": {
+      "text": "Clear tapped points",
+      "note": "Map screen: removes the temporary points tapped on the map (named locations stay)"
+    },
+    "nav.button.set_private_area": {
+      "text": "Set Point as Private Area",
+      "note": "Map screen: makes a circle around the selected point private"
+    },
+    "nav.button.delete_location": {
+      "text": "Delete selected location",
+      "note": "Map screen: deletes the selected saved location"
+    },
+    "nav.button.save_position": {
+      "text": "Save current position…",
+      "note": "Map screen: stores where the robot stands under a name"
+    },
+    "nav.button.save_position_blocked": {
+      "text": "Save current position (robot not localized)",
+      "note": "Map screen: same button while the robot does not know where it is"
+    },
+    "nav.button.reload_map": {
+      "text": "Reload map",
+      "note": "Map screen: reads the map, places and private areas again"
+    },
+    "nav.button.reset_locations": {
+      "text": "Reset saved locations",
+      "note": "Map screen: deletes the unreadable location file"
+    },
+    "nav.button.reset_areas": {
+      "text": "Reset private areas",
+      "note": "Map screen: deletes the unreadable private-area file"
+    },
+    "nav.button.show_camera": {
+      "text": "Show camera stream",
+      "note": "Map screen (debug): switches to the camera view of the calendar detection"
+    },
+    "nav.button.clear_log": {
+      "text": "Clear log",
+      "note": "Map screen (debug): empties the event list"
+    },
+    "nav.button.delete": {
+      "text": "Delete",
+      "note": "Map screen: confirms deleting in the small dialogs"
+    },
+    "nav.button.cancel": {
+      "text": "Cancel",
+      "note": "Map screen: closes a dialog without doing anything"
+    },
+    "nav.button.save": {
+      "text": "Save",
+      "note": "Map screen: confirms the name dialogs"
+    },
+    "nav.button.saving": {
+      "text": "Saving…",
+      "note": "Map screen: shown on the Save button while saving runs"
+    },
+    "nav.button.revoke_permission": {
+      "text": "✕",
+      "note": "Map screen: small button that takes back a temporary permission to cross an area"
+    },
+    "nav.label.debug": {
+      "text": "Show debug",
+      "note": "Map screen: switch that shows technical lines and the event log"
+    },
+    "nav.label.privacy_areas": {
+      "text": "Privacy areas",
+      "note": "Map screen: heading above the list of private areas"
+    },
+    "nav.label.no_areas": {
+      "text": "none",
+      "note": "Map screen: shown when no private area exists"
+    },
+    "nav.label.area_allowed": {
+      "text": "temporarily allowed, {time} left",
+      "note": "Map screen: under an area the robot may currently cross"
+    },
+    "nav.label.places": {
+      "text": "Saved places (RobotOS)",
+      "note": "Map screen: heading for the places stored in the robot system"
+    },
+    "nav.label.my_locations": {
+      "text": "My locations (saved in RoboGuard)",
+      "note": "Map screen: heading for the locations saved by this app"
+    },
+    "nav.label.tapped_points": {
+      "text": "Tapped points (temporary)",
+      "note": "Map screen: heading for points tapped on the map"
+    },
+    "nav.label.speed": {
+      "text": "Speed (next drive): {speed}",
+      "note": "Map screen: which speed the next drive uses"
+    },
+    "nav.label.remote_control": {
+      "text": "Steered from the phone app: {client}",
+      "note": "Blue bar on the navigation screen while someone controls the robot from the phone ({client} = the phone's name)."
+    },
+    "nav.label.map": {
+      "text": "Map: {map}",
+      "note": "Map screen (debug): name of the loaded map"
+    },
+    "nav.label.sdk_control": {
+      "text": "SDK control: {state}",
+      "note": "Map screen (debug): whether the robot system accepts our commands"
+    },
+    "nav.label.sdk_yes": {
+      "text": "yes",
+      "note": "Map screen (debug): value for nav.label.sdk_control when commands work"
+    },
+    "nav.label.sdk_no": {
+      "text": "NO (start RoboGuard from the home launcher)",
+      "note": "Map screen (debug): value when the robot system ignores our commands"
+    },
+    "nav.label.localized": {
+      "text": "Localized: {state}",
+      "note": "Map screen (debug): whether the robot knows where it is"
+    },
+    "nav.label.yes": {
+      "text": "yes",
+      "note": "Map screen (debug): value 'yes' for localized"
+    },
+    "nav.label.no": {
+      "text": "NO",
+      "note": "Map screen (debug): value 'no' for localized"
+    },
+    "nav.label.unknown": {
+      "text": "?",
+      "note": "Map screen (debug): value when something is not known yet"
+    },
+    "nav.label.robot": {
+      "text": "Robot: {pose}",
+      "note": "Map screen (debug): the robot's position and heading"
+    },
+    "nav.label.navigation": {
+      "text": "Navigation: {state}",
+      "note": "Map screen (debug): what the drive is doing"
+    },
+    "nav.label.selected": {
+      "text": "Selected: {selection}",
+      "note": "Map screen (debug): the selected place"
+    },
+    "nav.label.selected_none": {
+      "text": "none, tap the map",
+      "note": "Map screen (debug): value when nothing is selected"
+    },
+    "nav.label.measured_speed": {
+      "text": "Measured speed: {speed}",
+      "note": "Map screen (debug): speed reported by the robot while driving"
+    },
+    "nav.label.map_hint": {
+      "text": "Tap to enlarge",
+      "note": "Map screen: hint in the corner of the small map"
+    },
+    "nav.label.no_map": {
+      "text": "No map loaded yet (see log)",
+      "note": "Map screen: shown instead of the map when none could be read"
+    },
+    "nav.label.fullscreen_hint": {
+      "text": "Double-tap or two fingers: zoom",
+      "note": "Map screen, full-screen map: how to zoom"
+    },
+    "nav.label.drawing_hint": {
+      "text": "DRAWING: tap the map to add corners of the private area · ",
+      "note": "Map screen, full-screen map: shown while an area is being drawn"
+    },
+    "nav.label.fullscreen_debug": {
+      "text": "Navigation: {state} · Localized: {localized} · Private areas: {areas} · Zoom ×{zoom} · ",
+      "note": "Map screen, full-screen map (debug): technical status in front of the zoom hint"
+    },
+    "nav.dialog.save_position.title": {
+      "text": "Save current position",
+      "note": "Map screen: headline of the dialog that names the robot's position"
+    },
+    "nav.dialog.save_position.prompt": {
+      "text": "Name for the robot's current position:",
+      "note": "Map screen: line above the input field in that dialog"
+    },
+    "nav.dialog.area_name.title": {
+      "text": "Name the private area",
+      "note": "Map screen: headline of the dialog that names a new private area"
+    },
+    "nav.dialog.delete_area.title": {
+      "text": "Delete private area \"{area}\"?",
+      "note": "Map screen: headline of the delete confirmation for an area"
+    },
+    "nav.dialog.delete_area.text": {
+      "text": "The robot may then drive through this area again.",
+      "note": "Map screen: explanation in that confirmation"
+    },
+    "nav.dialog.reset_locations.title": {
+      "text": "Reset saved locations?",
+      "note": "Map screen: headline when the location file cannot be read"
+    },
+    "nav.dialog.reset_locations.text": {
+      "text": "The saved locations of this map cannot be read. Resetting deletes them; save the locations again afterwards.",
+      "note": "Map screen: explanation in that confirmation"
+    },
+    "nav.dialog.reset_areas.title": {
+      "text": "Reset private areas?",
+      "note": "Map screen: headline when the private-area file cannot be read"
+    },
+    "nav.dialog.reset_areas.text": {
+      "text": "The saved private areas of this map cannot be read. Resetting deletes them; the robot may then drive everywhere until you draw them again.",
+      "note": "Map screen: explanation in that confirmation"
+    },
+    "nav.error.select_point": {
+      "text": "Select a point first.",
+      "note": "Map screen: no point was selected for the action"
+    },
+    "nav.error.name_empty": {
+      "text": "Please enter a name.",
+      "note": "Map screen: the name field was left empty"
+    },
+    "nav.error.name_too_long": {
+      "text": "The name is too long (at most {max} characters).",
+      "note": "Map screen: the entered name is too long"
+    },
+    "nav.error.area_exists": {
+      "text": "An area named \"{name}\" already exists.",
+      "note": "Map screen: this area name is taken"
+    },
+    "nav.error.location_exists": {
+      "text": "A location named \"{name}\" already exists.",
+      "note": "Map screen: this location name is taken"
+    },
+    "nav.error.not_drawing": {
+      "text": "Not drawing an area.",
+      "note": "Map screen: finishing was pressed although no area is being drawn"
+    },
+    "nav.error.too_few_corners": {
+      "text": "An area needs at least 3 corners (have {corners}).",
+      "note": "Map screen: the drawn area has too few corners"
+    },
+    "nav.error.areas_loading": {
+      "text": "The private areas are not loaded yet; try again in a moment.",
+      "note": "Map screen: driving and editing are blocked until the areas are read"
+    },
+    "nav.error.areas_unreadable": {
+      "text": "Private areas cannot be changed: {reason}",
+      "note": "Map screen: the private-area file is damaged"
+    },
+    "nav.error.areas_read_failed": {
+      "text": "The saved private areas of this map cannot be read ({reason}). Driving is blocked. Reset the private areas to continue.",
+      "note": "Map screen: red banner when the private-area file cannot be read"
+    },
+    "nav.error.locations_read_failed": {
+      "text": "The saved locations of this map cannot be read ({reason}). Saving is disabled until they are reset.",
+      "note": "Map screen: red banner when the location file cannot be read"
+    },
+    "nav.error.areas_not_saved": {
+      "text": "Private areas could NOT be saved: {reason}",
+      "note": "Map screen: warning when saving an area failed"
+    },
+    "nav.error.areas_no_map": {
+      "text": "No map active: private areas are not saved.",
+      "note": "Map screen: areas exist only in memory without a map"
+    },
+    "nav.error.areas_not_deleted": {
+      "text": "Could not delete the saved private areas; they will come back after a restart.",
+      "note": "Map screen: deleting the area file failed"
+    },
+    "nav.error.no_map": {
+      "text": "No map is active on the robot.",
+      "note": "Map screen: saving a position needs a loaded map"
+    },
+    "nav.error.not_localized": {
+      "text": "The robot is not localized, so its position is unknown. Relocalize it first.",
+      "note": "Map screen: the robot must know where it is before its position can be saved"
+    },
+    "nav.error.position_unreadable": {
+      "text": "Could not read the robot's position.",
+      "note": "Map screen: the position could not be read while saving"
+    },
+    "nav.error.location_not_stored": {
+      "text": "Could not store the location: {reason}",
+      "note": "Map screen: writing the location file failed"
+    },
+    "nav.forbidden_area": {
+      "text": "RobotOS forbidden area",
+      "note": "Name used when the robot system itself blocks an area (not one of ours)"
+    },
+    "privacy_popup.title": {
+      "text": "Allow robot to temporarily cross \"{area}\"?",
+      "note": "Pop-up after the robot stopped at a private area: headline"
+    },
+    "privacy_popup.explanation": {
+      "text": "Yes allows it for {minutes}.",
+      "note": "Pop-up: says how long Yes allows crossing"
+    },
+    "privacy_popup.yes": {
+      "text": "Yes",
+      "note": "Pop-up: allows crossing and the robot drives on"
+    },
+    "privacy_popup.no": {
+      "text": "No",
+      "note": "Pop-up: refuses; the robot stays out"
+    },
+    "privacy_popup.custom_time": {
+      "text": "Custom time",
+      "note": "Pop-up: opens the page with other durations"
+    },
+    "privacy_popup.choose_time": {
+      "text": "Allow for how long? (currently {minutes})",
+      "note": "Pop-up, second page: headline above the duration buttons"
+    },
+    "privacy_popup.preset_minutes": {
+      "text": "{minutes} min",
+      "note": "Pop-up, second page: label of a ready-made duration button"
+    },
+    "privacy_popup.custom_label": {
+      "text": "Custom time in minutes (1–{max})",
+      "note": "Pop-up, second page: label of the input field"
+    },
+    "privacy_popup.set": {
+      "text": "Set",
+      "note": "Pop-up, second page: takes the typed number as the duration"
+    },
+    "privacy_popup.back": {
+      "text": "Back",
+      "note": "Pop-up, second page: back to Yes/No without changing anything"
+    },
+    "privacy_popup.minutes_one": {
+      "text": "1 minute",
+      "note": "Used inside the pop-up texts for exactly one minute"
+    },
+    "privacy_popup.minutes_many": {
+      "text": "{minutes} minutes",
+      "note": "Used inside the pop-up texts for two or more minutes"
+    },
+    "conversation_popup.title": {
+      "text": "Conversation detected",
+      "note": "Pop-up when more than one person has been talking: headline"
+    },
+    "conversation_popup.leave_room": {
+      "text": "Leave room",
+      "note": "Pop-up: opens the map screen so the robot can be sent away"
+    },
+    "conversation_popup.mute_mic": {
+      "text": "Mute mic",
+      "note": "Pop-up: switches the microphone off in the privacy settings"
+    },
+    "conversation_popup.pause": {
+      "text": "Don't ask again for {minutes} min",
+      "note": "Pop-up: pauses the conversation detection for a while"
+    },
+    "conversation_popup.other_time": {
+      "text": "Other time",
+      "note": "Pop-up: opens the page with other pause durations"
+    },
+    "conversation_popup.close": {
+      "text": "Close",
+      "note": "Pop-up: closes it and changes nothing"
+    },
+    "conversation_popup.choose_time": {
+      "text": "Pause detection for (now {minutes} min):",
+      "note": "Pop-up, second page: headline above the duration buttons"
+    },
+    "conversation_popup.minutes_field": {
+      "text": "Minutes",
+      "note": "Pop-up, second page: label of the input field"
+    },
+    "conversation_popup.set": {
+      "text": "Set",
+      "note": "Pop-up, second page: takes the typed number as the pause"
+    },
+    "conversation_popup.back": {
+      "text": "Back",
+      "note": "Pop-up, second page: back to the first page"
+    },
+    "camera_view.back": {
+      "text": "Back",
+      "note": "Camera view: returns to the map screen"
+    },
+    "camera_view.state": {
+      "text": "Calendar detection: {state}",
+      "note": "Camera view: what the detection is doing right now"
+    },
+    "camera_view.settings": {
+      "text": "Settings: features {features}, FAST {fast}, grid {grid}, thresholds {good}/{inliers}, pink margin {margin} px, white inside ≥ {white} %, {workers} workers",
+      "note": "Camera view: the detection settings in use (technical)"
+    },
+    "camera_view.speak_heading": {
+      "text": "Speak \"{sentence}\"",
+      "note": "Camera view: heading above the two announcement modes"
+    },
+    "camera_view.every_detection": {
+      "text": "Every detection",
+      "note": "Camera view: speak on every recognition (test mode)"
+    },
+    "camera_view.two_in_a_row": {
+      "text": "2 in a row + {seconds} s",
+      "note": "Camera view: speak only after two recognitions in a row, then stay quiet"
+    },
+    "camera_view.inliers_required": {
+      "text": "Inliers required: {required} (confirming pass: {confirm})",
+      "note": "Camera view: how many matching points a recognition needs"
+    },
+    "camera_view.detected": {
+      "text": "DETECTED in this pass",
+      "note": "Camera view: the calendar was recognised in the latest check"
+    },
+    "camera_view.confirm_only": {
+      "text": "confirm level only ({inliers} inliers)",
+      "note": "Camera view: enough for a confirming check, not for a first recognition"
+    },
+    "camera_view.not_detected": {
+      "text": "not detected in this pass",
+      "note": "Camera view: nothing recognised in the latest check"
+    },
+    "camera_view.waiting": {
+      "text": "waiting for the first detection pass…",
+      "note": "Camera view: shown until the first check is done"
+    },
+    "camera_view.not_running": {
+      "text": "no detection running",
+      "note": "Camera view: the detection is not watching (e.g. camera switched off)"
+    },
+    "camera_view.no_camera": {
+      "text": "no camera stream ({state})",
+      "note": "Camera view: shown instead of the image when no camera picture arrives"
+    },
+    "camera_view.waiting_camera": {
+      "text": "waiting for camera…",
+      "note": "Camera view: shown until the first camera picture arrives"
+    },
+    "camera_view.layers_heading": {
+      "text": "Show on camera image (tap to toggle)",
+      "note": "Camera view: heading above the drawing switches"
+    },
+    "camera_view.layer.keypoints": {
+      "text": "Keypoints",
+      "note": "Camera view: draw all recognised image points"
+    },
+    "camera_view.layer.inliers": {
+      "text": "Inliers",
+      "note": "Camera view: draw the points that match the reference picture"
+    },
+    "camera_view.layer.boxes": {
+      "text": "Boxes",
+      "note": "Camera view: draw the box around a recognised calendar"
+    },
+    "camera_view.layer.pink": {
+      "text": "Pink (green)",
+      "note": "Camera view: mark the recognised pink line in green"
+    },
+    "camera_view.layer.pink_bounds": {
+      "text": "Pink bounds",
+      "note": "Camera view: draw the extent of the pink line"
+    },
+    "camera_view.layer.search_area": {
+      "text": "Search area",
+      "note": "Camera view: draw the area that is searched"
+    },
+    "camera_view.layer.darken": {
+      "text": "Darken outside",
+      "note": "Camera view: dim everything outside the search areas"
+    },
+    "camera_view.layer.numbers": {
+      "text": "Numbers",
+      "note": "Camera view: show the technical numbers of each check"
+    },
+    "camera_view.legend": {
+      "text": "Legend: blue dots = keypoints, big dots = inliers (reference colour), green = pink marker, yellow = rejected pink, orange = search area, thin pink = pink line bounds",
+      "note": "Camera view: explains the colours drawn on the image"
+    },
+    "nav.button.clear_areas": {
+      "text": "Clear private areas",
+      "note": "Map screen: deletes all private areas of this map"
+    },
+    "nav.dialog.clear_areas.title": {
+      "text": "Delete all private areas?",
+      "note": "Map screen: headline of that confirmation"
+    },
+    "nav.dialog.clear_areas.text": {
+      "text": "All private areas of map \"{map}\" are deleted, also from storage.",
+      "note": "Map screen: explanation in that confirmation"
+    },
+    "nav.button.show_speaker": {
+      "text": "Show speaker detection",
+      "note": "Map screen (debug): switches to the debug view of the conversation detection"
+    },
+    "speaker_view.back": {
+      "text": "Back",
+      "note": "Speaker debug view: returns to the map screen"
+    },
+    "speaker_view.state.no_speech": {
+      "text": "no speech",
+      "note": "Speaker debug view: nobody is talking right now"
+    },
+    "speaker_view.state.listening": {
+      "text": "listening…",
+      "note": "Speaker debug view: someone talks, but not long enough to judge yet"
+    },
+    "speaker_view.state.one": {
+      "text": "ONE speaker",
+      "note": "Speaker debug view: the robot hears one voice"
+    },
+    "speaker_view.state.multiple": {
+      "text": "MORE THAN ONE speaker",
+      "note": "Speaker debug view: the robot heard a voice change"
+    },
+    "speaker_view.not_listening": {
+      "text": "not listening: {reason}",
+      "note": "Speaker debug view: why the detection is off (microphone off, paused, test screen)"
+    },
+    "speaker_view.error": {
+      "text": "Problem: {reason}",
+      "note": "Speaker debug view: error from the detection"
+    },
+    "speaker_view.level": {
+      "text": "Loudness: {level} dBFS (background {floor})",
+      "note": "Speaker debug view: current loudness and the measured background level"
+    },
+    "speaker_view.gate": {
+      "text": "Speech gate: {gate}, Silero {probability}, speech now: {speech}",
+      "note": "Speaker debug view: which gate decides and what it says right now"
+    },
+    "speaker_view.yes": {
+      "text": "yes",
+      "note": "Speaker debug view: value for 'speech now'"
+    },
+    "speaker_view.no": {
+      "text": "no",
+      "note": "Speaker debug view: value for 'speech now'"
+    },
+    "speaker_view.speech_seconds": {
+      "text": "Speech heard: {seconds} s",
+      "note": "Speaker debug view: seconds of speech in the current conversation"
+    },
+    "speaker_view.changes": {
+      "text": "Voice changes: {window} in the decision window, {total} in total",
+      "note": "Speaker debug view: counted speaker changes"
+    },
+    "speaker_view.evidence": {
+      "text": "Evidence: {evidence} (rule {rule})",
+      "note": "Speaker debug view: how close the robot is to 'more than one speaker'"
+    },
+    "speaker_view.kl2": {
+      "text": "Voice distance: last {last}, average {mean}",
+      "note": "Speaker debug view: the KL2 distance between the two latest speech windows"
+    },
+    "speaker_view.legend": {
+      "text": "Timeline: blue = loudness, orange = Silero probability, green background = counted as speech (white = cut out by Silero), red line = voice change, grey = rejected candidate, purple = conversation reset, green = 'more than one' reached",
+      "note": "Speaker debug view: explains the timeline colours"
+    },
+    "speaker_view.timeline_title": {
+      "text": "Last 15 seconds",
+      "note": "Speaker debug view: heading above the timeline"
+    },
+    "speaker_view.events_title": {
+      "text": "Events (newest first)",
+      "note": "Speaker debug view: heading above the event list"
+    },
+    "speaker_view.event.change": {
+      "text": "{seconds} s ago: voice change counted (ratio {ratio})",
+      "note": "Speaker debug view: entry for a counted speaker change"
+    },
+    "speaker_view.event.rejected": {
+      "text": "{seconds} s ago: candidate rejected (ratio {ratio})",
+      "note": "Speaker debug view: entry for a change that was not convincing enough"
+    },
+    "speaker_view.event.reset": {
+      "text": "{seconds} s ago: conversation reset after the silence",
+      "note": "Speaker debug view: entry when the detection started a new conversation"
+    },
+    "speaker_view.event.multiple": {
+      "text": "{seconds} s ago: more than one speaker reached",
+      "note": "Speaker debug view: entry when the robot decided that several people talk"
+    }
+  }
+}

@@ -9,7 +9,7 @@ import java.nio.LongBuffer
 
 /**
  * Speech / non-speech per audio chunk with the Silero VAD neural network (v4, MIT license, file
- * `robocontrol/assets/silero_vad.onnx` + `silero_vad_LICENSE.txt`, taken from the android-vad 2.0.10 AAR), run with
+ * `robocontrol/assets/silero/silero_vad.onnx` + `silero_vad_LICENSE.txt`, taken from the android-vad 2.0.10 AAR), run with
  * Microsoft ONNX Runtime entirely on the robot. No network.
  *
  * Answers only "is this speech?" (a probability). It does not recognise words or people. Replaces the loudness-only
@@ -86,7 +86,7 @@ class SileroVad(context: Context, val sampleRate: Int = 16_000) : AutoCloseable 
     }
 
     private companion object {
-        const val MODEL_ASSET = "silero_vad.onnx"
+        const val MODEL_ASSET = "silero/silero_vad.onnx"
         const val CHUNK_16K = 512
         const val STATE_SIZE = 2 * 1 * 64
     }

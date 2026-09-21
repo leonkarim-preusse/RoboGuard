@@ -6,88 +6,52 @@ import kotlin.math.max
  * The settings the owner chose in the object test (run probe-20260917-153521, 2026-09-17): used by [CalendarMonitor] and as
  * the object test's start values.
  */
+/**
+ * The object-detection settings, read from `assets/settings/settings.json` ([DetectionSettings]). This object only gives the
+ * values names the code can use; everything that can be tuned lives in that file, including per-image overrides.
+ *
+ * `MARKER_*`, `WORKER_PRIORITY` and `ORB_MIN_SCALED_BORDER_PX` are fixed in code: they are not tuning knobs but properties of
+ * the robot (thread priority) or of ORB itself (its 31 px patch border).
+ */
 object CalendarDetectionSettings {
-    /**
-     * 4 pyramid levels instead of 8: the pink frame tells the object's size, so the area is scaled to the reference's size first
-     * ([markerGatedPass]); USAC homography instead of classic RANSAC (both 2026-09-17, for speed). Owner then: 1000 features (was 3000)
-     * and FAST 15 (was 10); matching and keypoint detection were the remaining large costs (127–352 / 114–151 ms per pass). That halved
-     * the inliers while driving (median 37 → 17, detected checks 65 % → 31 %, logcat 23:11–23:21), so then 2000 features and FAST 10.
-     * 2026-09-18 (owner): 1000 features with FAST 10, to separate the keypoint count from the FAST change in that comparison.
-     * Then (owner) 1500 features, for the distance comparison with the 1000-feature run. Then 500 features (owner: "see what happens"), then 2000 with the enlargement limit 8×, then back to 1500 (2000 cost ~10 ms more matching while driving).
-     */
-    val orb = OrbConfig(maxFeatures = 1500, fastThreshold = 10, gridDistribution = false, minGoodMatches = 15, minInliers = 15,
-        pyramidLevels = 4, homographyMethod = org.opencv.calib3d.Calib3d.USAC_DEFAULT, homographyMaxIters = 1000)
+    /** General ORB settings (per-image overrides: `DetectionSettings.forImage(name)`). */
+    val orb: OrbConfig get() = DetectionSettings.general.toOrbConfig()
 
-    /**
-     * Allowed range for the size-based scale of a pink area (tiny or huge frames are clamped). Max raised 4 → 8 (owner, 2026-09-18):
-     * below ~120 px frame size the 4× limit left the calendar at < ~280 px, outside the ~1.7× range the 4 pyramid levels cover
-     * against the 640 px reference (those checks found only ~80–100 keypoints, inlier median 0–5).
-     */
-    const val MIN_REGION_SCALE = 0.5
-    const val MAX_REGION_SCALE = 8.0
-    const val MIN_GOOD_MATCHES = 15
-    /** Default inlier requirement; the monitor's current value is [CalendarMonitor.minInliers] (adjustable in the camera view). */
-    const val MIN_INLIERS = 20
-    const val MIN_INLIERS_LOWEST = 4
-    /**
-     * Confirming passes need this many inliers fewer than the first one. Owner first chose X − 10; changed to 30 / 25 after weak
-     * announcements with confirming passes of 12–18 inliers (logcat 2026-09-17 22:56), while real ones had 28–48. With 1000 features
-     * (fewer inliers overall) the owner set 20 / 12.
-     */
-    const val CONFIRM_INLIER_DROP = 8
+    val MIN_GOOD_MATCHES: Int get() = DetectionSettings.general.minGoodMatches
+    val MIN_INLIERS: Int get() = DetectionSettings.general.minInliers
+    val CONFIRM_INLIER_DROP: Int get() = DetectionSettings.general.confirmInlierDrop
+    val MIN_REGION_SCALE: Double get() = DetectionSettings.general.minRegionScale
+    val MAX_REGION_SCALE: Double get() = DetectionSettings.general.maxRegionScale
+    val ORB_MARGIN_PX: Int get() = DetectionSettings.general.orbMarginPx
+    val SCALE_REGION_TO_REFERENCE: Boolean get() = DetectionSettings.general.scaleRegionToReference
+    val USE_PINK_MARKER: Boolean get() = DetectionSettings.general.usePinkMarker
+    val MARKER_MARGIN_PX: Int get() = DetectionSettings.pink.marginPx
+    val MIN_WHITE_SHARE: Double get() = DetectionSettings.pink.minWhiteShare
+    val WORKERS: Int get() = DetectionSettings.run.workers
+    val MAX_PASSES_PER_SECOND: Int get() = DetectionSettings.run.maxPassesPerSecond
+    val MAX_REGIONS: Int get() = DetectionSettings.run.maxRegions
+    val CONSISTENCY_NEEDED: Int get() = DetectionSettings.run.consistencyNeeded
+    val CONSISTENCY_WINDOW: Int get() = DetectionSettings.run.consistencyWindow
+    val COOLDOWN_MS: Long get() = DetectionSettings.run.cooldownSeconds * 1000L
+
+    /** Lowest/highest inlier requirement the camera view may set. */
+    const val MIN_INLIERS_LOWEST = ObjectSettings.ORB_MIN_INLIERS
     const val MIN_INLIERS_HIGHEST = 200
-    const val MARKER_MARGIN_PX = 40
 
     /**
-     * Margin around the pink line's bounds for the ORB crop (frame pixels, before scaling). The 40 px [MARKER_MARGIN_PX] is for
-     * joining pink pieces into one group; ORB only needs the calendar inside the line. At least ~32 px AFTER scaling are kept,
-     * because ORB finds no keypoints within its 31 px patch border of the crop edge (2026-09-18: keypoint step ~50 ms, half of it
-     * on the margin).
+     * ORB finds no keypoints within its 31 px patch border, so the crop keeps at least this much around the pink frame
+     * after scaling (property of ORB, not a setting).
      */
-    const val ORB_MARGIN_PX = 10
     const val ORB_MIN_SCALED_BORDER_PX = 32
-    val MARKER_COLOR = MarkerColor.PINK.copy(saturationMin = 50)
-    const val WHITE_BALANCE = true
-    const val REQUIRE_FRAME = true
-    /** The inside of the pink frame must be mostly white paper. */
-    const val REQUIRE_WHITE_INSIDE = true
-    const val MIN_WHITE_SHARE = 0.5
-
-    /** Parallel detection workers in [CalendarMonitor] (each its own ORB); the robot has 8 cores, navigation needs some. */
-    const val WORKERS = 2
 
     /**
      * Android thread priority of the detection workers (nice value; lower = more CPU, more likely a fast core). −8 =
-     * THREAD_PRIORITY_URGENT_DISPLAY, the level Android gives the screen's render thread; above normal apps (0) and most system
-     * services, still below audio. Owner (2026-09-18): raise detection and ORB priority.
+     * THREAD_PRIORITY_URGENT_DISPLAY, the level Android gives the screen's render thread.
      */
     const val WORKER_PRIORITY = android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
 
-    /**
-     * Upper limit for pass starts (all workers together). Without it the idle colour-only passes ran for every camera frame (30/s)
-     * and, together with RobotOS (chassis, audio, camera services), kept the CPU so busy and hot (82–95 °C) that ORB passes with a
-     * pink area became slower (600 → 900 ms, 2026-09-17).
-     */
-    const val MAX_PASSES_PER_SECOND = 12
-
-    /** Largest pink areas searched per pass (each costs one ORB pass). */
-    const val MAX_REGIONS = 3
-
-    /**
-     * Present = detected in at least this many of the last [CONSISTENCY_WINDOW] passes. In [CalendarMonitor] the first of those
-     * passes needs the full inlier count, the others only [CONFIRM_INLIER_DROP] fewer.
-     */
-    const val CONSISTENCY_NEEDED = 2
-    const val CONSISTENCY_WINDOW = 2
-
-    fun applyTo(marker: ColorMarker) {
-        marker.marginPx = MARKER_MARGIN_PX
-        marker.color = MARKER_COLOR
-        marker.whiteBalance = WHITE_BALANCE
-        marker.requireFrame = REQUIRE_FRAME
-        marker.requireWhiteInside = REQUIRE_WHITE_INSIDE
-        marker.minWhiteShare = MIN_WHITE_SHARE
-    }
+    /** Applies the pink-search settings from the file to [marker]. */
+    fun applyTo(marker: ColorMarker) = DetectionSettings.pink.applyTo(marker)
 }
 
 /**
@@ -132,10 +96,12 @@ fun markerGatedPass(
     orb: ORB,
     marker: ColorMarker,
     frame: CameraFrame,
-    minGood: Int,
-    minInliers: Int,
+    /** Thresholds per reference name (good matches, inliers); from settings.json, so an image can demand more or fewer. */
+    thresholds: (String) -> Pair<Int, Int>,
     maxRegions: Int = CalendarDetectionSettings.MAX_REGIONS,
     withOverlay: Boolean = false,
+    /** Only these references are searched for (null = all); the others are handled elsewhere, e.g. without the pink gate. */
+    classNames: Collection<String>? = null,
     /**
      * If given, ORB runs only while holding a permit; without one the pass returns [MarkerPass.skipped]. Lets several workers check
      * colour in parallel while only one runs the expensive ORB step (parallel ORB passes slowed each other down on the robot).
@@ -147,28 +113,31 @@ fun markerGatedPass(
     val found = runCatching { marker.find(frame, withOverlay) }.getOrNull()
     val regions = found?.regions.orEmpty().take(maxRegions)
     if (regions.isNotEmpty() && orbGate != null && !orbGate.tryAcquire()) {
-        return MarkerPass(orb.classNames.map { ObjectMatch(it, false, 0, 0, emptyList()) }, found, regions, 0, emptyList(), previewMs, skipped = true)
+        return MarkerPass((classNames ?: orb.classNames).map { ObjectMatch(it, false, 0, 0, emptyList()) }, found, regions, 0, emptyList(), previewMs, skipped = true)
     }
     try {
+    val wanted = classNames ?: orb.classNames
     val best = LinkedHashMap<String, ObjectMatch>()
-    orb.classNames.forEach { best[it] = ObjectMatch(it, false, 0, 0, emptyList()) }
+    wanted.forEach { best[it] = ObjectMatch(it, false, 0, 0, emptyList()) }
     var keypoints = 0
     val points = ArrayList<ImagePoint>()
     val checks = ArrayList<RegionCheck>()
     // The pink line runs along the reference image's edges, so its long side ≈ the reference's long side (640 px after loading).
     val referenceSide = orb.referenceMap.values.maxOfOrNull { max(it.image.width, it.image.height) } ?: 640
     for (region in regions) {
-        val scale = (referenceSide.toDouble() / max(region.bounds.width, region.bounds.height).coerceAtLeast(1))
+        val scale = if (!CalendarDetectionSettings.SCALE_REGION_TO_REFERENCE) 1.0
+        else (referenceSide.toDouble() / max(region.bounds.width, region.bounds.height).coerceAtLeast(1))
             .coerceIn(CalendarDetectionSettings.MIN_REGION_SCALE, CalendarDetectionSettings.MAX_REGION_SCALE)
         val margin = max(CalendarDetectionSettings.ORB_MARGIN_PX, kotlin.math.ceil(CalendarDetectionSettings.ORB_MIN_SCALED_BORDER_PX / scale).toInt())
         val b = region.bounds
         val crop = ImageRegion(b.x - margin, b.y - margin, b.width + 2 * margin, b.height + 2 * margin)
-        val results = runCatching { orb.evaluateRegion(frame.gray, crop, scale = scale) }.getOrElse { emptyList() }
+        val results = runCatching { orb.evaluateRegion(frame.gray, crop, scale = scale, classNames = classNames) }.getOrElse { emptyList() }
         keypoints += orb.lastFrameKeypoints
         points += orb.lastKeypointPositions
         val top = results.maxByOrNull { it.inliers }
         checks += RegionCheck(max(b.width, b.height), scale, orb.lastFrameKeypoints, top?.goodMatches ?: 0, top?.inliers ?: 0)
         for (m in results) {
+            val (minGood, minInliers) = thresholds(m.className)
             val judged = judgeInMarker(m, region, minGood, minInliers)
             val current = best[m.className]
             if (current == null || isBetter(judged, current)) best[m.className] = judged

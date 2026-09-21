@@ -116,6 +116,13 @@ class OrionStarTts(private val context: Context) {
         speak(text, TtsLanguage.ENGLISH, listener)
 
     /** Speaks a German sentence. See [speak]. */
+    /**
+     * Speaks [text] in the language the text file selects (`meta.languages.<current>.speechLanguage`), so switching the
+     * language in `assets/texts/texts.json` also switches the voice.
+     */
+    fun speakConfigured(text: String, listener: TtsListener? = null): Boolean =
+        speak(text, if (com.example.robocontrol.text.UiText.speechLanguage.startsWith("en")) TtsLanguage.ENGLISH else TtsLanguage.GERMAN, listener)
+
     fun speakGerman(text: String, listener: TtsListener? = null): Boolean =
         speak(text, TtsLanguage.GERMAN, listener)
 

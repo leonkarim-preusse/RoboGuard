@@ -9,6 +9,7 @@ import com.ainirobot.coreservice.client.StatusListener
 import com.example.robocontrol.audio.OrionStarTts
 import com.example.robocontrol.audio.TtsFailure
 import com.example.robocontrol.audio.TtsListener
+import com.example.robocontrol.text.UiText
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -124,7 +125,7 @@ class MapNavigation(
 
     init {
         controller.onIdleViolation = { violation ->
-            val name = (violation as? Violation.PrivateZone)?.zone?.name ?: "RobotOS forbidden area"
+            val name = (violation as? Violation.PrivateZone)?.zone?.name ?: UiText.get("nav.forbidden_area")
             if (name != idleViolationZone) {
                 idleViolationZone = name
                 log.i(TAG, "robot is standing inside \"$name\" while not driving (pushed or parked there)")
@@ -212,7 +213,7 @@ class MapNavigation(
      * @return null on success, otherwise a message for the name dialog
      */
     fun makeSelectedAreaPrivate(rawName: String): String? {
-        val point = _selected.value ?: return "Select a point first."
+        val point = _selected.value ?: return UiText.get("nav.error.select_point")
         lockedMessage()?.let { return it }
         val name = validateAreaName(rawName).let { (ok, error) -> ok ?: return error }
         val zone = Zone(name = name, polygon = circlePolygon(point.position, ZONE_RADIUS_M, ZONE_SEGMENTS), privacy = PrivacyLevel.PRIVATE)
@@ -235,9 +236,9 @@ class MapNavigation(
     private fun validateAreaName(raw: String): Pair<String?, String?> {
         val name = raw.trim()
         return when {
-            name.isEmpty() -> null to "Please enter a name."
-            name.length > MAX_NAME_LENGTH -> null to "The name is too long (at most $MAX_NAME_LENGTH characters)."
-            guard.zones.byName(name) != null -> null to "An area named \"$name\" already exists."
+            name.isEmpty() -> null to UiText.get("nav.error.name_empty")
+            name.length > MAX_NAME_LENGTH -> null to UiText.get("nav.error.name_too_long", "max" to MAX_NAME_LENGTH)
+            guard.zones.byName(name) != null -> null to UiText.get("nav.error.area_exists", "name" to name)
             else -> name to null
         }
     }
@@ -296,8 +297,8 @@ class MapNavigation(
      * @return null on success (drawing ends), otherwise a message for the name dialog (drawing stays open)
      */
     fun finishDrawingArea(rawName: String): String? {
-        val corners = _drawingVertices.value ?: return "Not drawing an area."
-        if (corners.size < 3) return "An area needs at least 3 corners (have ${corners.size})."
+        val corners = _drawingVertices.value ?: return UiText.get("nav.error.not_drawing")
+        if (corners.size < 3) return UiText.get("nav.error.too_few_corners", "corners" to corners.size)
         lockedMessage()?.let { return it }
         val name = validateAreaName(rawName).let { (ok, error) -> ok ?: return error }
         val zone = Zone(name = name, polygon = corners, privacy = PrivacyLevel.PRIVATE)
@@ -334,7 +335,7 @@ class MapNavigation(
                     _zoneSaveWarning.value = null
                     log.i(TAG, if (wasUnreadable) "unreadable private areas deleted; areas can be drawn again" else "private areas cleared and deleted from storage")
                 } else {
-                    _zoneSaveWarning.value = "Could not delete the saved private areas; they will come back after a restart."
+                    _zoneSaveWarning.value = UiText.get("nav.error.areas_not_deleted")
                     log.i(TAG, "private areas cleared, but deleting the saved file FAILED")
                 }
             }
@@ -345,8 +346,8 @@ class MapNavigation(
     private fun zonesLocked(): Boolean = lockedMessage()?.also { log.i(TAG, it) } != null
 
     private fun lockedMessage(): String? = when {
-        !_zonesLoaded.value -> "The private areas are not loaded yet; try again in a moment."
-        _zoneStoreError.value != null -> "Private areas cannot be changed: ${_zoneStoreError.value}"
+        !_zonesLoaded.value -> UiText.get("nav.error.areas_loading")
+        _zoneStoreError.value != null -> UiText.get("nav.error.areas_unreadable", "reason" to _zoneStoreError.value)
         else -> null
     }
 
@@ -358,7 +359,7 @@ class MapNavigation(
             guard.zones
         }
         if (snapshot.mapName.isBlank()) {
-            _zoneSaveWarning.value = "No map active: private areas are not saved."
+            _zoneSaveWarning.value = UiText.get("nav.error.areas_no_map")
             return
         }
         val seq = synchronized(zoneRegistry) { ++zoneSaveSeq }
@@ -372,7 +373,7 @@ class MapNavigation(
                         log.i(TAG, "private areas saved (${snapshot.zones.size}, encrypted)")
                     }
                     .onFailure {
-                        _zoneSaveWarning.value = "Private areas could NOT be saved: $it"
+                        _zoneSaveWarning.value = UiText.get("nav.error.areas_not_saved", "reason" to it)
                         log.i(TAG, "saving private areas FAILED: $it")
                     }
             }
@@ -408,8 +409,7 @@ class MapNavigation(
                 guard.updateZones(MapZones(map))
                 _privateZones.value = emptyList()
             }
-            _zoneStoreError.value = "The saved private areas of this map cannot be read (${e.cause ?: e}). " +
-                "Driving is blocked. Reset the private areas to continue."
+            _zoneStoreError.value = UiText.get("nav.error.areas_read_failed", "reason" to (e.cause ?: e))
             log.i(TAG, "LOADING PRIVATE AREAS FAILED, driving blocked: $e / ${e.cause}")
         }
     }
@@ -471,9 +471,9 @@ class MapNavigation(
         PrivacyOverridePrompt.ask(zone.name) { minutes ->
             // An answer ends the announcement that may still be running, and the robot confirms the answer.
             runCatching { tts.stop() }
-            speakGerman(
-                if (minutes == null) "Keine Erlaubnis für ${zone.name} erteilt, stoppe Navigation"
-                else "Ich darf ${zone.name} für ${germanMinutes(minutes)} betreten und setze meinen Weg fort"
+            speak(
+                if (minutes == null) UiText.get("speech.privacy_denied", "area" to zone.name)
+                else UiText.get("speech.privacy_allowed", "area" to zone.name, "minutes" to spokenMinutes(minutes))
             )
             if (minutes == null) {
                 log.i(TAG, "crossing \"${zone.name}\" NOT allowed; robot stays stopped")
@@ -494,19 +494,20 @@ class MapNavigation(
         }
     }
 
-    private fun germanMinutes(minutes: Int) = if (minutes == 1) "eine Minute" else "$minutes Minuten"
+    private fun spokenMinutes(minutes: Int) =
+        if (minutes == 1) UiText.get("speech.minutes_one") else UiText.get("speech.minutes_many", "minutes" to minutes)
 
-    private fun speakGerman(sentence: String) {
+    private fun speak(sentence: String) {
         log.i(TAG, "saying: \"$sentence\"")
-        tts.speakGerman(sentence, object : TtsListener {
+        tts.speakConfigured(sentence, object : TtsListener {
             override fun onFailed(failure: TtsFailure) = log.i(TAG, "not spoken: $failure")
         })
     }
 
     /** Says the privacy stop sentence in German and logs it. */
     private fun announcePrivacyStop(reason: String) {
-        log.i(TAG, "PRIVACY STOP ($reason), saying: \"$PRIVACY_STOP_SENTENCE\"")
-        tts.speakGerman(PRIVACY_STOP_SENTENCE, object : TtsListener {
+        log.i(TAG, "PRIVACY STOP ($reason), saying: \"$privacyStopSentence\"")
+        tts.speakConfigured(privacyStopSentence, object : TtsListener {
             override fun onFailed(failure: TtsFailure) = log.i(TAG, "announcement not spoken: $failure")
         })
     }
@@ -555,13 +556,13 @@ class MapNavigation(
      */
     suspend fun saveCurrentPosition(rawName: String): String? = withContext(Dispatchers.IO) {
         val name = rawName.trim()
-        if (name.isEmpty()) return@withContext "Please enter a name."
-        if (name.length > MAX_NAME_LENGTH) return@withContext "The name is too long (at most $MAX_NAME_LENGTH characters)."
+        if (name.isEmpty()) return@withContext UiText.get("nav.error.name_empty")
+        if (name.length > MAX_NAME_LENGTH) return@withContext UiText.get("nav.error.name_too_long", "max" to MAX_NAME_LENGTH)
         if ((_places.value + _customPoints.value).any { it.name.equals(name, ignoreCase = true) }) {
-            return@withContext "A location named \"$name\" already exists."
+            return@withContext UiText.get("nav.error.location_exists", "name" to name)
         }
         val map = _mapName.value
-        if (map.isNullOrBlank()) return@withContext "No map is active on the robot."
+        if (map.isNullOrBlank()) return@withContext UiText.get("nav.error.no_map")
         _pointStoreError.value?.let { return@withContext it }
 
         val api = RobotApi.getInstance()
@@ -569,15 +570,15 @@ class MapNavigation(
         _localized.value = localized
         if (!localized) {
             log.i(TAG, "save \"$name\" refused: robot not localized")
-            return@withContext "The robot is not localized, so its position is unknown. Relocalize it first."
+            return@withContext UiText.get("nav.error.not_localized")
         }
         val pose = runCatching { api.getCurrentPose() }.getOrNull()
-            ?: return@withContext "Could not read the robot's position."
+            ?: return@withContext UiText.get("nav.error.position_unreadable")
 
         val position = Point2D(pose.x.toDouble(), pose.y.toDouble())
         val theta = pose.theta.toDouble()
         runCatching { pointStore.save(map, pointStore.load(map) + SavedPoint(name, position, theta)) }
-            .onFailure { return@withContext "Could not store the location: $it" }
+            .onFailure { return@withContext UiText.get("nav.error.location_not_stored", "reason" to it) }
 
         val point = MapPoint(name, position, saved = false, persistent = true)
         _customPoints.value = _customPoints.value + point
@@ -635,7 +636,7 @@ class MapNavigation(
         if (SystemClock.elapsedRealtime() - lastPoseAt > POSE_TIMEOUT_MS) {
             _navState.value = "refused: robot position unknown"
             log.i(TAG, "DRIVE REFUSED: no current robot position, so private areas could not be enforced")
-            speakGerman(POSITION_UNKNOWN_SENTENCE)
+            speak(positionUnknownSentence)
             return
         }
         if (!_zonesLoaded.value) {
@@ -711,7 +712,7 @@ class MapNavigation(
     private fun stopForUnknownPosition() {
         log.i(TAG, "NO ROBOT POSITION for more than $POSE_TIMEOUT_MS ms while driving: stopping (private areas cannot be checked)")
         stop("robot position unknown")
-        speakGerman(POSITION_UNKNOWN_SENTENCE)
+        speak(positionUnknownSentence)
     }
 
     /** Stops any navigation immediately. */
@@ -749,8 +750,7 @@ class MapNavigation(
             runCatching { pointStore.load(name) }
                 .onSuccess { _pointStoreError.value = null }
                 .onFailure { e ->
-                    _pointStoreError.value = "The saved locations of this map cannot be read (${e.cause ?: e}). " +
-                        "Saving locations is blocked. Reset the saved locations to continue."
+                    _pointStoreError.value = UiText.get("nav.error.locations_read_failed", "reason" to (e.cause ?: e))
                     log.i(TAG, "LOADING SAVED LOCATIONS FAILED: $e / ${e.cause}")
                 }
                 .getOrDefault(emptyList())
@@ -850,8 +850,8 @@ class MapNavigation(
         /** Longest time without a robot position before a drive is stopped / refused (fail closed). */
         const val POSE_TIMEOUT_MS = 1_000L
 
-        /** Spoken when a drive is stopped or refused because the robot's position cannot be read. */
-        const val POSITION_UNKNOWN_SENTENCE = "Ich kann meine Position gerade nicht bestimmen und halte deshalb an."
+        /** Spoken when a drive is stopped or refused because the robot's position cannot be read (assets/texts/texts.json). */
+        val positionUnknownSentence: String get() = UiText.get("speech.position_unknown")
 
         /** Pose poll interval while a drive is running (privacy checks happen on each poll). */
         const val POLL_NAVIGATING_MS = 150L
@@ -867,10 +867,8 @@ class MapNavigation(
         /** Finds N in "Bereich N" (also older "Privat: Bereich N"), to continue the default numbering. */
         val AREA_NUMBER = Regex("""Bereich (\d+)""")
 
-        /** Spoken (German) when a drive is refused or stopped because of a private area. Owner's wording. */
-        const val PRIVACY_STOP_SENTENCE = "Dieser Weg führt mich durch einen als privat gekennzeichneten Bereich, darum bleibe ich " +
-            "vorerst stehen. Wenn du mir temporär erlauben möchtest den privaten Bereich zu betreten, dann kannst du das an " +
-            "meinem Bildschirm tun."
+        /** Spoken when a drive is refused or stopped because of a private area (assets/texts/texts.json). */
+        val privacyStopSentence: String get() = UiText.get("speech.privacy_stop")
 
         /** Cell values at or above this are drawn as walls. Seen on the robot: 0, 1, 5267, 8507, 12288, 32767. */
         const val OCCUPIED_VALUE = 8000

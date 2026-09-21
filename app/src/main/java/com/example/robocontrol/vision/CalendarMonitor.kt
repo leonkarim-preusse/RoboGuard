@@ -10,6 +10,7 @@ import com.example.robocontrol.sensorcontrol.SensorChangeListener
 import com.example.robocontrol.sensorcontrol.Sensors
 import com.example.robocontrol.system.RobotApiConnection
 import com.example.robocontrol.system.SdkControl
+import com.example.robocontrol.text.UiText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,7 +30,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.asCoroutineDispatcher
 
 /**
- * Watches the camera whenever RoboGuard runs (started by RobotServerService) and says [SENTENCE] when a calendar is detected in
+ * Watches the camera whenever RoboGuard runs (started by RobotServerService) and says [sentence] when a calendar is detected in
  * [CalendarDetectionSettings.CONSISTENCY_NEEDED] of the last [CalendarDetectionSettings.CONSISTENCY_WINDOW] passes, at most once per
  * [COOLDOWN_MS]. Every reference image in assets/ORB_img counts as "calendar". Detection = pink-marker-gated ORB with
  * [CalendarDetectionSettings] (the object test's chosen settings). Runs in the service, so it also works while driving.
@@ -42,11 +43,11 @@ object CalendarMonitor {
 
     private const val TAG = "CalendarMonitor"
 
-    /** Owner asked for "Kalendar entdeckt"; spelled as the German word so the German voice pronounces it correctly. */
-    const val SENTENCE = "Kalender entdeckt"
+    /** Spoken when a calendar was recognised; wording in assets/texts/texts.json ("speech.calendar_detected"). */
+    val sentence: String get() = UiText.get("speech.calendar_detected")
 
     /** No new announcement for this long after one (owner: 15 s, then 3 s). */
-    const val COOLDOWN_MS = 3_000L
+    val COOLDOWN_MS: Long get() = CalendarDetectionSettings.COOLDOWN_MS
 
     private lateinit var appContext: Context
     private var scope: CoroutineScope? = null
@@ -206,11 +207,12 @@ object CalendarMonitor {
     private suspend fun CoroutineScope.watch() {
         RobotApiConnection.connect(appContext)
         RobotApiConnection.connected.first { it }
+        DetectionSettings.init(appContext)
         // One ORB + ColorMarker per worker: ORB is synchronized per instance, so parallel passes need their own.
         val workers = ArrayList<Pair<ORB, ColorMarker>>()
         try {
             repeat(CalendarDetectionSettings.WORKERS) {
-                val orb = ORB(appContext, CalendarDetectionSettings.orb)
+                val orb = newOrb()
                 workers += orb to ColorMarker().also { m -> CalendarDetectionSettings.applyTo(m) }
             }
         } catch (e: Exception) {
@@ -221,7 +223,8 @@ object CalendarMonitor {
         val orb0 = workers.first().first
         Log.i(TAG, "references ${orb0.assetLoadReport.loaded}; features ${orb0.config.maxFeatures}, FAST ${orb0.config.fastThreshold}, " +
             "grid ${orb0.config.gridDistribution}, thresholds ${CalendarDetectionSettings.MIN_GOOD_MATCHES}/${_minInliers.value} (confirm ${confirmInliers()}), " +
-            "pink margin ${CalendarDetectionSettings.MARKER_MARGIN_PX}, white inside ${CalendarDetectionSettings.REQUIRE_WHITE_INSIDE} " +
+            "pink ${if (CalendarDetectionSettings.USE_PINK_MARKER) "on" else "off"}, margin ${CalendarDetectionSettings.MARKER_MARGIN_PX}, " +
+            "white inside ${DetectionSettings.pink.requireWhiteInside} " +
             "(≥ ${CalendarDetectionSettings.MIN_WHITE_SHARE}), workers ${workers.size}, " +
             "${CalendarDetectionSettings.CONSISTENCY_NEEDED} of ${CalendarDetectionSettings.CONSISTENCY_WINDOW}, cooldown ${COOLDOWN_MS / 1000} s, " +
             "announce every detection ${_announceEveryDetection.value}")
@@ -319,7 +322,7 @@ object CalendarMonitor {
                     val t0 = SystemClock.elapsedRealtime()
                     val pass = try {
                         // Run with the lower confirm threshold; onPass decides whether a result is a full or a confirm-level detection.
-                        markerGatedPass(orb, marker, f, CalendarDetectionSettings.MIN_GOOD_MATCHES, confirmInliers(), withOverlay = drawDetails, orbGate = orbGate)
+                        detectionPass(orb, marker, f, drawDetails, orbGate)
                     } catch (e: Exception) {
                         Log.w(TAG, "detection failed: $e")
                         continue
@@ -392,10 +395,59 @@ object CalendarMonitor {
     /** Inliers a pass needs to confirm a previous full detection: X − [CalendarDetectionSettings.CONFIRM_INLIER_DROP]. */
     fun confirmInliers(): Int = (_minInliers.value - CalendarDetectionSettings.CONFIRM_INLIER_DROP).coerceAtLeast(CalendarDetectionSettings.MIN_INLIERS_LOWEST)
 
+    /**
+     * ORB with the settings from assets/settings/settings.json: general ones for every reference, the per-image section
+     * where one exists, and images with `enabled: false` are not loaded at all.
+     */
+    private fun newOrb(): ORB = ORB(
+        appContext,
+        CalendarDetectionSettings.orb,
+        configFor = { name -> DetectionSettings.forImage(name).toOrbConfig() },
+        skipReference = { name -> !DetectionSettings.isEnabled(name) }
+    )
+
+    /**
+     * Good matches and inliers one reference needs, from its settings. The inlier number the camera view sets applies to the
+     * general setting; an image with its own `minInliers` keeps that one. Passes run with the confirm level; [onPass] decides
+     * from the numbers whether a check was a full detection.
+     */
+    private fun thresholdsFor(name: String): Pair<Int, Int> {
+        val settings = DetectionSettings.forImage(name)
+        val full = if (settings.minInliers == DetectionSettings.general.minInliers) _minInliers.value else settings.minInliers
+        return settings.minGoodMatches to (full - settings.confirmInlierDrop).coerceAtLeast(ObjectSettings.ORB_MIN_INLIERS)
+    }
+
+    /**
+     * One check: references with a pink frame are searched inside the pink areas, references whose settings say
+     * `usePinkMarker: false` are searched in the whole camera picture (slower, so only do that when a picture needs it).
+     */
+    private fun detectionPass(orb: ORB, marker: ColorMarker, frame: CameraFrame, drawDetails: Boolean, orbGate: java.util.concurrent.Semaphore): MarkerPass {
+        val all = orb.classNames
+        val general = CalendarDetectionSettings.USE_PINK_MARKER
+        val gated = all.filter { general && DetectionSettings.forImage(it).usePinkMarker }
+        val whole = all.filter { it !in gated }
+        val pass = if (gated.isEmpty()) {
+            MarkerPass(emptyList(), null, emptyList(), 0, emptyList())
+        } else {
+            markerGatedPass(orb, marker, frame, ::thresholdsFor, withOverlay = drawDetails, orbGate = orbGate, classNames = gated)
+        }
+        if (whole.isEmpty() || pass.skipped) return pass
+        // Whole-picture references: ORB decides with their own thresholds (ORB.match uses each reference's settings).
+        val extra = runCatching { orb.evaluate(frame.gray, whole) }.getOrElse { emptyList() }
+        return MarkerPass(pass.results + extra, pass.marker, pass.regions, pass.keypoints + orb.lastFrameKeypoints,
+            pass.keypointPositions, pass.previewMs, pass.orbTimings, pass.skipped, pass.checks)
+    }
+
+    /** Inliers that count as a full detection for [name] (per image, else the value from the camera view). */
+    private fun fullInliersFor(name: String): Int {
+        val settings = DetectionSettings.forImage(name)
+        return if (settings.minInliers == DetectionSettings.general.minInliers) _minInliers.value else settings.minInliers
+    }
+
     private fun onPass(log: PassLog, pass: MarkerPass, frameTs: Long, ms: Long, debugging: Boolean) {
         val now = SystemClock.elapsedRealtime()
-        val strongNeeded = _minInliers.value
         val best = pass.results.filter { it.detected }.maxByOrNull { it.inliers }
+        val strongNeeded = best?.let { fullInliersFor(it.className) } ?: _minInliers.value
         // 2 = full detection (≥ X inliers), 1 = only enough to confirm a previous full detection (≥ X − 10), 0 = nothing.
         val level = when {
             best == null -> 0
@@ -464,7 +516,7 @@ object CalendarMonitor {
             val strongest = pass.results.maxByOrNull { it.inliers }
             Log.i(TAG, "calendar detected (${if (_announceEveryDetection.value) "every detection" else "$recent/$window passes"}): " +
                 "${strongest?.className} good ${strongest?.goodMatches}, inliers ${strongest?.inliers}, pink regions ${pass.regions.size}")
-            scope?.launch { speak(SENTENCE) }
+            scope?.launch { speak(sentence) }
         }
     }
 
@@ -489,7 +541,7 @@ object CalendarMonitor {
                 speakingSince = 0L
                 return
             }
-            val started = speech.speakGerman(sentence, object : TtsListener {
+            val started = speech.speakConfigured(sentence, object : TtsListener {
                 override fun onFinished() { speakingSince = 0L }
                 override fun onFailed(failure: TtsFailure) {
                     Log.w(TAG, "not spoken: $failure")
