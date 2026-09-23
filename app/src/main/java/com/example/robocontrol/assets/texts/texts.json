@@ -321,6 +321,10 @@
     "voice.now.saved": { "text": "Voice stored.", "note": "Shown after a successful recording." },
     "voice.now.error": { "text": "Did not work: {error}", "note": "Shown when recording or storing failed." },
     "voice.now.microphone": { "text": "Microphone: speech {probability}, level {level} dB", "note": "Live numbers so it is visible that the robot hears something." },
+    "speaker_view.reset_cooldown": {
+      "text": "Reset detection cooldown",
+      "note": "Speaker debug screen: forgets that the robot already asked and restarts the detector, so the pop-up can come again at once. A running pause is not lifted."
+    },
     "speaker_view.method": {
       "text": "How the robot decides:",
       "note": "Speaker debug screen: label over the two method buttons."

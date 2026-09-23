@@ -71,6 +71,12 @@ fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit =
             topControls()
             OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text(UiText.get("speaker_view.back"), fontSize = 16.sp) }
 
+            // Starts over: the prompt may come again at once, and the detector forgets what it has heard.
+            OutlinedButton(
+                onClick = { ConversationMonitor.resetCooldown() },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(UiText.get("speaker_view.reset_cooldown"), fontSize = 13.sp) }
+
             // Which method decides "one voice or several". Switching restarts the detector straight away.
             Text(UiText.get("speaker_view.method"), fontSize = 13.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

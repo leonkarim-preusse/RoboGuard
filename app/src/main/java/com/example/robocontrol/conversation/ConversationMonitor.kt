@@ -213,6 +213,27 @@ object ConversationMonitor {
 
     /** Called by the prompt when it closes. */
     @Synchronized
+    /**
+     * Forgets everything that would hold the next prompt back, and starts the detector over: the "already asked in this
+     * conversation" flag, the two minutes between prompts, and the detector's own window of speech. Everything heard from
+     * this moment counts as a new conversation, so the prompt can come again straight away.
+     *
+     * A running pause ("don't ask again for N minutes") is NOT lifted — that was a decision of the person at the robot,
+     * not a cooldown.
+     */
+    fun resetCooldown() {
+        synchronized(this) {
+            promptOpen = false
+            promptedThisConversation = false
+            lastPromptAt = Long.MIN_VALUE / 2
+        }
+        Log.i(TAG, "detection cooldown reset: everything from now counts as a new conversation")
+        if (scope != null) {
+            stopDetector("cooldown reset")
+            reevaluate()
+        }
+    }
+
     fun promptClosed() {
         promptOpen = false
     }
