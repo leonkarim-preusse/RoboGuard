@@ -61,8 +61,46 @@ data class ConversationSnapshot(
     val candidates: List<ChangeCandidate> = emptyList(),
     /** Stream time (ms since start) of this snapshot. */
     val timeMs: Long = 0,
+    /** Which detector produced this snapshot, so the screens can say what they are showing. */
+    val method: DetectionMethod = DetectionMethod.CHANGE,
+    /** Owner detector: similarity of the last piece of speech to the stored voice (null before the first piece). */
+    val ownerSimilarity: Float? = null,
+    /** Owner detector: the threshold that piece was judged against. */
+    val ownerThreshold: Float = 0f,
+    /** Owner detector: the last readings, newest first (both owner and other pieces). */
+    val ownerReadings: List<Float> = emptyList(),
+    /** Owner detector: pieces in the decision window that matched the owner, and pieces that did not. */
+    val ownerPieces: Int = 0,
+    val otherPieces: Int = 0,
+    /** Pairwise method: lowest similarity between two pieces in the window (low = two different voices). */
+    val pairwiseMin: Float? = null,
+    /** Pairwise method: the last comparisons, newest first. */
+    val pairwiseReadings: List<Float> = emptyList(),
+    /** Pairwise method: pieces currently held for comparison. */
+    val piecesHeld: Int = 0,
     val error: String? = null
 )
+
+/**
+ * How the robot decides "one voice or several".
+ *
+ * [CHANGE] compares two adjacent moments and asks whether the voice changed — nothing about a person is stored.
+ * [OWNER] compares each piece of speech with the one voice the robot was taught ([OwnerVoiceprint]) and counts a
+ * conversation when the owner and somebody else are both heard. Faster and more direct, but it identifies one person,
+ * which the change detector deliberately avoids. Both are kept so the two can be compared.
+ */
+enum class DetectionMethod {
+    CHANGE,
+    OWNER,
+
+    /**
+     * Experimental: compares the pieces of speech WITH EACH OTHER instead of with a stored voice. Two pieces that are far
+     * enough apart mean two people, whoever they are — no owner needs to be taught, and nobody is recognised. The price is
+     * that a vector is computed for everyone in the room and a handful of them exist side by side for the length of the
+     * window (in memory only, zeroed on reset).
+     */
+    PAIRWISE
+}
 
 /** Detects whether more than one person is talking. Implementations must not store or send audio. */
 interface ConversationDetector {

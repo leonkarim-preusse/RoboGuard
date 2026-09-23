@@ -1528,3 +1528,79 @@ forgotten. Change detection stays; a switch between the two methods is still to 
   (`voice.*`, `nav.button.teach_voice`).
 - NOT done yet: `OwnerVoiceDetector` (the detector that uses the template) and the debug switch between change detection
   and fingerprinting. The enrolment screen's "Try the voice" is what gives the numbers to set the threshold from.
+
+## Owner-voice detector, method switch and cohort centring (owner 2026-09-23, installed, measured)
+
+**Measured on the robot first (VERIFIED, logcat):** the owner's own voice reads **0.89–0.91** against the template, another
+person **0.8+**; the enrolment's computed threshold was **0.94** (mean − 2σ over ten pieces of ONE recording), so the owner
+was classified as a stranger. Cause: within-session σ ≈ 0.01 describes how consistent one recording is, not how consistent a
+voice is across situations. The reference PC numbers (same speaker 0.55–0.68, different 0.09–0.24) come from close-talk
+recordings in different rooms; on the robot the far-field microphone and the room put a large common part into every
+embedding, which lifts ALL similarities and leaves only ~0.1 of speaker difference on top.
+- **Manual threshold (owner: "we could not just manually turn down the threshold?"):** `OwnerVoiceprintStore.setThreshold`
+  rewrites only the threshold of the stored voice (clamped 0.2–0.97); voice screen has −0.05/−0.01/+0.01/+0.05 buttons.
+- **Screen fixes:** the buttons were driven by `enrolment.running`, a plain property Compose does not observe, so after a
+  recording the screen froze on "Stop" and never showed "Try the voice" — now derived from the published phase. "Listening"
+  stays visible during a test, and the last 8 readings are listed. `VoiceEnrolment` logs every piece and a 2 s mic line.
+- **`conversation/OwnerVoiceDetector.kt` (new):** ConversationDetector; 3 s of Silero-gated speech per piece → embedding →
+  similarity to the template; owner if ≥ threshold, somebody else if ≤ threshold − `margin` (0.02), unclear in between;
+  MULTIPLE_SPEAKERS when `piecesForOther` (2) other-pieces are in the 20 s window AND the owner was heard too
+  (`anyOtherIsConversation` = false). Window keeps times and numbers, never vectors; everything zeroed on stop and after
+  30 s of silence. `ConversationSettings` holds the values.
+- **Method switch:** `DetectionMethod` CHANGE | OWNER in `ConversationSnapshot`; `ConversationMonitor.method` (StateFlow,
+  SharedPreferences `robocontrol_conversation`/`detection_method`), `setMethod()` restarts the detector; `watch()` factored
+  out so both detectors feed the same prompt logic — **the popup and all its rules are unchanged**. Owner method refuses to
+  start without a stored voice instead of falling back silently. Switch + live numbers (last similarity, threshold,
+  owner/other counts, readings) on the speaker debug screen.
+- **Cohort centring (owner's plan: play public voices from the phone, record them with the robot):**
+  `Voiceprint.similarityTo(embedding, cohort)` subtracts the cohort mean from both sides and renormalises before the cosine —
+  standard centring/score normalisation. `OwnerVoiceprintStore.saveCohort/loadCohort/deleteCohort` stores ONLY the average
+  (`files/robocontrol/voice/cohort.mean`, same Keystore key, AAD `roboguard-voiceprint:cohort.mean`), never single voices.
+  `VoiceEnrolment.Mode` = ENROL | TEST | COHORT; cohort run targets 180 s of speech, "Stop" keeps what was collected
+  (≥ 4 pieces), no outlier filtering (the point is many different voices). Test mode shows centred AND raw similarity.
+- **Playback file (PC):** `~/RoboGuard_cohort/RoboGuard_cohort_voices.wav` — LibriSpeech dev-clean (OpenSLR SLR12,
+  **CC BY 4.0**, licence copied next to it), 40 speakers × 3 × 4 s, **round robin** so the first ~3 min already covers all
+  40 voices, levelled to 0.7 peak, 0.4 s gaps, 16 kHz mono, 17 MB, 8.8 min. Script `make_cohort_wav.py` in the session
+  scratchpad. Only the average of its embeddings ends up on the robot; no audio from the dataset is shipped.
+- **Threshold must be re-tuned after recording a cohort:** centring changes the scale completely.
+
+### Cohort recorded and measured on the robot (2026-09-23, VERIFIED from logcat)
+
+- Cohort run: **60 pieces, 180 s of speech** (auto-stop at `COHORT_TARGET_SECONDS`), ~3.5 min of the 8.8 min file, one full
+  round-robin pass over all 40 LibriSpeech speakers. `files/robocontrol/voice/cohort.mean` 10.8 KB. Detector picked it up:
+  "centred on 512 values of other voices".
+- **Same voices, raw vs centred** (`VoiceEnrolment` test mode logs both):
+  owner centred 0.369 / 0.510 / 0.338 (raw 0.894 / 0.924 / 0.903);
+  other person centred 0.248 / 0.183 / −0.115 / −0.200 / −0.277 (raw 0.876 / 0.877 / 0.757 / 0.750 / 0.668);
+  video (other voices only) centred −0.157 … −0.325 (raw 0.713 … 0.807).
+  Raw margin owner-min to other-max = **0.017**; centred = **0.090** on a much wider scale → centring is what makes the
+  decision possible. Owner threshold set by hand to **0.31** (the buttons log each write: 0.82 → 0.31).
+- **Transition artefact (owner report + log):** six consecutive video pieces read −0.16…−0.33 correctly, then the piece that
+  straddled "video stopped / owner walks up" read **0.402 → owner**. A piece is 3 s of gated speech and does not care that
+  the source changed inside it; the embedding of a mixture lands between the two voices.
+  **Consequence for the rule:** `piecesForOther` = 2 but a single owner piece is enough, so one straddling piece can fake
+  "owner + other" while only a TV is talking. Fixes proposed (not implemented, owner has not chosen): (1) require 2 owner
+  pieces, (2) shorter pieces 1.5–2 s, (3) purity check = embed both halves of a piece and discard when they disagree.
+- Operational: an interrupted ENROL run stores nothing (verified: "run ended (RECORDING)", no "voice stored", file
+  timestamps unchanged); a COHORT run stores what it has on Stop (≥ 4 pieces); a new cohort run REPLACES the old one.
+
+- **"Any other voice counts" option (owner 2026-09-23, installed):** `ConversationMonitor.anyOtherIsConversation`
+  (StateFlow, SharedPreferences `robocontrol_conversation`/`any_other_is_conversation`, `setAnyOtherIsConversation()`
+  restarts the detector). ON = the prompt comes as soon as ONE piece reads "somebody else" (~3 s of speech), the owner does
+  not have to have been heard; the monitor then builds `ConversationSettings(anyOtherIsConversation = true,
+  piecesForOther = 1)`. OFF (default) = the old rule, 2 other-pieces plus the owner in the same 20 s window. Switch on the
+  speaker debug screen, shown only while the owner method is selected; texts `speaker_view.rule.any` /
+  `speaker_view.rule.owner_and_other`. Known consequence: a television or a video is a "somebody else" too, so in this mode
+  the robot also asks in an empty room.
+- **Experimental third method: `PAIRWISE` (owner request 2026-09-23, installed, not yet measured).**
+  `conversation/PairwiseVoiceDetector.kt`: same pipeline (Silero gate, 3 s pieces, CAM++), but each new embedding is
+  compared with the pieces still in the 20 s window instead of with a template; the LOWEST similarity decides, and below
+  `ConversationSettings.differentVoiceBelow` (default 0.5, adjustable) the robot reports two voices → conversation.
+  Needs no enrolment and recognises nobody; a stored cohort is used only to centre the comparison. Why it can work where an
+  absolute threshold struggles: the channel component is on both sides of a piece-to-piece comparison and cancels.
+  **Privacy cost to state in the thesis:** up to `piecesKept` (6) embeddings of whoever talks exist side by side for the
+  window — RAM only, never written, never logged (only distances), zeroed on the 30 s silence reset and on stop.
+  `ConversationMonitor.differentBelow` (StateFlow + pref `different_voice_below`, `setDifferentBelow`, restarts the
+  detector); speaker debug screen: third method button "Compare voices (test)", −0.10/−0.05/+0.05/+0.10 stepper, live
+  "lowest comparison / pieces held" and the last 8 comparisons. Snapshot fields `pairwiseMin`, `pairwiseReadings`,
+  `piecesHeld`. The prompt path is unchanged — all three methods feed the same `watch()`.

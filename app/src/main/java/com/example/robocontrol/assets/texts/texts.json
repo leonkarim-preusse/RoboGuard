@@ -321,6 +321,102 @@
     "voice.now.saved": { "text": "Voice stored.", "note": "Shown after a successful recording." },
     "voice.now.error": { "text": "Did not work: {error}", "note": "Shown when recording or storing failed." },
     "voice.now.microphone": { "text": "Microphone: speech {probability}, level {level} dB", "note": "Live numbers so it is visible that the robot hears something." },
+    "speaker_view.method": {
+      "text": "How the robot decides:",
+      "note": "Speaker debug screen: label over the two method buttons."
+    },
+    "speaker_view.method.change": {
+      "text": "Voice changes",
+      "note": "Method: notices when the voice changes from one moment to the next; stores nothing about anybody."
+    },
+    "speaker_view.method.owner": {
+      "text": "Compare with owner",
+      "note": "Method: compares every piece of speech with the stored owner voice."
+    },
+    "speaker_view.rule.any": {
+      "text": "Any other voice counts (asks as soon as somebody else speaks)",
+      "note": "Owner method, switch ON: one piece of a voice that is not the owner is enough — a television counts too."
+    },
+    "speaker_view.rule.owner_and_other": {
+      "text": "Owner and somebody else (asks only when both were heard)",
+      "note": "Owner method, switch OFF: the owner must have been heard in the same window."
+    },
+    "speaker_view.method.pairwise": {
+      "text": "Compare - no owner",
+      "note": "Experimental method: compares the pieces of speech with each other; no voice has to be taught and nobody is recognised."
+    },
+    "speaker_view.pairwise.hint": {
+      "text": "Experimental: the robot compares what it hears with itself. Two pieces that are far enough apart mean two people — it does not learn or recognise anybody.",
+      "note": "Explanation of the experimental method."
+    },
+    "speaker_view.pairwise.threshold": {
+      "text": "Two voices below: {value}",
+      "note": "Experimental method: similarity under which two pieces count as two different people."
+    },
+    "speaker_view.pairwise.now": {
+      "text": "Lowest comparison: {lowest} ({held} pieces held)",
+      "note": "Experimental method: the smallest similarity measured between the pieces currently held."
+    },
+    "speaker_view.owner.waiting": {
+      "text": "Waiting for the first piece of speech…",
+      "note": "Owner method: shown before the first comparison."
+    },
+    "speaker_view.owner.last": {
+      "text": "Last piece: {similarity} (owner from {threshold})",
+      "note": "Owner method: how close the last piece of speech was to the stored voice."
+    },
+    "speaker_view.owner.counts": {
+      "text": "In the window: {owner} pieces owner, {other} pieces somebody else",
+      "note": "Owner method: what the decision is based on."
+    },
+    "speaker_view.owner.readings": {
+      "text": "Readings: {readings}",
+      "note": "Owner method: the last similarities, newest first."
+    },
+    "voice.threshold.title": {
+      "text": "Decision threshold: {value}",
+      "note": "Voice screen: from which similarity a voice counts as the owner. Adjustable with the buttons next to it."
+    },
+    "voice.threshold.hint": {
+      "text": "Lower = the robot accepts more voices as the owner, higher = it is stricter. Set it between what you measure for yourself and what you measure for other people.",
+      "note": "Explanation under the threshold buttons."
+    },
+    "voice.now.readings": {
+      "text": "Last readings: {readings}",
+      "note": "Voice screen while trying: the similarities measured so far, newest first."
+    },
+    "voice.cohort.title": {
+      "text": "Other voices (for comparison)",
+      "note": "Voice screen: heading of the part that records other voices."
+    },
+    "voice.cohort.none": {
+      "text": "None recorded. The robot then compares without knowing what other voices sound like through its microphone.",
+      "note": "Shown while no cohort is stored."
+    },
+    "voice.cohort.stored": {
+      "text": "Stored: average of {pieces} pieces of other voices. Only the average is kept, no single voice.",
+      "note": "Shown when a cohort is stored."
+    },
+    "voice.button.cohort": {
+      "text": "Record other voices",
+      "note": "Starts recording other voices; press, then play the recording."
+    },
+    "voice.button.cohort_delete": {
+      "text": "Delete other voices",
+      "note": "Deletes the stored average of other voices."
+    },
+    "voice.now.cohort": {
+      "text": "Recording other voices: {seconds} s, {pieces} pieces",
+      "note": "Progress while the cohort is being recorded."
+    },
+    "voice.hint.cohort": {
+      "text": "Play the recording with the many voices now, from about where people usually stand. Press Stop when it has finished — everything collected until then is used.",
+      "note": "Hint during the cohort recording."
+    },
+    "voice.now.raw": {
+      "text": "without the comparison voices it would be {raw}",
+      "note": "Voice screen while trying: the similarity before the other voices are subtracted, so the effect is visible."
+    },
     "voice.privacy": {
       "text": "The recording is not kept: only a pattern of numbers is stored, encrypted on the robot, and it can be deleted here at any time. Other voices are compared and immediately forgotten.",
       "note": "Privacy note at the bottom of the voice screen."

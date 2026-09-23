@@ -22,8 +22,14 @@ data class EnrolmentState(
     val similarity: Float? = null,
     /** In [Phase.TESTING]: whether that was above the stored threshold. */
     val isOwner: Boolean? = null,
+    /** In [Phase.TESTING]: the last readings, newest first, so a short test can be read as a whole. */
+    val readings: List<Float> = emptyList(),
     val message: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    /** What the current run is for. */
+    val mode: VoiceEnrolment.Mode = VoiceEnrolment.Mode.ENROL,
+    /** In [Phase.TESTING] with a stored cohort: the raw similarity before centring, for comparison. */
+    val rawSimilarity: Float? = null
 ) {
     enum class Phase { IDLE, RECORDING, SAVED, TESTING, ERROR }
 }
@@ -55,23 +61,39 @@ class VoiceEnrolment(private val context: Context) {
 
     val running: Boolean get() = thread != null
 
+    /** What a run is for. */
+    enum class Mode { ENROL, TEST, COHORT }
+
     /** Records until [TARGET_SECONDS] of speech are collected, then stores the template. */
-    fun startEnrolment() = start(testing = false)
+    fun startEnrolment() = start(Mode.ENROL)
 
     /** Listens and reports how close each piece of speech is to the stored template. */
-    fun startTest() = start(testing = true)
+    fun startTest() = start(Mode.TEST)
+
+    /**
+     * Records OTHER voices — played from a phone, a video, whoever is in the room — and stores only their average
+     * ([OwnerVoiceprintStore.saveCohort]). That average carries what this microphone and this room add to every voice,
+     * and subtracting it is what makes the owner comparison readable. Individual voices are never stored.
+     */
+    fun startCohort() = start(Mode.COHORT)
 
     @Synchronized
-    private fun start(testing: Boolean) {
+    private fun start(mode: Mode) {
         if (thread != null) return
-        val stored = if (testing) OwnerVoiceprintStore.get(context).load() else null
-        if (testing && stored == null) {
+        val stored = if (mode == Mode.TEST) OwnerVoiceprintStore.get(context).load() else null
+        if (mode == Mode.TEST && stored == null) {
             _state.value = EnrolmentState(phase = EnrolmentState.Phase.ERROR, error = "no voice stored yet")
             return
         }
-        _state.value = EnrolmentState(phase = if (testing) EnrolmentState.Phase.TESTING else EnrolmentState.Phase.RECORDING)
+        _state.value = EnrolmentState(
+            phase = when (mode) {
+                Mode.TEST -> EnrolmentState.Phase.TESTING
+                else -> EnrolmentState.Phase.RECORDING
+            },
+            mode = mode
+        )
         ConversationMonitor.setProbeUsingMicrophone(true)
-        thread = Thread({ run(testing, stored) }, "VoiceEnrolment").apply {
+        thread = Thread({ run(mode, stored) }, "VoiceEnrolment").apply {
             isDaemon = true
             start()
         }
@@ -83,7 +105,8 @@ class VoiceEnrolment(private val context: Context) {
         thread = null
     }
 
-    private fun run(testing: Boolean, stored: Voiceprint?) {
+    private fun run(mode: Mode, stored: Voiceprint?) {
+        val testing = mode == Mode.TEST
         val source = AndroidMicSource()
         var vad: SileroVad? = null
         var embedder: SpeakerEmbedder? = null
@@ -97,6 +120,8 @@ class VoiceEnrolment(private val context: Context) {
         var chunkFill = 0
         var probability = 0.0
         var speechSamples = 0L
+        // The cohort mean of other voices, if one was recorded: subtracted from both sides when comparing.
+        val cohort = if (mode == Mode.TEST) OwnerVoiceprintStore.get(context).loadCohort() else null
         try {
             vad = SileroVad(context)
             embedder = SpeakerEmbedder(context)
@@ -106,6 +131,8 @@ class VoiceEnrolment(private val context: Context) {
                 return
             }
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            Log.i(TAG, if (testing) "trying the stored voice (threshold %.2f)".format(stored!!.info.threshold) else "recording the owner's voice")
+            var lastReport = 0L
             while (!Thread.currentThread().isInterrupted) {
                 var filled = 0
                 while (filled < HOP) {
@@ -144,6 +171,12 @@ class VoiceEnrolment(private val context: Context) {
                     speechProbability = probability,
                     levelDb = levelDb
                 )
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastReport >= 2_000) {
+                    lastReport = now
+                    Log.i(TAG, "mic: speech p %.2f, level %.0f dB, speech %.1f s, piece %d%% full"
+                        .format(probability, levelDb, speechSamples / 16_000.0, 100 * fill / piece.size))
+                }
 
                 if (fill >= piece.size) {
                     val embedding = embedder.embed(piece, fill)
@@ -151,23 +184,31 @@ class VoiceEnrolment(private val context: Context) {
                     piece.fill(0f)
                     if (embedding != null) {
                         if (testing) {
-                            val similarity = stored!!.similarityTo(embedding)
+                            val raw = stored!!.similarityTo(embedding)
+                            val similarity = stored.similarityTo(embedding, cohort)
+                            Log.i(TAG, "piece: similarity %.3f (raw %.3f), threshold %.2f -> %s".format(
+                                similarity, raw, stored.info.threshold,
+                                if (similarity >= stored.info.threshold) "owner" else "somebody else"))
                             _state.value = _state.value.copy(
                                 similarity = similarity,
                                 isOwner = similarity >= stored.info.threshold,
+                                readings = (listOf(similarity) + _state.value.readings).take(READINGS_KEPT),
+                                rawSimilarity = raw,
                                 pieces = _state.value.pieces + 1
                             )
                             // The guest's vector is not kept: overwrite it right away.
                             embedding.fill(0f)
                         } else {
                             embeddings += embedding
+                            Log.i(TAG, "piece ${embeddings.size} recorded")
                             _state.value = _state.value.copy(pieces = embeddings.size)
                         }
                     }
                 }
 
-                if (!testing && speechSamples >= TARGET_SECONDS * 16_000) {
-                    finish(embeddings, speechSamples / 16_000.0)
+                val target = if (mode == Mode.COHORT) COHORT_TARGET_SECONDS else TARGET_SECONDS
+                if (!testing && speechSamples >= target * 16_000) {
+                    finish(mode, embeddings, speechSamples / 16_000.0)
                     return
                 }
             }
@@ -183,19 +224,48 @@ class VoiceEnrolment(private val context: Context) {
             chunk.fill(0)
             embeddings.forEach { it.fill(0f) }
             stored?.zero()
+            cohort?.fill(0f)
             runCatching { vad?.close() }
             runCatching { embedder?.close() }
             runCatching { source.close() }
             ConversationMonitor.setProbeUsingMicrophone(false)
+            // A cohort run is normally ended by hand when the recording has played: keep what was collected.
+            if (mode == Mode.COHORT && _state.value.phase == EnrolmentState.Phase.RECORDING && embeddings.size >= MIN_PIECES) {
+                finish(mode, embeddings, speechSamples / 16_000.0)
+            }
             thread = null
+            Log.i(TAG, "run ended (${_state.value.phase})")
             if (_state.value.phase == EnrolmentState.Phase.RECORDING || _state.value.phase == EnrolmentState.Phase.TESTING) {
                 _state.value = _state.value.copy(phase = EnrolmentState.Phase.IDLE)
             }
         }
     }
 
-    /** Averages the pieces, drops the ones that do not fit, and stores the result. */
-    private fun finish(embeddings: List<FloatArray>, speechSeconds: Double) {
+    /** Averages the pieces and stores them — as the owner's template, or as the cohort mean. */
+    private fun finish(mode: Mode, embeddings: List<FloatArray>, speechSeconds: Double) {
+        if (mode == Mode.COHORT) {
+            if (embeddings.size < MIN_PIECES) {
+                _state.value = _state.value.copy(
+                    phase = EnrolmentState.Phase.ERROR,
+                    error = "only ${embeddings.size} usable pieces; play more speech"
+                )
+                return
+            }
+            // No outlier filtering here: the point of the cohort is that it covers MANY different voices.
+            val mean = centroid(embeddings)
+            val error = OwnerVoiceprintStore.get(context).saveCohort(mean, embeddings.size)
+            mean.fill(0f)
+            _state.value = if (error == null) {
+                _state.value.copy(
+                    phase = EnrolmentState.Phase.SAVED,
+                    pieces = embeddings.size,
+                    message = "other voices stored: ${embeddings.size} pieces, %.0f s".format(speechSeconds)
+                )
+            } else {
+                _state.value.copy(phase = EnrolmentState.Phase.ERROR, error = error)
+            }
+            return
+        }
         if (embeddings.size < MIN_PIECES) {
             _state.value = _state.value.copy(
                 phase = EnrolmentState.Phase.ERROR,
@@ -261,6 +331,9 @@ class VoiceEnrolment(private val context: Context) {
         /** Speech to collect before the template is built. */
         const val TARGET_SECONDS = 30.0
 
+        /** Speech to collect for the cohort of other voices; a run can also be ended by hand earlier. */
+        const val COHORT_TARGET_SECONDS = 180.0
+
         /** Pieces needed for a usable template. */
         private const val MIN_PIECES = 4
 
@@ -272,5 +345,8 @@ class VoiceEnrolment(private val context: Context) {
 
         /** The threshold never goes below this, however consistent the enrolment was. */
         private const val MIN_THRESHOLD = 0.45f
+
+        /** Readings kept for the screen while trying the voice. */
+        private const val READINGS_KEPT = 8
     }
 }

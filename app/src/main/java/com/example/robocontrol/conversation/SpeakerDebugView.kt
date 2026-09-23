@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -14,7 +15,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -61,11 +64,95 @@ fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit =
     }
     val status by ConversationMonitor.status.collectAsState()
     val snapshot by ConversationMonitor.snapshot.collectAsState()
+    val method by ConversationMonitor.method.collectAsState()
 
     Row(Modifier.fillMaxSize().padding(12.dp)) {
         Column(Modifier.width(320.dp).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             topControls()
             OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth().height(48.dp)) { Text(UiText.get("speaker_view.back"), fontSize = 16.sp) }
+
+            // Which method decides "one voice or several". Switching restarts the detector straight away.
+            Text(UiText.get("speaker_view.method"), fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                DetectionMethod.entries.forEach { m ->
+                    val label = UiText.get(
+                        when (m) {
+                            DetectionMethod.CHANGE -> "speaker_view.method.change"
+                            DetectionMethod.OWNER -> "speaker_view.method.owner"
+                            DetectionMethod.PAIRWISE -> "speaker_view.method.pairwise"
+                        }
+                    )
+                    if (m == method) {
+                        Button(onClick = { }, modifier = Modifier.weight(1f)) { Text(label, fontSize = 12.sp, maxLines = 1) }
+                    } else {
+                        OutlinedButton(
+                            onClick = { ConversationMonitor.setMethod(m) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text(label, fontSize = 12.sp, maxLines = 1) }
+                    }
+                }
+            }
+            if (method == DetectionMethod.PAIRWISE) {
+                val differentBelow by ConversationMonitor.differentBelow.collectAsState()
+                Text(UiText.get("speaker_view.pairwise.hint"), fontSize = 12.sp)
+                Text(UiText.get("speaker_view.pairwise.threshold", "value" to "%.2f".format(differentBelow)), fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-0.10f, -0.05f, +0.05f, +0.10f).forEach { step ->
+                        OutlinedButton(
+                            onClick = { ConversationMonitor.setDifferentBelow(differentBelow + step) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) { Text(if (step > 0) "+%.2f".format(step) else "%.2f".format(step), fontSize = 12.sp) }
+                    }
+                }
+                Text(
+                    UiText.get(
+                        "speaker_view.pairwise.now",
+                        "lowest" to (snapshot.pairwiseMin?.let { "%.2f".format(it) } ?: "—"),
+                        "held" to snapshot.piecesHeld
+                    ),
+                    fontSize = 13.sp
+                )
+                if (snapshot.pairwiseReadings.isNotEmpty()) {
+                    Text(
+                        UiText.get("speaker_view.owner.readings",
+                            "readings" to snapshot.pairwiseReadings.joinToString("  ") { "%.2f".format(it) }),
+                        fontSize = 12.sp
+                    )
+                }
+            }
+            if (method == DetectionMethod.OWNER) {
+                val anyOther by ConversationMonitor.anyOtherIsConversation.collectAsState()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = anyOther, onCheckedChange = { ConversationMonitor.setAnyOtherIsConversation(it) })
+                    Text(
+                        UiText.get(if (anyOther) "speaker_view.rule.any" else "speaker_view.rule.owner_and_other"),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                }
+                val similarity = snapshot.ownerSimilarity
+                Text(
+                    if (similarity == null) UiText.get("speaker_view.owner.waiting")
+                    else UiText.get(
+                        "speaker_view.owner.last",
+                        "similarity" to "%.2f".format(similarity),
+                        "threshold" to "%.2f".format(snapshot.ownerThreshold)
+                    ),
+                    fontSize = 13.sp
+                )
+                Text(
+                    UiText.get("speaker_view.owner.counts", "owner" to snapshot.ownerPieces, "other" to snapshot.otherPieces),
+                    fontSize = 13.sp
+                )
+                if (snapshot.ownerReadings.isNotEmpty()) {
+                    Text(
+                        UiText.get("speaker_view.owner.readings",
+                            "readings" to snapshot.ownerReadings.joinToString("  ") { "%.2f".format(it) }),
+                        fontSize = 12.sp
+                    )
+                }
+            }
             val stateKey = when (snapshot.state) {
                 ConversationState.NO_SPEECH -> "speaker_view.state.no_speech"
                 ConversationState.LISTENING -> "speaker_view.state.listening"

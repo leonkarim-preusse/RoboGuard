@@ -57,6 +57,11 @@ object ConversationMonitor {
     /** Name of the phone's situational switch that turns conversation detection on. */
     const val DISCRETION_MODE = "Discretion Mode"
 
+    private const val PREFS = "robocontrol_conversation"
+    private const val KEY_METHOD = "detection_method"
+    private const val KEY_ANY_OTHER = "any_other_is_conversation"
+    private const val KEY_DIFFERENT_BELOW = "different_voice_below"
+
     /** Default pause of the detection. Owner: 30 minutes. */
     const val DEFAULT_PAUSE_MINUTES = 30
 
@@ -90,14 +95,14 @@ object ConversationMonitor {
     @Synchronized
     fun addDebugViewer() {
         debugViewers.incrementAndGet()
-        detector?.debugTimeline = true
+        (detector as? SpeakerChangeDetector)?.debugTimeline = true
     }
 
     @Synchronized
     fun removeDebugViewer() {
         if (debugViewers.decrementAndGet() <= 0) {
             debugViewers.set(0)
-            detector?.debugTimeline = false
+            (detector as? SpeakerChangeDetector)?.debugTimeline = false
         }
     }
 
@@ -106,7 +111,7 @@ object ConversationMonitor {
 
     private lateinit var appContext: Context
     private var scope: CoroutineScope? = null
-    private var detector: SpeakerChangeDetector? = null
+    private var detector: ConversationDetector? = null
     private var watchJob: Job? = null
     private var pauseJob: Job? = null
     private var tts: OrionStarTts? = null
@@ -135,6 +140,16 @@ object ConversationMonitor {
         if (scope != null) return
         appContext = context.applicationContext
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        _method.value = runCatching {
+            DetectionMethod.valueOf(
+                appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString(KEY_METHOD, DetectionMethod.CHANGE.name) ?: DetectionMethod.CHANGE.name
+            )
+        }.getOrDefault(DetectionMethod.CHANGE)
+        _anyOtherIsConversation.value =
+            appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_ANY_OTHER, false)
+        _differentBelow.value = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getFloat(KEY_DIFFERENT_BELOW, ConversationSettings().differentVoiceBelow)
         Sensors.get(appContext).addListener(sensorListener)
         Sensors.get(appContext).addSituationalListener(situationalListener)
         _status.value = _status.value.copy(started = true)
@@ -230,9 +245,52 @@ object ConversationMonitor {
         _status.value = _status.value.copy(listening = detector != null, reason = reason, pausedUntil = if (paused) pausedUntil else null)
     }
 
+    /** Which detector is used; survives a restart. Switchable on the speaker debug screen. */
+    private val _method = MutableStateFlow(DetectionMethod.CHANGE)
+    val method: StateFlow<DetectionMethod> = _method.asStateFlow()
+
+    /**
+     * Owner method: does ANY voice that is not the owner count as a conversation (true), or must the owner have been
+     * heard in the same window (false, default)?
+     *
+     * True reacts as soon as somebody else speaks — one piece, about three seconds — and also catches a conversation the
+     * owner is not part of. The price is that a television, a radio or a video is a "somebody else" too, so the robot
+     * will ask in an empty room.
+     */
+    private val _anyOtherIsConversation = MutableStateFlow(false)
+    val anyOtherIsConversation: StateFlow<Boolean> = _anyOtherIsConversation.asStateFlow()
+
+    fun setAnyOtherIsConversation(any: Boolean) {
+        if (_anyOtherIsConversation.value == any) return
+        _anyOtherIsConversation.value = any
+        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_ANY_OTHER, any).apply()
+        Log.i(TAG, "any other voice counts: $any")
+        if (scope != null) {
+            stopDetector("rule changed")
+            reevaluate()
+        }
+    }
+
+    /** Switches the method and restarts the detector, so the change is audible right away. */
+    fun setMethod(method: DetectionMethod) {
+        if (_method.value == method) return
+        _method.value = method
+        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_METHOD, method.name).apply()
+        Log.i(TAG, "detection method: $method")
+        if (scope != null) {
+            stopDetector("method changed")
+            reevaluate()
+        }
+    }
+
     private fun startDetector() {
         if (detector != null) return
         val s = scope ?: return
+        when (_method.value) {
+            DetectionMethod.OWNER -> { startOwnerDetector(s); return }
+            DetectionMethod.PAIRWISE -> { startPairwiseDetector(s); return }
+            DetectionMethod.CHANGE -> Unit
+        }
         val config = ChangeDetectorConfig()
         Log.i(TAG, "config: window ${config.windowFrames / 100.0} s, λ ${config.bicLambda}, ${config.speechGate} ${config.sileroThreshold}, " +
             "${config.decisionRule} r₀ ${config.evidenceBaseRatio} threshold ${config.evidenceThreshold} half-life ${config.evidenceHalfLifeMs / 1000} s")
@@ -245,6 +303,63 @@ object ConversationMonitor {
                     if (c.groupBestRatioBefore > 0) " [group best before %.2f]".format(c.groupBestRatioBefore) else ""))
         }
         d.debugTimeline = debugViewers.get() > 0
+        watch(s, d)
+        Log.i(TAG, "listening")
+    }
+
+    /**
+     * Starts the owner comparison instead of the change detector. Needs a stored voice; without one it says so and
+     * nothing listens, rather than silently falling back to the other method.
+     */
+    private fun startOwnerDetector(s: CoroutineScope) {
+        if (!OwnerVoiceprintStore.get(appContext).exists()) {
+            Log.w(TAG, "owner comparison chosen, but no voice is stored — teach it on the voice screen")
+            _status.value = _status.value.copy(reason = "no owner voice stored")
+            return
+        }
+        val any = _anyOtherIsConversation.value
+        // "Any other voice" is meant to react the moment somebody else speaks, so one piece is enough there.
+        val settings = ConversationSettings(
+            anyOtherIsConversation = any,
+            piecesForOther = if (any) 1 else ConversationSettings().piecesForOther
+        )
+        Log.i(TAG, "config: owner comparison, piece ${settings.pieceSeconds} s, margin ${settings.margin}, " +
+            "${settings.piecesForOther} pieces, window ${settings.windowMs / 1000} s, " +
+            if (settings.anyOtherIsConversation) "any other voice counts" else "owner + other")
+        watch(s, OwnerVoiceDetector(appContext, settings = settings))
+        Log.i(TAG, "listening")
+    }
+
+    /**
+     * Experimental: compares the pieces of speech with each other, so no voice has to be taught. Needs no template; a
+     * recorded cohort is used only to centre the comparison.
+     */
+    private fun startPairwiseDetector(s: CoroutineScope) {
+        val settings = ConversationSettings(differentVoiceBelow = _differentBelow.value)
+        Log.i(TAG, "config: comparing voices with each other, piece ${settings.pieceSeconds} s, " +
+            "different below ${settings.differentVoiceBelow}, ${settings.piecesKept} pieces held, window ${settings.windowMs / 1000} s")
+        watch(s, PairwiseVoiceDetector(appContext, settings = settings))
+        Log.i(TAG, "listening")
+    }
+
+    /** Pairwise method: similarity below which two pieces count as two voices. Measured on the robot, so adjustable. */
+    private val _differentBelow = MutableStateFlow(ConversationSettings().differentVoiceBelow)
+    val differentBelow: StateFlow<Float> = _differentBelow.asStateFlow()
+
+    fun setDifferentBelow(value: Float) {
+        val clamped = value.coerceIn(-0.5f, 0.95f)
+        if (_differentBelow.value == clamped) return
+        _differentBelow.value = clamped
+        appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putFloat(KEY_DIFFERENT_BELOW, clamped).apply()
+        Log.i(TAG, "two voices below %.2f".format(clamped))
+        if (scope != null) {
+            stopDetector("threshold changed")
+            reevaluate()
+        }
+    }
+
+    /** Publishes a detector's snapshots and turns MULTIPLE_SPEAKERS into the prompt. Shared by all methods. */
+    private fun watch(s: CoroutineScope, d: ConversationDetector) {
         detector = d
         var multipleSince: Long? = null
         watchJob = s.launch {
@@ -263,7 +378,6 @@ object ConversationMonitor {
             }
         }
         d.start()
-        Log.i(TAG, "listening")
     }
 
     private fun stopDetector(reason: String) {

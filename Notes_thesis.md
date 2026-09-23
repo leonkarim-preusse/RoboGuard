@@ -204,6 +204,66 @@ Short and factual; details and raw numbers are in `CLAUDE.md` and the probe logs
   sits, and a "try it" mode that displays the similarity live. That is the visibility the thesis argues for: a robot that
   recognises its owner should be able to say so, and be switched off again.
 
+## 15. Why the voice comparison needed a cohort (2026-09-23)
+
+- First measurement on the robot: the owner's own voice matched the stored pattern with 0.89–0.91, another person with
+  0.8+, and the threshold the enrolment had computed was 0.94 — so the robot called its owner a stranger.
+- Two lessons, both worth stating in the evaluation. First, a threshold derived from one recording measures how consistent
+  that recording was, not how consistent a voice is; the spread within thirty seconds is far smaller than the spread across
+  situations. Second, and more interesting: every recording made through one microphone in one room shares a large part
+  that says nothing about the person. It lifts all similarities together — which is why everyone landed at 0.8 and above,
+  while the same model on close-talk recordings separates 0.55–0.68 from 0.09–0.24.
+- The standard answer is centring: record many other voices through the same microphone, keep only their average, and
+  subtract it from both sides before comparing. What remains is the part that actually differs between people.
+- Implemented so that nothing about those other people is kept: the robot records the voices, averages them, and stores
+  only the average — one anonymous vector that matches no single person and cannot be traced back to one.
+- The voices come from LibriSpeech (CC BY 4.0), played into the room from a phone so they pass through the robot's own
+  microphone. A published dataset used this way costs nobody their privacy and makes the step reproducible for a reader.
+- Both detection methods now run behind the same interface with a switch between them, so the thesis can report what the
+  identification actually buys — speed and directness — against what it costs, which is a stored voiceprint of one person.
+
+## 16. What the cohort actually measured (2026-09-23, numbers from the robot)
+
+**The recording.** The playback file holds 40 speakers, three utterances each, in round-robin order so that a run stopped
+early still covers every voice. The robot stops at 180 seconds of *speech* — pauses do not count — which took about three
+and a half minutes of the eight-and-a-half-minute file and produced 60 pieces spanning all 40 speakers. Only their average
+is stored.
+
+**The effect, measured on the same voices before and after centring:**
+
+| | similarity, centred | similarity, raw |
+|---|---|---|
+| owner | 0.34 – 0.51 | 0.894 – 0.924 |
+| another person | −0.28 – 0.25 | 0.668 – 0.877 |
+| a video (other voices only) | −0.16 – −0.33 | 0.713 – 0.807 |
+
+Raw, the owner's lowest reading (0.894) and the other person's highest (0.877) are 0.017 apart — the two groups touch, and
+no threshold separates them reliably. After subtracting the average of the other voices, the same recordings sit 0.09 apart
+on a scale that now spans about 0.8. That is roughly a fivefold gain in margin, and it is the difference between a feature
+that works and one that does not.
+
+**Why this happens** is worth a paragraph in the thesis rather than a footnote: every recording made through one microphone
+in one room shares a large component that describes the room and the microphone, not the person. It lifts all comparisons
+together, which is why a model that separates 0.55–0.68 from 0.09–0.24 on close-talk recordings collapsed to "everyone is
+above 0.8" here. Removing that shared part is standard practice in speaker verification, and doing it with a published
+dataset played into the room keeps it reproducible and costs no one their privacy.
+
+**The threshold was then set from the measurement**, not from a formula: 0.31, between the two clusters. The formula the
+enrolment uses (mean − 2σ over the pieces of one recording) had produced 0.94 and would have rejected the owner every time,
+because the spread within thirty seconds of one sitting says nothing about the spread across situations.
+
+**Where the errors are: at the transitions, not in the steady state.** With only a video playing, six pieces in a row read
+−0.16 to −0.33, correctly "not the owner". The piece that spanned the moment the video was stopped read 0.402 — an
+embedding of a mixture lands between the two voices it is made of. This matters for the decision rule, which currently
+needs two pieces to say "somebody else" but only one to say "owner": a single straddling piece can therefore invent an
+"owner plus other" situation in a room where only a television is talking. Candidate fixes are symmetry (two owner pieces
+too), shorter pieces, and a purity check that embeds both halves of a piece and discards it when they disagree.
+
+**Two operational findings from the same session**, both worth stating because they shaped the design: an enrolment that is
+stopped early stores nothing, while a cohort run stores whatever it has collected — the asymmetry is deliberate but
+surprising, and it means a stray press plus twelve seconds of speech would replace the cohort. And a new cohort run
+replaces the old one rather than adding to it, so mixing languages or sources has to happen inside a single run.
+
 ## Open issues / to adjust later
 
 - ~~**Driving stops when the Navigation screen is left**~~ (solved 2026-09-21 by the service-owned navigation, see section 9).
