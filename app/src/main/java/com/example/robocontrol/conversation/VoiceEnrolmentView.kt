@@ -64,8 +64,12 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
     val store = remember { OwnerVoiceprintStore.get(context) }
     val state by enrolment.state.collectAsState()
     val stored by store.info.collectAsState()
+    val cohortPieces by store.cohortPieces.collectAsState()
     var confirmDelete by remember { mutableStateOf(false) }
     var missingPermission by remember { mutableStateOf(false) }
+    // Derived from the published state, NOT from VoiceEnrolment.running: that is a plain property, so Compose never
+    // redraws when the recording thread ends — the screen kept showing "Stop" and never offered "Try the voice".
+    val running = state.phase == EnrolmentState.Phase.RECORDING || state.phase == EnrolmentState.Phase.TESTING
 
     // Recording must stop when the screen goes away, or the microphone would stay taken.
     DisposableEffect(Unit) { onDispose { enrolment.stop() } }
@@ -106,7 +110,7 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
             Text(UiText.get("voice.title"), fontWeight = FontWeight.Bold, fontSize = 20.sp)
             Text(UiText.get("voice.explanation"), fontSize = 13.sp)
 
-            if (enrolment.running) {
+            if (running) {
                 Button(
                     onClick = { enrolment.stop() },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
@@ -124,6 +128,22 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                     ) { Text(UiText.get("voice.button.test")) }
                     OutlinedButton(onClick = { confirmDelete = true }, modifier = Modifier.fillMaxWidth()) {
                         Text(UiText.get("voice.button.delete"), color = Color(0xFFD32F2F))
+                    }
+                }
+                // Other voices: press, then play the recording; stop when it has finished.
+                Text(UiText.get("voice.cohort.title"), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text(
+                    cohortPieces?.let { UiText.get("voice.cohort.stored", "pieces" to it) }
+                        ?: UiText.get("voice.cohort.none"),
+                    fontSize = 13.sp
+                )
+                OutlinedButton(
+                    onClick = { withMicrophone { enrolment.startCohort() } },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text(UiText.get("voice.button.cohort"), fontSize = 13.sp) }
+                if (cohortPieces != null) {
+                    OutlinedButton(onClick = { store.deleteCohort() }, modifier = Modifier.fillMaxWidth()) {
+                        Text(UiText.get("voice.button.cohort_delete"), fontSize = 13.sp, color = Color(0xFFD32F2F))
                     }
                 }
             }
@@ -161,13 +181,32 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                     ),
                     fontSize = 14.sp
                 )
+                // The computed threshold comes from ONE recording and is far too strict (owner measured 0.89-0.91
+                // against a computed 0.94). Set it by hand from what "Try the voice" actually reads.
+                Text(UiText.get("voice.threshold.title", "value" to "%.2f".format(info.threshold)), fontSize = 14.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-0.05f, -0.01f, +0.01f, +0.05f).forEach { step ->
+                        OutlinedButton(
+                            onClick = { store.setThreshold(info.threshold + step) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) { Text(if (step > 0) "+%.2f".format(step) else "%.2f".format(step), fontSize = 13.sp) }
+                    }
+                }
+                Text(UiText.get("voice.threshold.hint"), fontSize = 12.sp, color = Color(0xFF555555))
             }
 
             // ---- what is happening now
             Spacer(Modifier.height(4.dp))
             Text(UiText.get("voice.now.title"), fontWeight = FontWeight.Bold)
             when (state.phase) {
-                EnrolmentState.Phase.RECORDING -> {
+                EnrolmentState.Phase.RECORDING -> if (state.mode == VoiceEnrolment.Mode.COHORT) {
+                    Text(
+                        UiText.get("voice.now.cohort", "seconds" to "%.0f".format(state.speechSeconds), "pieces" to state.pieces),
+                        fontSize = 16.sp
+                    )
+                    Text(UiText.get("voice.hint.cohort"), fontSize = 13.sp)
+                } else {
                     Text(
                         UiText.get(
                             "voice.now.recording",
@@ -184,10 +223,10 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                     Text(UiText.get("voice.hint.speak"), fontSize = 13.sp)
                 }
                 EnrolmentState.Phase.TESTING -> {
+                    // Always visible while trying, so it never looks as if nothing is happening.
+                    Text(UiText.get("voice.now.testing_wait"), fontSize = 14.sp, color = Color(0xFF2E7D32))
                     val similarity = state.similarity
-                    if (similarity == null) {
-                        Text(UiText.get("voice.now.testing_wait"), fontSize = 16.sp)
-                    } else {
+                    if (similarity != null) {
                         Text(
                             UiText.get(
                                 if (state.isOwner == true) "voice.now.owner" else "voice.now.other",
@@ -198,8 +237,17 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                             color = if (state.isOwner == true) Color(0xFF2E7D32) else Color(0xFFEF6C00)
                         )
                         SimilarityBar(similarity, stored?.threshold ?: 0.5f)
+                        state.rawSimilarity?.takeIf { cohortPieces != null }?.let { raw ->
+                            Text(UiText.get("voice.now.raw", "raw" to "%.2f".format(raw)), fontSize = 12.sp)
+                        }
                     }
                     Text(UiText.get("voice.now.pieces", "pieces" to state.pieces), fontSize = 13.sp)
+                    if (state.readings.isNotEmpty()) {
+                        Text(
+                            UiText.get("voice.now.readings", "readings" to state.readings.joinToString("  ") { "%.2f".format(it) }),
+                            fontSize = 13.sp
+                        )
+                    }
                 }
                 EnrolmentState.Phase.SAVED -> Text(
                     state.message ?: UiText.get("voice.now.saved"),
@@ -212,7 +260,7 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                 EnrolmentState.Phase.IDLE -> Text(UiText.get("voice.now.idle"), fontSize = 14.sp)
             }
 
-            if (enrolment.running) {
+            if (running) {
                 Text(
                     UiText.get(
                         "voice.now.microphone",

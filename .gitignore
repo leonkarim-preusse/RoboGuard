@@ -1,6 +1,7 @@
 server.crt
 server.jks
 server.p12
+Notes_thesis.md
 
 app/src/main/assets/*
 
