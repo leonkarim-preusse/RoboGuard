@@ -1604,3 +1604,49 @@ embedding, which lifts ALL similarities and leaves only ~0.1 of speaker differen
   detector); speaker debug screen: third method button "Compare voices (test)", −0.10/−0.05/+0.05/+0.10 stepper, live
   "lowest comparison / pieces held" and the last 8 comparisons. Snapshot fields `pairwiseMin`, `pairwiseReadings`,
   `piecesHeld`. The prompt path is unchanged — all three methods feed the same `watch()`.
+
+### Phone got no map until the robot's screen had been opened (owner 2026-09-24, fixed, built, NOT installed — robot offline)
+
+Cause: `MapNavigation.start()` (called by `NavigationHub` from `RobotServerService.onCreate`) runs `reloadMapAndPlaces()`
+exactly ONCE, right after `bridge.connected`. At boot RoboGuard usually has no SDK control yet, so `RobotApi.getMapName()`
+returns null/blank, the map is never loaded, and nothing retries — `/nav/map.png` then answers 503 and the phone shows
+"No map picture yet" until somebody opens Navigation and Map on the robot (its `startOnce()` calls `probe.reload()`).
+**Fix (owner: "can we not just reload when the app gains control over the SDK? Also just reload until a map is found and
+then stop"):** two rules in `pollLoop`, no endless polling.
+1. **Event:** the status block already reads `isApiConnectedService() && isActive()`; on the transition false → true it logs
+   "SDK control gained: reading map and places" and runs `reloadMapAndPlaces()`. That is the moment the map name and the
+   places become readable, and it also picks up a map changed in the map tool meanwhile.
+2. **Bounded retry:** while `rendered == null`, every `MAP_RETRY_MS` = 15 s, at most `MAP_ATTEMPTS` = 6 times
+   ("no map yet, trying again (n/6)"), then it gives up with "still no map after 6 tries; use \"Reload map\" once the robot
+   has one". Gaining SDK control resets the counter, so a later activation gets a fresh set of tries. Once a map is
+   rendered, nothing retries at all.
+Note: the service cannot ask for READ_EXTERNAL_STORAGE — only `MapNavigationActivity` does. If that permission was never
+granted, the retry logs "could not load the map file: … (storage permission granted?)" and the phone still gets no map.
+
+### The robot's own voice, and several stored voices (owner 2026-09-24, installed)
+
+- **`conversation/RobotSpeaking.kt` (new):** `active()` = `AudioManager.activePlaybackConfigurations` is not empty, or it
+  was within the last 500 ms (tail, because the room keeps ringing). The system is asked at most every 100 ms and the
+  answer cached, so a 10 ms audio loop can call it freely. It covers ALL playback, not only RoboGuard's, so the speech
+  service counts too.
+  **Why:** nothing suppressed the microphone while the robot spoke (verified: no AudioManager reference existed anywhere in
+  `conversation/`). Every announcement — the calendar/object sentence, the conversation apology itself — went out of the
+  speaker, back into the microphone and read as a voice that is not the owner, i.e. the robot fed its own detector.
+  **Wired into:** `OwnerVoiceDetector` and `PairwiseVoiceDetector` (nothing counts as speech while it is true, and a
+  half-filled piece is DISCARDED rather than finished with the robot's voice inside it — the transition artefact in
+  reverse); `SpeakerChangeDetector` via a new `robotSpeaking: (() -> Boolean)?` constructor parameter (kept context-free
+  for the offline synthetic tests; `ConversationMonitor` passes `RobotSpeaking(appContext)::active`) where the frame is
+  handed to `ChangeDetector` as silence (level −∞, probability 0). Logged once per episode: "robot is speaking: ignoring
+  the microphone until it stops".
+- **Several named voices (owner: "record multiple owner voices for testing and be able to switch between them"):**
+  `OwnerVoiceprintStore` now keeps `files/robocontrol/voice/<name>.print` instead of one fixed file. `profiles:
+  StateFlow<List<String>>`, `activeProfile: StateFlow<String>` (SharedPreferences `robocontrol_voice`/`active_profile`,
+  default "owner" = the legacy file name, so the existing recording keeps working), `setActiveProfile`, `deleteProfile`;
+  the AAD follows the file name, names are sanitised to letters/digits/space/_/-. Only the ACTIVE voice is ever used for a
+  decision. `VoiceEnrolment.startEnrolment(profile)` switches to that name before saving.
+  Voice screen: a "Name for this voice" field above the record button (pre-filled with the active one, so recording again
+  replaces it; type another name for a second voice), and a "Stored voices" list with "(in use)", **Use** and **Delete**
+  per voice. The "Stored for {name}" block and the threshold buttons act on the active voice.
+- **Owner's actual complaint (2026-09-24): "another person seems to have been detected as owner"** — that is a MISS, not a
+  false alarm: the guest's similarity lands above the threshold. Multiple profiles are exactly the measurement for it
+  (enrol the other person, switch, read the cross-similarities). Not yet measured.

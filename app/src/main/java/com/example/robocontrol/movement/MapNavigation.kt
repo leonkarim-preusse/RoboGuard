@@ -708,6 +708,10 @@ class MapNavigation(
     @Volatile
     private var lastPoseAt = 0L
 
+    /** When the map was last looked for, and how many tries are already spent; see the retry in [pollLoop]. */
+    private var lastMapCheckAt = 0L
+    private var mapAttempts = 0
+
     /** A drive is running but no position arrived for [POSE_TIMEOUT_MS]: stop it, say why. */
     private fun stopForUnknownPosition() {
         log.i(TAG, "NO ROBOT POSITION for more than $POSE_TIMEOUT_MS ms while driving: stopping (private areas cannot be checked)")
@@ -790,12 +794,35 @@ class MapNavigation(
                     idleViolationZone = null
                 }
             }
+            // Waiting for a map: the service starts the navigation when RoboGuard starts, which at boot is before it has
+            // SDK control, so the map name is unreadable and the map stays empty (owner, 2026-09-24: the phone got no map
+            // when "Navigation and Map" had never been opened on the robot). Try again a few times, and stop once a map is
+            // there — or once it is clear that it will not work, so the log does not fill up for the rest of the run.
+            if (_rendered.value == null && mapAttempts < MAP_ATTEMPTS &&
+                SystemClock.elapsedRealtime() - lastMapCheckAt > MAP_RETRY_MS
+            ) {
+                lastMapCheckAt = SystemClock.elapsedRealtime()
+                mapAttempts++
+                log.i(TAG, "no map yet, trying again ($mapAttempts/$MAP_ATTEMPTS)")
+                reloadMapAndPlaces()
+                if (_rendered.value == null && mapAttempts >= MAP_ATTEMPTS) {
+                    log.i(TAG, "still no map after $MAP_ATTEMPTS tries; use \"Reload map\" once the robot has one")
+                }
+            }
             if (tick % STATUS_EVERY_N_POLLS == 0) {
                 refreshOverrides() // expired permissions end here (and are logged)
                 val localized = runCatching { api.isRobotEstimate() }.getOrNull()
                 if (localized != _localized.value) log.i(TAG, "localized: $localized")
                 _localized.value = localized
-                _sdkActive.value = runCatching { api.isApiConnectedService() && api.isActive() }.getOrDefault(false)
+                val sdkActive = runCatching { api.isApiConnectedService() && api.isActive() }.getOrDefault(false)
+                // The moment RoboGuard gets SDK control, the map name and the places become readable — so this is when to
+                // read them, rather than polling for it. Also picks up a map that was changed in the map tool meanwhile.
+                if (sdkActive && !_sdkActive.value) {
+                    log.i(TAG, "SDK control gained: reading map and places")
+                    mapAttempts = 0
+                    reloadMapAndPlaces()
+                }
+                _sdkActive.value = sdkActive
             }
             // Fail closed: without a fresh position the in-motion privacy check cannot work, so the drive must stop.
             if (controller.isNavigating && SystemClock.elapsedRealtime() - lastPoseAt > POSE_TIMEOUT_MS) {
@@ -843,6 +870,12 @@ class MapNavigation(
     private companion object {
         const val TAG = "nav"
         const val POLL_MS = 500L
+
+        /** How long the poll loop waits between tries while no map is loaded. */
+        const val MAP_RETRY_MS = 15_000L
+
+        /** How many such tries before it gives up (gaining SDK control starts the count again). */
+        const val MAP_ATTEMPTS = 6
         const val STATUS_EVERY_N_POLLS = 4
         const val MAP_MARGIN_CELLS = 20
         const val MAX_NAME_LENGTH = 40

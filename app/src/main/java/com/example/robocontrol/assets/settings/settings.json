@@ -59,15 +59,23 @@
     },
     "images": {
       "_note": "One section per reference image in assets/ORB_img; the file name is the section name. Only the values you list are overridden. The example below is switched off by \"enabled\": false — set it to true or add your own section.",
-      "cal_prop_thick_outline.jpg": {
+      "Calendar.jpg": {
         "enabled": { "value": true, "note": "false = this reference image is ignored completely (stays in the folder, is not searched for)." }
       },
       "example_poster_without_pink.jpg": {
         "enabled": { "value": false, "note": "Example, switched off: shows how an image without a pink border would be set up." },
         "usePinkMarker": { "value": false, "note": "This picture has no pink frame, so it is searched in the whole camera picture." },
-        "maxFeatures": { "value": 3000, "note": "A poster with lots of texture can use more keypoints." },
+        "maxFeatures": { "value": 2000, "note": "A poster with lots of texture can use more keypoints." },
         "pyramidLevels": { "value": 8, "note": "Without a pink frame the size is unknown, so more scale levels are needed." },
-        "minInliers": { "value": 30, "note": "Without the pink frame as a second check, demand more matching points." }
+        "minInliers": { "value": 15, "note": "Without the pink frame as a second check, demand more matching points." }
+      },
+      "Lego robot.png": {
+        "enabled": { "value": true, "note": "false = this reference image is ignored completely (stays in the folder, is not searched for)." },
+        "usePinkMarker": { "value": false, "note": "This picture has no pink frame, so it is searched in the whole camera picture." },
+        "pyramidLevels": { "value": 8, "note": "Without a pink frame the robot cannot know how big the object appears, so it has to look at more sizes: 4 levels cover about 1.7x, 8 cover about 3.6x." },
+        "fastThreshold": { "value": 15, "note": "How strong a corner must be to count (OpenCV default 20). Higher = only strong corners, so weak background corners use up less of the keypoint budget of the whole picture." },
+        "minInliers": { "value": 8, "note": "Without the pink frame as a second check, demand more matching points." },
+        "maxFeatures": { "value": 2000, "note": "A poster with lots of texture can use more keypoints." }
       }
     }
   }

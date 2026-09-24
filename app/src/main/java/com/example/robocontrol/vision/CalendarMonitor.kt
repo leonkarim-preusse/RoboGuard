@@ -50,6 +50,17 @@ object CalendarMonitor {
     /** Spoken when a calendar was recognised; wording in assets/texts/texts.json ("speech.calendar_detected"). */
     val sentence: String get() = UiText.get("speech.calendar_detected")
 
+    /**
+     * What the robot says when it finds something: the name of the reference image that matched, so several objects can be
+     * told apart by ear. The name is the file name without its extension ([ORB] keys the references by it); underscores and
+     * hyphens become spaces, because the speech service reads "Lego_robot" letter by letter.
+     * Without a name (should not happen) it falls back to [sentence].
+     */
+    fun sentenceFor(className: String?): String {
+        val name = className?.replace('_', ' ')?.replace('-', ' ')?.trim()
+        return if (name.isNullOrEmpty()) sentence else UiText.get("speech.object_detected", "object" to name)
+    }
+
     /** No new announcement for this long after one (owner: 15 s, then 3 s). */
     val COOLDOWN_MS: Long get() = CalendarDetectionSettings.COOLDOWN_MS
 
@@ -536,9 +547,10 @@ object CalendarMonitor {
         }
         if (announce) {
             val strongest = pass.results.maxByOrNull { it.inliers }
-            Log.i(TAG, "calendar detected (${if (_announceEveryDetection.value) "every detection" else "$recent/$window passes"}): " +
+            Log.i(TAG, "object detected (${if (_announceEveryDetection.value) "every detection" else "$recent/$window passes"}): " +
                 "${strongest?.className} good ${strongest?.goodMatches}, inliers ${strongest?.inliers}, pink regions ${pass.regions.size}")
-            scope?.launch { speak(sentence) }
+            val spoken = sentenceFor(strongest?.className)
+            scope?.launch { speak(spoken) }
         }
     }
 

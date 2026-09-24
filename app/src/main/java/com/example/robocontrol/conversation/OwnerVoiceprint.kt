@@ -78,7 +78,56 @@ data class VoiceprintInfo(
 class OwnerVoiceprintStore private constructor(private val context: Context) {
 
     private val cipher = KeystoreZoneCipher(KEY_ALIAS)
-    private val file: File get() = File(File(context.filesDir, "robocontrol/voice"), FILE_NAME)
+    private val folder: File get() = File(context.filesDir, "robocontrol/voice")
+
+    /**
+     * Several voices can be stored side by side, under names, and one of them is the ACTIVE one that the detectors compare
+     * against. That is for testing: record two or three people, switch between them, and read off how close each one comes
+     * to the others. Only the active voice is ever used for a decision.
+     */
+    private val prefs get() = context.getSharedPreferences("robocontrol_voice", Context.MODE_PRIVATE)
+
+    private val _active = MutableStateFlow(prefs.getString(KEY_ACTIVE, null) ?: DEFAULT_PROFILE)
+
+    /** Name of the voice the detectors use. */
+    val activeProfile: StateFlow<String> = _active.asStateFlow()
+
+    private val _profiles = MutableStateFlow(listProfiles())
+
+    /** All stored voices, by name. */
+    val profiles: StateFlow<List<String>> = _profiles.asStateFlow()
+
+    private val file: File get() = fileFor(_active.value)
+
+    private fun fileFor(profile: String) = File(folder, safeName(profile) + ".print")
+
+    /** File names are user input: keep them to letters, digits and a few separators. */
+    private fun safeName(profile: String) = profile.trim().replace(Regex("[^A-Za-z0-9 _-]"), "_").take(40).ifBlank { DEFAULT_PROFILE }
+
+    private fun listProfiles(): List<String> =
+        folder.listFiles()?.filter { it.name.endsWith(".print") }?.map { it.name.removeSuffix(".print") }?.sorted().orEmpty()
+
+    /** Switches the voice the detectors compare against. */
+    @Synchronized
+    fun setActiveProfile(profile: String) {
+        if (_active.value == profile) return
+        _active.value = profile
+        prefs.edit().putString(KEY_ACTIVE, profile).apply()
+        _info.value = runCatching { load()?.also { it.zero() }?.info }.getOrNull()
+        Log.i(TAG, "active voice: $profile")
+    }
+
+    /** Deletes one stored voice; the active one falls back to whatever is left. */
+    @Synchronized
+    fun deleteProfile(profile: String): Boolean {
+        val deleted = fileFor(profile).let { !it.exists() || it.delete() }
+        if (deleted) {
+            _profiles.value = listProfiles()
+            if (_active.value == profile) setActiveProfile(_profiles.value.firstOrNull() ?: DEFAULT_PROFILE)
+            Log.i(TAG, "voice \"$profile\" deleted")
+        }
+        return deleted
+    }
 
     private val _info = MutableStateFlow(runCatching { load()?.also { it.zero() }?.info }.getOrNull())
 
@@ -117,14 +166,15 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
             val bytes = cipher.encrypt(json.toString().toByteArray(Charsets.UTF_8), aad())
             val target = file
             target.parentFile?.mkdirs()
-            val tmp = File(target.parentFile, "$FILE_NAME.tmp")
+            val tmp = File(target.parentFile, target.name + ".tmp")
             tmp.outputStream().use { out ->
                 out.write(bytes)
                 out.fd.sync()
             }
             if (!tmp.renameTo(target)) throw java.io.IOException("could not replace ${target.name}")
             _info.value = info
-            Log.i(TAG, "voice stored: ${info.pieces} pieces, %.1f s of speech, threshold %.2f"
+            _profiles.value = listProfiles()
+            Log.i(TAG, "voice \"${_active.value}\" stored: ${info.pieces} pieces, %.1f s of speech, threshold %.2f"
                 .format(info.speechSeconds, info.threshold))
             null
         }.getOrElse {
@@ -212,7 +262,8 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         val deleted = !file.exists() || file.delete()
         if (deleted) {
             _info.value = null
-            Log.i(TAG, "stored voice deleted")
+            _profiles.value = listProfiles()
+            Log.i(TAG, "stored voice \"${_active.value}\" deleted")
         }
         return deleted
     }
@@ -229,12 +280,16 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
     )
 
     /** Binds the file to its purpose: a copy dropped into another app's folder cannot be decrypted. */
-    private fun aad() = "roboguard-voiceprint:$FILE_NAME".toByteArray(Charsets.UTF_8)
+    private fun aad() = "roboguard-voiceprint:${file.name}".toByteArray(Charsets.UTF_8)
 
     companion object {
         private const val TAG = "OwnerVoiceprint"
-        private const val FILE_NAME = "owner.print"
         private const val COHORT_FILE = "cohort.mean"
+
+        /** Name of the voice used when nothing else is chosen; also the file the very first enrolment wrote. */
+        const val DEFAULT_PROFILE = "owner"
+
+        private const val KEY_ACTIVE = "active_profile"
         private const val KEY_ALIAS = "robocontrol_owner_voiceprint"
 
         /** Range the threshold can be set to by hand. Below 0.2 almost any voice passes, above 0.97 not even the owner. */

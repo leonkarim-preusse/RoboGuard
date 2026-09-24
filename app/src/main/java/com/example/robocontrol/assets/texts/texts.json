@@ -151,6 +151,10 @@
       "text": "Das Mikrofon kann über die App wieder eingeschaltet werden",
       "note": "Spoken after the microphone was switched off from the conversation pop-up"
     },
+    "speech.object_detected": {
+      "text": "{object} entdeckt",
+      "note": "Spoken when the robot finds one of the reference images; {object} is that image's file name without the extension (underscores become spaces)."
+    },
     "speech.calendar_detected": {
       "text": "Kalender entdeckt",
       "note": "Spoken when the calendar was recognised by the camera"
@@ -305,6 +309,22 @@
     "voice.dialog.delete.title": { "text": "Delete the stored voice?", "note": "Headline of the confirmation before deleting." },
     "voice.dialog.delete.text": { "text": "The robot then no longer knows any voice and cannot tell the owner from anybody else until a new recording.", "note": "Text of that confirmation." },
     "voice.error.permission": { "text": "Without permission for the microphone the robot cannot learn a voice.", "note": "Shown when the microphone permission was refused." },
+    "voice.profile.name": {
+      "text": "Name for this voice",
+      "note": "Voice screen: the name the next recording is stored under. Several voices can be kept and switched between."
+    },
+    "voice.profiles.title": {
+      "text": "Stored voices",
+      "note": "Voice screen: heading over the list of recorded voices."
+    },
+    "voice.profiles.active": {
+      "text": "{name} (in use)",
+      "note": "Voice screen: marks the voice the robot currently compares against."
+    },
+    "voice.button.use": {
+      "text": "Use",
+      "note": "Voice screen: makes this stored voice the one the robot compares against."
+    },
     "voice.stored.title": { "text": "Stored", "note": "Headline over what the robot has stored." },
     "voice.stored.none": { "text": "No voice stored. The robot does not know its owner's voice.", "note": "Shown while nothing is stored." },
     "voice.stored.date": { "text": "Taught on {date}", "note": "When the stored voice was recorded." },
