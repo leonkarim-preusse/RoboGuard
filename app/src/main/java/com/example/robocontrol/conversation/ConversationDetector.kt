@@ -123,7 +123,12 @@ class SpeakerChangeDetector(
     private val config: ChangeDetectorConfig = ChangeDetectorConfig(),
     /** Creates the Silero VAD when [ChangeDetectorConfig.speechGate] is SILERO; null = always the loudness gate. */
     private val sileroFactory: (() -> SileroVad)? = null,
-    /** Called on the audio thread for every evaluated candidate (for logging / tests). */
+    /**
+     * Tells the detector when the robot itself is making a sound, so its own voice is not taken for a second speaker
+     * (see [RobotSpeaking]). Null — the default, used by the offline tests with synthetic audio — means it never is.
+     */
+    private val robotSpeaking: (() -> Boolean)? = null,
+    /** Called on the audio thread for every evaluated candidate (for logging / tests). Last, so it can be a trailing lambda. */
     private val onCandidate: (ChangeCandidate) -> Unit = {}
 ) : ConversationDetector {
 
@@ -197,6 +202,8 @@ class SpeakerChangeDetector(
             }
             if (vad == null && gateError == null) gateError = "Silero VAD not configured, using loudness"
         }
+        // The robot's own voice would otherwise be a perfectly good "voice change" (see RobotSpeaking).
+        var wasRobotTalking = false
         val vadChunk = ShortArray(vad?.chunkSize ?: 0)
         var vadFill = 0
         var speechProbability: Double? = if (vad != null) 0.0 else null
@@ -240,7 +247,18 @@ class SpeakerChangeDetector(
                 }
 
                 val levelDb = mfcc.compute(frame, features)
-                val candidate = detector.onFrame(timeMs, levelDb, features, speechProbability)
+                val robotTalking = robotSpeaking?.invoke() == true
+                if (robotTalking != wasRobotTalking) {
+                    Log.i(TAG, if (robotTalking) "robot is speaking: ignoring the microphone until it stops"
+                    else "robot stopped speaking: listening again")
+                    wasRobotTalking = robotTalking
+                }
+                // Passing it as silence keeps every gate and every window out of the robot's own voice.
+                val candidate = if (robotTalking) {
+                    detector.onFrame(timeMs, Double.NEGATIVE_INFINITY, features, speechProbability?.let { 0.0 })
+                } else {
+                    detector.onFrame(timeMs, levelDb, features, speechProbability)
+                }
                 if (debugTimeline) {
                     timeline.addLast(AudioFrame(timeMs, levelDb, speechProbability, detector.lastFrameWasSpeech))
                     while (timeline.size > TIMELINE_FRAMES) timeline.removeFirst()

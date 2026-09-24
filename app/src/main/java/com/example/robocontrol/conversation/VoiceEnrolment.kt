@@ -64,8 +64,17 @@ class VoiceEnrolment(private val context: Context) {
     /** What a run is for. */
     enum class Mode { ENROL, TEST, COHORT }
 
-    /** Records until [TARGET_SECONDS] of speech are collected, then stores the template. */
-    fun startEnrolment() = start(Mode.ENROL)
+    /**
+     * Records until [TARGET_SECONDS] of speech are collected, then stores the template under [profile] and makes that the
+     * voice the detectors use. Several voices can be kept side by side for testing (see [OwnerVoiceprintStore.profiles]).
+     */
+    fun startEnrolment(profile: String = OwnerVoiceprintStore.DEFAULT_PROFILE) {
+        profileName = profile.trim().ifBlank { OwnerVoiceprintStore.DEFAULT_PROFILE }
+        start(Mode.ENROL)
+    }
+
+    /** Name the next finished enrolment is stored under. */
+    private var profileName = OwnerVoiceprintStore.DEFAULT_PROFILE
 
     /** Listens and reports how close each piece of speech is to the stored template. */
     fun startTest() = start(Mode.TEST)
@@ -298,13 +307,17 @@ class VoiceEnrolment(private val context: Context) {
             selfSimilarityMin = worst,
             threshold = threshold
         )
-        val error = OwnerVoiceprintStore.get(context).save(template, info)
+        // Switch first, so the template lands in the voice that was just recorded and the detectors use it right away.
+        val store = OwnerVoiceprintStore.get(context)
+        store.setActiveProfile(profileName)
+        val error = store.save(template, info)
         template.fill(0f)
         _state.value = if (error == null) {
             _state.value.copy(
                 phase = EnrolmentState.Phase.SAVED,
                 pieces = used.size,
-                message = "stored: ${used.size} pieces, %.0f s of speech, threshold %.2f".format(speechSeconds, threshold)
+                message = "\"$profileName\" stored: ${used.size} pieces, %.0f s of speech, threshold %.2f"
+                    .format(speechSeconds, threshold)
             )
         } else {
             _state.value.copy(phase = EnrolmentState.Phase.ERROR, error = error)

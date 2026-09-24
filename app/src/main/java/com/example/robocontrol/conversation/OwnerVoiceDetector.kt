@@ -78,6 +78,8 @@ class OwnerVoiceDetector(
         val chunk = ShortArray(512)
         var chunkFill = 0
         var probability = 0.0
+        val speaking = RobotSpeaking(context)
+        var wasRobotTalking = false
 
         // Decision window: times only, no vectors.
         val ownerTimes = ArrayDeque<Long>()
@@ -129,7 +131,19 @@ class OwnerVoiceDetector(
                     sum += v * v
                 }
                 val levelDb = 20 * log10(max(sqrt(sum / HOP), 1e-9))
-                val speech = probability >= settings.speechThreshold && levelDb > settings.minLevelDb
+                // The robot's own voice comes back through its microphone and is not the owner's, so it would read as
+                // another speaker: while it plays anything, nothing counts as speech and a half-collected piece is thrown
+                // away rather than finished with the robot's voice in it.
+                val robotTalking = speaking.active()
+                if (robotTalking) {
+                    if (!wasRobotTalking) Log.i(TAG, "robot is speaking: ignoring the microphone until it stops")
+                    if (fill > 0) {
+                        fill = 0
+                        piece.fill(0f)
+                    }
+                }
+                wasRobotTalking = robotTalking
+                val speech = !robotTalking && probability >= settings.speechThreshold && levelDb > settings.minLevelDb
 
                 if (speech) {
                     lastSpeechAtMs = timeMs

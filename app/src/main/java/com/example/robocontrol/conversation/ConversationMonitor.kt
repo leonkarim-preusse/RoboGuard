@@ -316,7 +316,12 @@ object ConversationMonitor {
         Log.i(TAG, "config: window ${config.windowFrames / 100.0} s, λ ${config.bicLambda}, ${config.speechGate} ${config.sileroThreshold}, " +
             "${config.decisionRule} r₀ ${config.evidenceBaseRatio} threshold ${config.evidenceThreshold} half-life ${config.evidenceHalfLifeMs / 1000} s")
         // Candidates are logged (numbers only) so a wrong prompt can be traced afterwards.
-        val d = SpeakerChangeDetector(AndroidMicSource(), config, sileroFactory = { SileroVad(appContext) }) { c ->
+        val robotSpeaking = RobotSpeaking(appContext)
+        val d = SpeakerChangeDetector(
+            AndroidMicSource(), config,
+            sileroFactory = { SileroVad(appContext) },
+            robotSpeaking = robotSpeaking::active
+        ) { c ->
             val ratio = if (c.bicPenalty > 0) c.bicGain / c.bicPenalty else 0.0
             Log.i(TAG, "candidate at %.1f s: r=%.2f (evidence +%.2f), ΔBIC %.0f %s".format(
                 c.timeMs / 1000.0, ratio, c.evidenceAdded(config.evidenceBaseRatio), c.deltaBic,

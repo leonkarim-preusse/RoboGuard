@@ -25,6 +25,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -65,8 +66,15 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
     val state by enrolment.state.collectAsState()
     val stored by store.info.collectAsState()
     val cohortPieces by store.cohortPieces.collectAsState()
+    val profiles by store.profiles.collectAsState()
+    val activeProfile by store.activeProfile.collectAsState()
+    // Name the NEXT recording is stored under: the active voice by default, so "Record again" replaces it; type another
+    // name to keep several voices side by side and switch between them.
+    var recordAs by remember(activeProfile) { mutableStateOf(activeProfile) }
     var confirmDelete by remember { mutableStateOf(false) }
     var missingPermission by remember { mutableStateOf(false) }
+    // Remembered across the permission dialog, which interrupts the press.
+    var pendingProfile by remember { mutableStateOf(OwnerVoiceprintStore.DEFAULT_PROFILE) }
     // Derived from the published state, NOT from VoiceEnrolment.running: that is a plain property, so Compose never
     // redraws when the recording thread ends — the screen kept showing "Stop" and never offered "Try the voice".
     val running = state.phase == EnrolmentState.Phase.RECORDING || state.phase == EnrolmentState.Phase.TESTING
@@ -76,7 +84,7 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
 
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         missingPermission = !granted
-        if (granted) enrolment.startEnrolment()
+        if (granted) enrolment.startEnrolment(pendingProfile)
     }
     fun withMicrophone(action: () -> Unit) {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) action()
@@ -117,10 +125,22 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                     modifier = Modifier.fillMaxWidth().height(48.dp)
                 ) { Text(UiText.get("voice.button.stop")) }
             } else {
+                OutlinedTextField(
+                    value = recordAs,
+                    onValueChange = { recordAs = it },
+                    singleLine = true,
+                    label = { Text(UiText.get("voice.profile.name"), fontSize = 13.sp) },
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Button(
-                    onClick = { withMicrophone { enrolment.startEnrolment() } },
+                    onClick = { pendingProfile = recordAs; withMicrophone { enrolment.startEnrolment(recordAs) } },
+                    enabled = recordAs.isNotBlank(),
                     modifier = Modifier.fillMaxWidth().height(48.dp)
-                ) { Text(UiText.get(if (stored == null) "voice.button.record" else "voice.button.record_again")) }
+                ) {
+                    Text(UiText.get(
+                        if (profiles.contains(recordAs.trim())) "voice.button.record_again" else "voice.button.record"
+                    ))
+                }
                 if (stored != null) {
                     OutlinedButton(
                         onClick = { withMicrophone { enrolment.startTest() } },
@@ -155,8 +175,37 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
         Spacer(Modifier.width(16.dp))
 
         Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // ---- the voices the robot knows; exactly one of them is compared against
+            if (profiles.isNotEmpty()) {
+                Text(UiText.get("voice.profiles.title"), fontWeight = FontWeight.Bold)
+                profiles.forEach { profile ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                        Text(
+                            if (profile == activeProfile) UiText.get("voice.profiles.active", "name" to profile) else profile,
+                            fontSize = 14.sp,
+                            fontWeight = if (profile == activeProfile) FontWeight.Bold else FontWeight.Normal,
+                            color = if (profile == activeProfile) Color(0xFF2E7D32) else Color.Unspecified,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (profile != activeProfile) {
+                            OutlinedButton(
+                                onClick = { store.setActiveProfile(profile) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                modifier = Modifier.height(34.dp)
+                            ) { Text(UiText.get("voice.button.use"), fontSize = 12.sp) }
+                        }
+                        OutlinedButton(
+                            onClick = { store.deleteProfile(profile) },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) { Text(UiText.get("voice.button.delete"), fontSize = 12.sp, color = Color(0xFFD32F2F)) }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+
             // ---- what is stored
-            Text(UiText.get("voice.stored.title"), fontWeight = FontWeight.Bold)
+            Text(UiText.get("voice.stored.title", "name" to activeProfile), fontWeight = FontWeight.Bold)
             val info = stored
             if (info == null) {
                 Text(UiText.get("voice.stored.none"), fontSize = 14.sp)
