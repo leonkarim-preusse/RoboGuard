@@ -33,7 +33,7 @@ THREAD_GROUPS = [
     ("Camera frame copy", SERIES[2]),
     ("Screen (UI + render)", SERIES[3]),
     ("Garbage collection", SERIES[4]),
-    ("Conversation audio", SERIES[5]),
+    ("Voice detection (audio thread)", SERIES[5]),
     ("Other RoboGuard threads", OTHER),
 ]
 PROCESS_GROUPS = [
@@ -45,9 +45,10 @@ PROCESS_GROUPS = [
     ("Other processes", OTHER),
 ]
 STEPS = [
-    ("Pink search + rest", SERIES[4]),
+    ("Pink search (colour, measured)", SERIES[4]),
+    ("Rest: whole-frame references + overhead", OTHER),
     ("Resize", SERIES[3]),
-    ("Keypoints", SERIES[0]),
+    ("Keypoints (pink area)", SERIES[0]),
     ("Matching (kNN + ratio)", SERIES[1]),
     ("Homography", SERIES[2]),
 ]
@@ -66,7 +67,8 @@ def thread_group(pid, tid, name):
         return 3
     if name.startswith("HeapTaskDaemon"):
         return 4
-    if name.startswith("SpeakerChange"):
+    # /proc cuts thread names to 15 characters: SpeakerChangeDe, OwnerVoiceDetec, PairwiseVoiceDe, VoiceEnrolment.
+    if name.startswith(("SpeakerChange", "OwnerVoice", "PairwiseVoice", "VoiceEnrolment")):
         return 5
     return 6
 
@@ -103,7 +105,13 @@ def parse_monitor(lines):
         text, t = entry["text"], entry["t"]
         m = re.search(r"camera ([\d,]+) fps · passes ([\d,]+)/s \(avg (\d+) ms, colour (\d+) ms\)", text)
         if m:
-            windows.append({"t": t, "fps": fnum(m.group(1)), "pps": fnum(m.group(2)), "avg": int(m.group(3)), "colour": int(m.group(4))})
+            w = {"t": t, "fps": fnum(m.group(1)), "pps": fnum(m.group(2)), "avg": int(m.group(3)), "colour": int(m.group(4))}
+            # Rest of the same line: how many passes saw the object, how many pink areas per pass, what was rejected.
+            d = re.search(r"· detected (\d+)/(\d+) · regions ([\d,]+) · rejected frame (\d+), white (\d+) · best inliers (\d+)", text)
+            if d:
+                w.update(detected=int(d.group(1)), passes=int(d.group(2)), regions=fnum(d.group(3)),
+                         rejectedFrame=int(d.group(4)), rejectedWhite=int(d.group(5)), bestInliers=int(d.group(6)))
+            windows.append(w)
             continue
         m = re.search(r"passes with a pink area: (\d+), avg (\d+) ms = resize (\d+) \+ keypoints (\d+) \+ knn match (\d+) \+ ratio test (\d+) \+ homography (\d+) ms", text)
         if m and windows:
@@ -227,6 +235,37 @@ def settings_line(lines):
     return ""
 
 
+MARK_ANNOUNCE = "#f0a882"
+MARK_PROMPT = "#e79393"
+LANE_COLOURS = [SERIES[2], SERIES[6], SERIES[4], SERIES[1]]
+
+
+def activity_bands(data, t0, t_end):
+    """
+    What the robot was doing, for the strip under the first panels: driving, which reference image was in view, and what
+    the microphone was doing. Reuses the log parsers of graphs.py (imported here, not at module level, because graphs.py
+    imports this file). Returns None when nothing was recorded.
+    """
+    try:
+        import graphs
+    except Exception:
+        return None
+    monitor, voice = data["monitor"], data.get("voice", [])
+    seen = graphs.parse_seen(monitor, t_end)
+    bands = {
+        "drive": [(a, b, "#7fb0e3" if not avoid else "#f0b98a") for a, b, avoid in drive_intervals(data.get("navigation", []), t_end)],
+        "seen": [(a, b, LANE_COLOURS[i % len(LANE_COLOURS)], name)
+                 for i, name in enumerate(sorted(seen)) for a, b in seen[name]],
+        "names": sorted(seen),
+        "speaking": [(a, b) for a, b in graphs.parse_speaking(voice, t_end)],
+        "speech": [(x["t"], x["speech"] / 100.0) for x in graphs.parse_audio(voice)],
+        "pieces": [x["t"] for x in graphs.parse_similarity(voice)],
+        "announce": [x["t"] for x in graphs.parse_announcements(monitor)],
+        "prompt": graphs.parse_events(voice, "showing prompt"),
+    }
+    return bands if any(bands[k] for k in ("drive", "seen", "speech", "announce", "prompt")) else None
+
+
 def render(data, out_path):
     pid = data["pid"]
     threads, processes = data["threads"], data["processes"]
@@ -265,9 +304,11 @@ def render(data, out_path):
     W = 1800
     L, R = 110, 420  # right margin holds the legends
     panels = [("RoboGuard CPU per thread group", 330), ("Whole robot CPU per process group", 300),
-              ("Calendar detection: time per check, by step (2 s averages)", 300), ("Checks per second and camera frames per second", 200)]
+              ("Object detection: time per check, by step (2 s averages)", 300), ("Checks per second and camera frames per second", 200)]
     top_y = 120
-    gap = 90
+    bands = activity_bands(data, t0, t_end)
+    # The activity strip lives in the gap between two panels, so that gap grows when there is something to draw.
+    gap = 150 if bands else 90
     table_rows = sorted(per_thread.items(), key=lambda kv: -kv[1]["sum"] / max(kv[1]["n"], 1))[:14]
     checks = parse_checks(data["monitor"])
     dist_h = 2 * (260 + 90) if checks else 0
@@ -314,11 +355,22 @@ def render(data, out_path):
     drives = drive_intervals(data.get("navigation", []), t_end)
 
     def shade(top, h):
-        """Driving phases as light background bands: blue = driving, orange = avoiding an obstacle (turning)."""
+        """
+        Background of a panel: light blue while the robot drove, light orange while it avoided an obstacle, plus one thin
+        vertical line per single event (an object announced, a conversation prompt), so a bump can be read against the
+        moment it belongs to.
+        """
         for a, b, avoiding in sorted(drives, key=lambda d: d[2]):
             x0, x1 = max(x_of(a), L), min(x_of(b), W - R)
             if x1 > x0:
                 g.rectangle([x0, top, x1, top + h], fill="#fbe3d6" if avoiding else "#dcebfa")
+        if not bands:
+            return
+        for times, colour in ((bands["announce"], MARK_ANNOUNCE), (bands["prompt"], MARK_PROMPT)):
+            for t in times:
+                x = x_of(t)
+                if L <= x <= W - R:
+                    g.line([x, top, x, top + h], fill=colour, width=1)
 
     def stacked_area(top, h, series, ymax, colors):
         if len(series) < 2:
@@ -333,6 +385,57 @@ def render(data, out_path):
             g.line([(x_of(series[i][0]), top + h - min(upper[i], ymax) / ymax * h) for i in range(len(series))], fill=SURFACE, width=1)
             base = upper
 
+    f_lane = font(12)
+
+    def ribbon(top, h, labels=True):
+        """
+        Three lanes under a panel's time axis: what the robot was driving, which reference image was in view, and what the
+        microphone was doing. Drawn in the gap that was already between the panels, so nothing else moves.
+        """
+        if not bands:
+            return
+        base = top + h + 30
+        lane_h, step = 9, 13
+        lanes = ["driving", "object in view", "voice"]
+        for i, name in enumerate(lanes):
+            ly = base + i * step
+            g.rectangle([L, ly, W - R, ly + lane_h], fill="#f2f1ee")
+            if labels:
+                g.text((L - 10 - g.textlength(name, font=f_lane), ly - 2), name, fill=TEXT2, font=f_lane)
+            if i == 0:
+                spans = [(a, b, c) for a, b, c in bands["drive"]]
+            elif i == 1:
+                spans = [(a, b, c) for a, b, c, _ in bands["seen"]]
+            else:
+                spans = [(a, b, "#c9c8c3") for a, b in bands["speaking"]]
+            for a, b, colour in spans:
+                x0, x1 = max(x_of(a), L), min(x_of(b), W - R)
+                if x1 >= x0:
+                    g.rectangle([x0, ly, max(x1, x0 + 2), ly + lane_h], fill=colour)
+            if i == 2:
+                # speech share as small bars, one per 2 s window, and a tick for every piece that was embedded
+                width = max((W - R - L) / max(len(bands["speech"]), 1) - 1, 2)
+                for t, v in bands["speech"]:
+                    if v <= 0:
+                        continue
+                    x = x_of(t)
+                    if L <= x <= W - R:
+                        g.rectangle([x - width, ly + lane_h - max(v * lane_h, 2), x, ly + lane_h], fill=SERIES[5])
+                for t in bands["pieces"]:
+                    x = x_of(t)
+                    if L <= x <= W - R:
+                        g.rectangle([x - 1, ly - 2, x + 1, ly + lane_h + 2], fill=SERIES[6])
+        if labels:
+            colour_names = ["green", "purple", "pink", "orange"]
+            names = " · ".join(f"{n} ({colour_names[i % len(colour_names)]})" for i, n in enumerate(bands["names"][:4]))
+            g.text((L, base + 3 * step + 6),
+                   "strip: driving (blue) · avoiding an obstacle (orange) · in view: " + (names or "–") +
+                   " · robot speaking (grey) · speech share (green bars) · piece embedded (purple tick)",
+                   fill=TEXT2, font=fs)
+            g.text((L, base + 3 * step + 26),
+                   "vertical lines in the panels: object announced (orange) · conversation prompt (red)",
+                   fill=TEXT2, font=fs)
+
     y = top_y + 30
     # 1. threads
     h = panels[0][1]
@@ -343,6 +446,7 @@ def render(data, out_path):
     stacked_area(y, h, thread_series, ymax, [c for _, c in THREAD_GROUPS])
     avgs = [sum(s[k] for _, s in thread_series) / max(len(thread_series), 1) for k in range(len(THREAD_GROUPS))]
     legend(y, [(f"{n}  ({a:.0f} %)", c) for (n, c), a in zip(THREAD_GROUPS, avgs)], ["100 % = one core fully busy", "(average over the run in brackets)"])
+    ribbon(y, h, labels=True)
     y += h + gap
 
     # 2. processes
@@ -352,11 +456,18 @@ def render(data, out_path):
     stacked_area(y, h, process_series, 800, [c for _, c in PROCESS_GROUPS])
     pav = [sum(s[k] for _, s in process_series) / max(len(process_series), 1) for k in range(len(PROCESS_GROUPS))]
     legend(y, [(f"{n}  ({a:.0f} %)", c) for (n, c), a in zip(PROCESS_GROUPS, pav)], ["800 % = all 8 cores busy", f"robot total ≈ {sum(pav):.0f} %"])
+    ribbon(y, h, labels=False)
     y += h + gap
 
     # 3. step times (stacked bars per 2 s window)
     h = panels[2][1]
-    smax = max([w.get("pink", {}).get("avg", w["avg"]) for w in windows] + [100])
+    # The scale must hold the STACKED bar, not only the average pass: the step averages are taken over the passes that had
+    # a pink area and can add up to slightly more than the average pass time.
+    def stacked(w):
+        p = w.get("pink")
+        return max(p["avg"], w["colour"] + p["resize"] + p["keypoints"] + p["match"] + p["homography"]) if p else w["avg"]
+
+    smax = max([stacked(w) for w in windows] + [100])
     smax = (int(smax / 100) + 1) * 100
     shade(y, h)
     frame(y, h, panels[2][0], smax, " ms", [v for v in range(0, smax + 1, max(100, smax // 5 // 100 * 100))])
@@ -364,20 +475,26 @@ def render(data, out_path):
     for w in windows:
         x = x_of(w["t"]) - bar_w
         p = w.get("pink")
+        # The colour search is measured on its own, so it gets its own segment instead of being hidden in a "rest" block.
+        # What is left over after colour and the gated ORB steps is everything else in a pass: references that are searched
+        # on the WHOLE frame (usePinkMarker false in settings.json), the YUV conversion, and time lost to a busy CPU.
+        colour = w["colour"]
         if p:
-            parts = [max(0, p["avg"] - p["resize"] - p["keypoints"] - p["match"] - p["homography"]), p["resize"], p["keypoints"], p["match"], p["homography"]]
+            rest = max(0, p["avg"] - colour - p["resize"] - p["keypoints"] - p["match"] - p["homography"])
+            parts = [colour, rest, p["resize"], p["keypoints"], p["match"], p["homography"]]
         else:
-            parts = [w["colour"], 0, 0, 0, 0]
+            parts = [colour, max(0, w["avg"] - colour), 0, 0, 0, 0]
         base = 0
         for (name, color), v in zip(STEPS, parts):
-            if v <= 0:
+            if v <= 0 or base >= smax:
                 continue
-            y0 = y + h - base / smax * h
+            y0 = y + h - min(base, smax) / smax * h
             y1 = y + h - min(base + v, smax) / smax * h
-            g.rectangle([x, y1, x + bar_w, y0 - 1], fill=color)  # 1 px gap between segments
+            if y0 - 1 > y1:  # 1 px gap between segments; a segment thinner than that is dropped
+                g.rectangle([x, y1, x + bar_w, y0 - 1], fill=color)
             base += v
     pink = [w["pink"] for w in windows if "pink" in w]
-    extra = ["bars with only the pink colour:", "no pink frame in view (pink search only)"]
+    extra = ["grey = everything that is not the", "gated search: whole-frame references,", "conversion, CPU contention"]
     if pink:
         n = len(pink)
         extra += ["", f"with calendar in view ({n} windows), avg ms:",
@@ -390,6 +507,7 @@ def render(data, out_path):
                   "colour image %.1f · colour ranges %.1f" % (sum(x[0] for x in stages) / k, sum(x[1] for x in stages) / k),
                   "cleaning/grouping %.1f · shapes %.1f" % (sum(x[2] for x in stages) / k, sum(x[3] for x in stages) / k)]
     legend(y, list(reversed(STEPS)), extra)
+    ribbon(y, h, labels=False)
     y += h + gap
 
     # 4. rates

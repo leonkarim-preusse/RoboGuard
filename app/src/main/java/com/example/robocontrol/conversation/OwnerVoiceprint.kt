@@ -28,17 +28,8 @@ class Voiceprint internal constructor(private val values: FloatArray, val info: 
      * ~0.80 (2026-09-23). Removing it is what makes the remaining difference readable; it is the standard trick from
      * speaker verification (centering / score normalisation).
      */
-    fun similarityTo(embedding: FloatArray, cohort: FloatArray? = null): Float {
-        if (cohort == null || cohort.size != values.size) return SpeakerEmbedder.similarity(values, embedding)
-        val a = FloatArray(values.size) { values[it] - cohort[it] }
-        val b = FloatArray(embedding.size) { embedding[it] - cohort[it] }
-        SpeakerEmbedder.normalise(a)
-        SpeakerEmbedder.normalise(b)
-        val similarity = SpeakerEmbedder.similarity(a, b)
-        a.fill(0f)
-        b.fill(0f)
-        return similarity
-    }
+    fun similarityTo(embedding: FloatArray, cohort: FloatArray? = null): Float =
+        centredSimilarity(values, embedding, cohort)
 
     /** Overwrites the values in memory. Call when the template is no longer needed. */
     fun zero() = values.fill(0f)
@@ -47,6 +38,24 @@ class Voiceprint internal constructor(private val values: FloatArray, val info: 
 
     /** Never prints the values. */
     override fun toString(): String = "Voiceprint(${info.dimensions} values, taught ${info.createdAtMs})"
+
+    companion object {
+        /**
+         * The comparison of [similarityTo] for two plain vectors, for the enrolment, which has to judge its own pieces
+         * before a [Voiceprint] exists — and has to judge them on the scale the detector will use later.
+         */
+        internal fun centredSimilarity(one: FloatArray, other: FloatArray, cohort: FloatArray?): Float {
+            if (cohort == null || cohort.size != one.size) return SpeakerEmbedder.similarity(one, other)
+            val a = FloatArray(one.size) { one[it] - cohort[it] }
+            val b = FloatArray(other.size) { other[it] - cohort[it] }
+            SpeakerEmbedder.normalise(a)
+            SpeakerEmbedder.normalise(b)
+            val similarity = SpeakerEmbedder.similarity(a, b)
+            a.fill(0f)
+            b.fill(0f)
+            return similarity
+        }
+    }
 }
 
 /**

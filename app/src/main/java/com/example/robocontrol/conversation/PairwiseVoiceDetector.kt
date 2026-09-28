@@ -52,8 +52,12 @@ class PairwiseVoiceDetector(
 
     @Synchronized
     override fun stop() {
-        thread?.interrupt()
+        val t = thread
         thread = null
+        t?.interrupt()
+        // Wait for the thread to close the microphone. The next detector opens it immediately afterwards, and two
+        // AudioRecords on the same device give silence on Android 9 rather than an error.
+        runCatching { t?.join(STOP_TIMEOUT_MS) }
     }
 
     /** One piece of speech: its embedding and when it was heard. */
@@ -72,13 +76,33 @@ class PairwiseVoiceDetector(
         var probability = 0.0
         val speaking = RobotSpeaking(context)
         var wasRobotTalking = false
+        var sileroWasSpeech = false
+        // Continuous pieces: see ConversationSettings.continuousPieces (same assembly as the owner detector).
+        val preRollHops = ((settings.speechPadMs / 10).toInt()).coerceAtLeast(1)
+        val preRoll = ShortArray(preRollHops * HOP)
+        var preRollAt = 0
+        var preRollFilled = 0
+        var wasAppending = false
+        var lastGateMs = Long.MIN_VALUE / 2
         val held = ArrayDeque<Piece>()
         var readings = emptyList<Float>()
+        // Outlier filter (settings.confirmTwice): whether the last counted piece already said "another voice", and
+        // whether one is waiting to be said a second time.
+        var wasDifferent = false
+        var pendingDifferent = false
         var differentUntil = Long.MIN_VALUE / 2
         var speechSamples = 0L
         var samples = 0L
         var lastSpeechAtMs = Long.MIN_VALUE / 2
         var lastPublish = -1_000L
+        // Load counters for the performance recording (numbers only, see AudioLoad).
+        val load = AudioLoad(TAG, "compare pieces, another voice below %.2f, %d pieces held, window %d s, ".format(
+            settings.differentVoiceBelow, settings.piecesKept, settings.windowMs / 1000) +
+            "%s, confirm twice %b, pieces %s, gate %s, silero %.2f (hysteresis %.2f), floor %.0f dBFS".format(
+                if (cohort != null) "cohort centred" else "no cohort", settings.confirmTwice,
+                if (settings.continuousPieces) "continuous (+%d ms pad, %d ms gaps kept)".format(
+                    settings.speechPadMs, settings.bridgeGapMs) else "gated frames only",
+                settings.gateMode, settings.speechThreshold, settings.speechHysteresis, settings.minLevelDb))
 
         /** Forgets every held voice. */
         fun forget() {
@@ -94,7 +118,12 @@ class PairwiseVoiceDetector(
                 _snapshot.value = _snapshot.value.copy(running = false, error = openError)
                 return
             }
-            runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
+            // Audio that is not read in time is gone for good, unlike a camera frame: this loop outranks the detection
+            // workers (which run at THREAD_PRIORITY_URGENT_DISPLAY, -8).
+            runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
+            // One line the graphs can read the threshold lines from (performance/graphs.py).
+            Log.i(TAG, "gate: %s, silero %.2f (hysteresis %.2f), level floor %.0f dBFS".format(
+                settings.gateMode, settings.speechThreshold, settings.speechHysteresis, settings.minLevelDb))
             Log.i(TAG, "comparing voices with each other (different below %.2f, %d pieces held, %s)".format(
                 settings.differentVoiceBelow, settings.piecesKept,
                 if (cohort != null) "centred" else "not centred — record other voices for a better comparison"))
@@ -117,7 +146,11 @@ class PairwiseVoiceDetector(
                     chunkFill += take
                     i += take
                     if (chunkFill == chunk.size) {
-                        probability = vad.probability(chunk).toDouble()
+                        if (settings.gateMode != SpeechGateMode.LEVEL_ONLY) {
+                            val vadStart = System.nanoTime()
+                            probability = vad.probability(chunk).toDouble()
+                            load.vad(System.nanoTime() - vadStart)
+                        }
                         chunkFill = 0
                     }
                 }
@@ -137,17 +170,56 @@ class PairwiseVoiceDetector(
                         fill = 0
                         piece.fill(0f)
                     }
+                } else if (wasRobotTalking) {
+                    Log.i(TAG, "robot stopped speaking: listening again")
                 }
                 wasRobotTalking = robotTalking
-                val speech = !robotTalking && probability >= settings.speechThreshold && levelDb > settings.minLevelDb
+                // The two halves of the gate are kept apart: which of them is doing the work can then be counted, and
+                // either one can be switched off from the speaker screen.
+                // Hysteresis: while speech is running the bar is lower, so a probability sitting on the threshold does
+                // not flip the gate every chunk.
+                val sileroLimit = if (sileroWasSpeech) settings.speechThreshold - settings.speechHysteresis
+                else settings.speechThreshold
+                val sileroSaysSpeech = probability >= sileroLimit
+                sileroWasSpeech = sileroSaysSpeech
+                val loudEnough = levelDb > settings.minLevelDb
+                val gate = when (settings.gateMode) {
+                    SpeechGateMode.SILERO_AND_LEVEL -> sileroSaysSpeech && loudEnough
+                    SpeechGateMode.SILERO_ONLY -> sileroSaysSpeech
+                    SpeechGateMode.LEVEL_ONLY -> loudEnough
+                }
+                val speech = !robotTalking && gate
+                load.frame(speech, sileroSaysSpeech, loudEnough, levelDb, probability)
 
                 if (speech) {
                     lastSpeechAtMs = timeMs
-                    for (k in 0 until HOP) if (fill < piece.size) piece[fill++] = hop[k] / 32768f
                     speechSamples += HOP
-                } else if (timeMs - lastSpeechAtMs >= settings.resetAfterSilenceMs && held.isNotEmpty()) {
+                    lastGateMs = timeMs
+                }
+                val appending = if (settings.continuousPieces) {
+                    !robotTalking && (speech || timeMs - lastGateMs <= settings.bridgeGapMs)
+                } else speech
+                if (appending) {
+                    if (!wasAppending) {
+                        for (n in 0 until preRollFilled) {
+                            val start = ((preRollAt - preRollFilled + n + preRollHops) % preRollHops) * HOP
+                            for (k in 0 until HOP) if (fill < piece.size) piece[fill++] = preRoll[start + k] / 32768f
+                        }
+                    }
+                    for (k in 0 until HOP) if (fill < piece.size) piece[fill++] = hop[k] / 32768f
+                }
+                wasAppending = appending
+                if (settings.continuousPieces) {
+                    hop.copyInto(preRoll, preRollAt * HOP)
+                    preRollAt = (preRollAt + 1) % preRollHops
+                    if (preRollFilled < preRollHops) preRollFilled++
+                }
+                // A half-filled piece has to be thrown away too, not only the held ones — see OwnerVoiceDetector.
+                if (!speech && timeMs - lastSpeechAtMs >= settings.resetAfterSilenceMs && (fill > 0 || held.isNotEmpty())) {
                     forget()
                     readings = emptyList()
+                    wasDifferent = false
+                    pendingDifferent = false
                     speechSamples = 0
                     fill = 0
                     piece.fill(0f)
@@ -156,7 +228,9 @@ class PairwiseVoiceDetector(
                 }
 
                 if (fill >= piece.size) {
+                    val embedStart = System.nanoTime()
                     val embedding = embedder.embed(piece, fill)
+                    load.piece(System.nanoTime() - embedStart)
                     fill = 0
                     piece.fill(0f)
                     if (embedding != null) {
@@ -169,10 +243,30 @@ class PairwiseVoiceDetector(
                             if (similarity < lowest) lowest = similarity
                         }
                         if (held.isNotEmpty()) {
-                            Log.i(TAG, "piece: lowest similarity to the %d held pieces %.3f -> %s".format(
-                                held.size, lowest,
-                                if (lowest < settings.differentVoiceBelow) "another voice" else "same voice"))
-                            if (lowest < settings.differentVoiceBelow) differentUntil = timeMs + settings.windowMs
+                            val different = lowest < settings.differentVoiceBelow
+                            var note = ""
+                            // Outlier filter: the FIRST piece that says "another voice" only counts once the next one
+                            // agrees. A run of them keeps counting at once, so only the transition costs a piece.
+                            when {
+                                !settings.confirmTwice || wasDifferent -> {
+                                    if (different) differentUntil = timeMs + settings.windowMs
+                                }
+                                different && pendingDifferent -> {
+                                    differentUntil = timeMs + settings.windowMs
+                                    note = " (confirmed)"
+                                }
+                                different -> {
+                                    pendingDifferent = true
+                                    note = " (waiting for a second piece)"
+                                }
+                                pendingDifferent -> {
+                                    pendingDifferent = false
+                                    note = " (the piece before it was dropped, not repeated)"
+                                }
+                            }
+                            wasDifferent = different && (!settings.confirmTwice || note != " (waiting for a second piece)")
+                            Log.i(TAG, "piece: lowest similarity to the %d held pieces %.3f -> %s%s".format(
+                                held.size, lowest, if (different) "another voice" else "same voice", note))
                         }
                         held.addLast(Piece(centred, timeMs))
                         while (held.size > settings.piecesKept) held.removeFirst().embedding.fill(0f)
@@ -183,6 +277,8 @@ class PairwiseVoiceDetector(
                 while (held.isNotEmpty() && timeMs - held.first().timeMs > settings.windowMs) {
                     held.removeFirst().embedding.fill(0f)
                 }
+
+                load.tick(timeMs)
 
                 if (timeMs - lastPublish >= PUBLISH_MS) {
                     lastPublish = timeMs
@@ -217,6 +313,7 @@ class PairwiseVoiceDetector(
             _snapshot.value = _snapshot.value.copy(error = e.message ?: e.toString())
         } finally {
             forget()
+            preRoll.fill(0)
             piece.fill(0f)
             read.fill(0)
             hop.fill(0)
@@ -241,6 +338,9 @@ class PairwiseVoiceDetector(
         const val TAG = "PairwiseVoice"
         const val HOP = 160
         const val PUBLISH_MS = 100L
+
+        /** How long stop() waits for the thread to let go of the microphone. */
+        const val STOP_TIMEOUT_MS = 1_000L
         const val READINGS_KEPT = 8
     }
 }

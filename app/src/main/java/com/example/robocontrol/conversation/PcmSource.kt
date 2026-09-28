@@ -36,10 +36,16 @@ class AndroidMicSource(
     private var record: AudioRecord? = null
 
     override fun open(): String? {
+        // The buffer has to bridge the LONGEST pause the reading thread can take, and that is one embedding: CAM++ needs
+        // 0.7 s on an idle robot and up to 3.4 s under full load, on the SAME thread that reads the microphone. With the
+        // old `minBuffer * 4` (≈ 0.2-0.3 s here) everything beyond that was simply lost, and the piece after each one
+        // started with a hole in the middle of a word — which is what produced the random outliers while the owner was
+        // speaking normally (measured 2026-09-28: audio/clock fell to 0.67-0.76 exactly around those readings).
         val minBuffer = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBuffer <= 0) return "16 kHz mono not supported (getMinBufferSize=$minBuffer)"
         val r = try {
-            AudioRecord(audioSource, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuffer * 4)
+            AudioRecord(audioSource, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                maxOf(minBuffer * 4, sampleRate * 2 * BUFFER_SECONDS))
         } catch (e: Exception) {
             return "AudioRecord failed: $e"
         }
@@ -69,6 +75,11 @@ class AndroidMicSource(
             it.release()
         }
         record = null
+    }
+
+    private companion object {
+        /** Seconds of microphone audio the buffer must hold while the thread is busy elsewhere. */
+        const val BUFFER_SECONDS = 4
     }
 }
 
@@ -173,6 +184,7 @@ class SyntheticVoicesSource(
     override fun close() {}
 
     private companion object {
+
         /** The resonator cascade is very quiet; this brings syllable peaks to roughly −15 dBFS. */
         const val OUTPUT_GAIN = 250.0
     }

@@ -72,6 +72,11 @@ data class ConversationSnapshot(
     /** Owner detector: pieces in the decision window that matched the owner, and pieces that did not. */
     val ownerPieces: Int = 0,
     val otherPieces: Int = 0,
+    /** Activity method: share of the window that carried speech (0…1), and the share it is compared against. */
+    val speechShare: Double = 0.0,
+    val speechShareNeeded: Double = 0.0,
+    /** Activity method: how much of the window has been filled yet (0…1), so the screen can say "still collecting". */
+    val windowFilled: Double = 0.0,
     /** Pairwise method: lowest similarity between two pieces in the window (low = two different voices). */
     val pairwiseMin: Float? = null,
     /** Pairwise method: the last comparisons, newest first. */
@@ -99,7 +104,18 @@ enum class DetectionMethod {
      * that a vector is computed for everyone in the room and a handful of them exist side by side for the length of the
      * window (in memory only, zeroed on reset).
      */
-    PAIRWISE
+    PAIRWISE,
+
+    /**
+     * The cheapest rule of all: no voice is compared with anything. It only asks how much of the last seconds carried
+     * speech at all — one person leaves gaps to breathe and to think, a conversation fills them, because the other one
+     * answers. Above a share of speech in the window ([ConversationSettings.activityShare]) the robot calls it a
+     * conversation.
+     *
+     * Nothing about a voice is computed, stored or compared here: what exists is a count of frames. That makes it the
+     * easiest method to defend, and the easiest to fool with a television.
+     */
+    ACTIVITY
 }
 
 /** Detects whether more than one person is talking. Implementations must not store or send audio. */
@@ -160,6 +176,8 @@ class SpeakerChangeDetector(
         val t = thread ?: return
         thread = null
         t.interrupt()
+        // Wait for the microphone to be released before the next detector opens it (see OwnerVoiceDetector.stop).
+        runCatching { t.join(1_000) }
     }
 
     /** Runs until the source ends or [stop] is called. Blocking; for offline tests call directly instead of [start]. */
@@ -206,6 +224,10 @@ class SpeakerChangeDetector(
         var wasRobotTalking = false
         val vadChunk = ShortArray(vad?.chunkSize ?: 0)
         var vadFill = 0
+        // Load counters for the performance recording (numbers only, see AudioLoad).
+        val load = AudioLoad(TAG, "change detection, window %.1f s, lambda %.1f, %s, gate %s, silero %.2f (hysteresis %.2f)".format(
+            config.windowFrames / 100.0, config.bicLambda, config.decisionRule, config.speechGate,
+            config.sileroThreshold, config.sileroHysteresis))
         var speechProbability: Double? = if (vad != null) 0.0 else null
 
         val openError = source.open()
@@ -240,12 +262,15 @@ class SpeakerChangeDetector(
                         vadFill += take
                         i += take
                         if (vadFill == vadChunk.size) {
+                            val vadStart = System.nanoTime()
                             speechProbability = v.probability(vadChunk).toDouble()
+                            load.vad(System.nanoTime() - vadStart)
                             vadFill = 0
                         }
                     }
                 }
 
+                val analysisStart = System.nanoTime()
                 val levelDb = mfcc.compute(frame, features)
                 val robotTalking = robotSpeaking?.invoke() == true
                 if (robotTalking != wasRobotTalking) {
@@ -259,6 +284,9 @@ class SpeakerChangeDetector(
                 } else {
                     detector.onFrame(timeMs, levelDb, features, speechProbability)
                 }
+                load.analysis(System.nanoTime() - analysisStart)
+                load.frame(detector.lastFrameWasSpeech)
+                load.tick(timeMs)
                 if (debugTimeline) {
                     timeline.addLast(AudioFrame(timeMs, levelDb, speechProbability, detector.lastFrameWasSpeech))
                     while (timeline.size > TIMELINE_FRAMES) timeline.removeFirst()

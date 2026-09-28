@@ -128,6 +128,16 @@ class VoiceEnrolment(private val context: Context) {
         val chunk = ShortArray(512)
         var chunkFill = 0
         var probability = 0.0
+        // Gate and assembly exactly as the detector has them set right now.
+        val audio = ConversationMonitor.audioSettings()
+        var sileroWasSpeech = false
+        var elapsedMs = 0L
+        var lastGateMs = Long.MIN_VALUE / 2
+        val preRollHops = ((audio.speechPadMs / 10).toInt()).coerceAtLeast(1)
+        val preRoll = ShortArray(preRollHops * HOP)
+        var preRollAt = 0
+        var preRollFilled = 0
+        var wasAppending = false
         var speechSamples = 0L
         // The cohort mean of other voices, if one was recorded: subtracted from both sides when comparing.
         val cohort = if (mode == Mode.TEST) OwnerVoiceprintStore.get(context).loadCohort() else null
@@ -141,6 +151,12 @@ class VoiceEnrolment(private val context: Context) {
             }
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             Log.i(TAG, if (testing) "trying the stored voice (threshold %.2f)".format(stored!!.info.threshold) else "recording the owner's voice")
+            // Which gate and which assembly produced this template — the number it is compared against later only means
+            // something for pieces cut the same way.
+            Log.i(TAG, "gate: %s, silero %.2f (hysteresis %.2f), level floor %.0f dBFS, pieces %s".format(
+                audio.gateMode, audio.speechThreshold, audio.speechHysteresis, audio.minLevelDb,
+                if (audio.continuousPieces) "continuous (+%d ms pad, %d ms gaps kept)".format(
+                    audio.speechPadMs, audio.bridgeGapMs) else "gated frames only"))
             var lastReport = 0L
             while (!Thread.currentThread().isInterrupted) {
                 var filled = 0
@@ -168,12 +184,41 @@ class VoiceEnrolment(private val context: Context) {
                     sum += v * v
                 }
                 val levelDb = 20 * kotlin.math.log10(max(sqrt(sum / HOP), 1e-9))
+                elapsedMs += HOP * 1000L / 16_000
 
-                if (probability >= SPEECH_THRESHOLD) {
+                // The SAME gate and the SAME piece assembly the detector will use later, so the template is cut the way
+                // the pieces it is compared against will be cut (ConversationMonitor.audioSettings).
+                val sileroLimit = if (sileroWasSpeech) audio.speechThreshold - audio.speechHysteresis
+                else audio.speechThreshold
+                val sileroSaysSpeech = probability >= sileroLimit
+                sileroWasSpeech = sileroSaysSpeech
+                val loudEnough = levelDb > audio.minLevelDb
+                val gate = when (audio.gateMode) {
+                    SpeechGateMode.SILERO_AND_LEVEL -> sileroSaysSpeech && loudEnough
+                    SpeechGateMode.SILERO_ONLY -> sileroSaysSpeech
+                    SpeechGateMode.LEVEL_ONLY -> loudEnough
+                }
+                if (gate) {
+                    lastGateMs = elapsedMs
+                    speechSamples += HOP
+                }
+                val appending = if (audio.continuousPieces) gate || elapsedMs - lastGateMs <= audio.bridgeGapMs else gate
+                if (appending) {
+                    if (!wasAppending && audio.continuousPieces) {
+                        for (n in 0 until preRollFilled) {
+                            val start = ((preRollAt - preRollFilled + n + preRollHops) % preRollHops) * HOP
+                            for (k in 0 until HOP) if (fill < piece.size) piece[fill++] = preRoll[start + k] / 32768f
+                        }
+                    }
                     for (k in 0 until HOP) {
                         if (fill < piece.size) piece[fill++] = hop[k] / 32768f
                     }
-                    speechSamples += HOP
+                }
+                wasAppending = appending
+                if (audio.continuousPieces) {
+                    hop.copyInto(preRoll, preRollAt * HOP)
+                    preRollAt = (preRollAt + 1) % preRollHops
+                    if (preRollFilled < preRollHops) preRollFilled++
                 }
                 _state.value = _state.value.copy(
                     speechSeconds = speechSamples / 16_000.0,
@@ -243,6 +288,7 @@ class VoiceEnrolment(private val context: Context) {
                 finish(mode, embeddings, speechSamples / 16_000.0)
             }
             thread = null
+            preRoll.fill(0)
             Log.i(TAG, "run ended (${_state.value.phase})")
             if (_state.value.phase == EnrolmentState.Phase.RECORDING || _state.value.phase == EnrolmentState.Phase.TESTING) {
                 _state.value = _state.value.copy(phase = EnrolmentState.Phase.IDLE)
@@ -289,13 +335,21 @@ class VoiceEnrolment(private val context: Context) {
         if (kept.size >= MIN_PIECES) template = centroid(kept)
         val used = if (kept.size >= MIN_PIECES) kept else embeddings
 
-        val similarities = used.map { SpeakerEmbedder.similarity(template, it) }
+        // On the SAME scale the detector will decide on: it compares centred on the cohort, so a threshold computed on
+        // raw similarities means nothing to it (that is how 0.94 came out on 2026-09-23 while the detector was reading
+        // 0.3–0.5). With a cohort stored, the self-similarities are centred here too.
+        val cohortForThreshold = OwnerVoiceprintStore.get(context).loadCohort()
+        val similarities = used.map { Voiceprint.centredSimilarity(template, it, cohortForThreshold) }
+        cohortForThreshold?.fill(0f)
         val mean = similarities.average().toFloat()
         val sd = sqrt(similarities.sumOf { (it - mean).toDouble() * (it - mean) } / similarities.size).toFloat()
         val worst = similarities.min()
         // The threshold sits two standard deviations below the owner's own spread, never under MIN_THRESHOLD: with
         // this model different speakers measured 0.09–0.24, the same speaker 0.55–0.68 (PC, 2026-09-21).
-        val threshold = max(MIN_THRESHOLD, mean - 2 * sd)
+        // Centred values are lower by construction, so the floor is the store's own minimum rather than the one that
+        // was chosen for raw cosine similarities.
+        val floor = if (cohortForThreshold != null) OwnerVoiceprintStore.MIN_THRESHOLD else MIN_THRESHOLD
+        val threshold = max(floor, mean - 2 * sd)
 
         val info = VoiceprintInfo(
             model = SpeakerEmbedder.MODEL_ASSET,
