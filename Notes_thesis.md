@@ -264,6 +264,66 @@ stopped early stores nothing, while a cohort run stores whatever it has collecte
 surprising, and it means a stray press plus twelve seconds of speech would replace the cohort. And a new cohort run
 replaces the old one rather than adding to it, so mixing languages or sources has to happen inside a single run.
 
+## 17. Measuring the whole system at once (2026-09-28)
+
+Until now every measurement looked at one part: the object detection's step times, or a voice recording on its own. The
+question the thesis actually has to answer is different — **what does the privacy machinery cost when all of it runs**,
+which is the only state a user ever sees. So the robot now reports, while it works: how much of each second the
+microphone fed the speaker network, how long one embedding takes, how long an object needs from the camera frame to the
+decision, which reference image is in view at which moment, and how busy each of the eight CPU cores is. All of it is
+counters and timings; nothing that could describe a person is written down.
+
+**Why the delay is measured from the frame, not from the start of the check.** A camera frame waits while both detection
+workers are busy, so the time one pass takes understates what the person in the room experiences. Capture → decision is
+the honest number, and the announcement adds the confirmation rule (two passes in a row) and the speech on top.
+
+**First measurement with everything on (40 s, quiet room, nothing in view, both reference images loaded, voice detection
+in the pairwise mode):**
+
+| | |
+|---|---|
+| every CPU core | **86–96 % busy**, together ≈ 730 % of the 800 % the eight cores have |
+| object detection | 11–12 checks per second, **delay from frame to decision: median 115 ms, worst 299 ms** |
+| voice-activity gate | **3–12 ms per 32 ms chunk** — the cost of listening while nobody talks |
+
+**The full run (120 s, calendar and Lego robot shown, one drive with a privacy stop, one conversation prompt):** all
+eight cores **91–98 % busy, 764 % of the 800 % available** (789 % while driving). Object detection needed **median
+180 ms and at worst 603 ms** from camera frame to decision, and the four passes that actually announced were 230–392 ms
+old. The part that matters most for the thesis is the voice path: **one embedding took 1.4 s and 3.4 s** — as long as,
+or longer than, the three seconds of speech it describes. On a saturated machine the speaker network cannot keep up with
+its own input, which is a limit of the hardware and not of the method, and it is the strongest argument in the thesis
+for switching detectors on only when the situation calls for them.
+
+That the machine is nearly saturated *before* an object is even in view is a result in itself: the head-room for the
+detection work is small, and the numbers measured in earlier chapters (pass times rising while driving, checks dropping
+when the calendar is close) are what a saturated machine looks like from the inside. It is also the reason the
+thesis argues for gating the detectors on the situational settings rather than running them permanently.
+
+## 18. Four ways to ask the same question (2026-09-28)
+
+The robot now decides "one voice or several" in four different ways, behind one switch, and the thesis can compare them
+on the same recordings:
+
+1. **Change detection** — a scalar distance between two adjacent moments. Nothing that identifies anybody exists at any
+   point.
+2. **Owner comparison** — one stored voiceprint, everybody else is "not the owner" and is forgotten.
+3. **Pairwise comparison** — pieces are compared with each other; nobody is recognised, but a handful of vectors of
+   whoever is talking exist side by side for the length of the window.
+4. **Speech activity** (new) — only how much of the last ten seconds carried speech at all. One person leaves gaps to
+   breathe and to think; a conversation fills them, because somebody answers into them. The entire state is a ring of
+   flags and a counter: no features, no vectors, nothing to store, leak or delete.
+
+The fourth is interesting exactly because it is crude. It is the cheapest to run, the easiest to explain to the person
+standing in front of the robot, and the strongest privacy position of the four — and it cannot tell a conversation from
+a television, which is a false alarm the robot answers by asking rather than by acting. That trade is the thesis
+argument in miniature: a weaker signal plus a visible question can be better than a stronger signal used silently.
+
+**The speech gate itself became a variable**, because it was never measured whether its two halves both earn their
+place. The gate was "Silero says speech AND the frame is louder than −65 dBFS", logged as one boolean, so no recording
+could say whether the loudness floor ever threw away something Silero had accepted. The detectors now count the two
+disagreements separately, and the floor, Silero, or either alone can be switched off — including a mode that does not
+run the neural model at all, which gives back 3–19 ms per 32 ms of audio.
+
 ## Open issues / to adjust later
 
 - ~~**Driving stops when the Navigation screen is left**~~ (solved 2026-09-21 by the service-owned navigation, see section 9).

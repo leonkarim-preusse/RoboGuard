@@ -25,6 +25,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -79,24 +80,173 @@ fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit =
 
             // Which method decides "one voice or several". Switching restarts the detector straight away.
             Text(UiText.get("speaker_view.method"), fontSize = 13.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                DetectionMethod.entries.forEach { m ->
-                    val label = UiText.get(
-                        when (m) {
-                            DetectionMethod.CHANGE -> "speaker_view.method.change"
-                            DetectionMethod.OWNER -> "speaker_view.method.owner"
-                            DetectionMethod.PAIRWISE -> "speaker_view.method.pairwise"
+            // Four methods do not fit in one row on the robot's screen, so two rows of two.
+            DetectionMethod.entries.chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    pair.forEach { m ->
+                        val label = UiText.get(
+                            when (m) {
+                                DetectionMethod.CHANGE -> "speaker_view.method.change"
+                                DetectionMethod.OWNER -> "speaker_view.method.owner"
+                                DetectionMethod.PAIRWISE -> "speaker_view.method.pairwise"
+                                DetectionMethod.ACTIVITY -> "speaker_view.method.activity"
+                            }
+                        )
+                        if (m == method) {
+                            Button(onClick = { }, modifier = Modifier.weight(1f)) { Text(label, fontSize = 12.sp, maxLines = 1) }
+                        } else {
+                            OutlinedButton(
+                                onClick = { ConversationMonitor.setMethod(m) },
+                                modifier = Modifier.weight(1f)
+                            ) { Text(label, fontSize = 12.sp, maxLines = 1) }
                         }
-                    )
-                    if (m == method) {
-                        Button(onClick = { }, modifier = Modifier.weight(1f)) { Text(label, fontSize = 12.sp, maxLines = 1) }
-                    } else {
-                        OutlinedButton(
-                            onClick = { ConversationMonitor.setMethod(m) },
-                            modifier = Modifier.weight(1f)
-                        ) { Text(label, fontSize = 12.sp, maxLines = 1) }
                     }
                 }
+            }
+
+            // The gate that decides what counts as speech at all — shared by every method, so it sits above them.
+            val gateMode by ConversationMonitor.gateMode.collectAsState()
+            val minLevel by ConversationMonitor.minLevelDb.collectAsState()
+            Text(UiText.get("speaker_view.gate.title"), fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                SpeechGateMode.entries.forEach { mode ->
+                    val label = UiText.get(
+                        when (mode) {
+                            SpeechGateMode.SILERO_AND_LEVEL -> "speaker_view.gate.both"
+                            SpeechGateMode.SILERO_ONLY -> "speaker_view.gate.silero"
+                            SpeechGateMode.LEVEL_ONLY -> "speaker_view.gate.level"
+                        }
+                    )
+                    if (mode == gateMode) {
+                        Button(onClick = { }, modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                            Text(label, fontSize = 11.sp, maxLines = 1)
+                        }
+                    } else {
+                        OutlinedButton(onClick = { ConversationMonitor.setGateMode(mode) }, modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                            Text(label, fontSize = 11.sp, maxLines = 1)
+                        }
+                    }
+                }
+            }
+            if (gateMode != SpeechGateMode.LEVEL_ONLY) {
+                val threshold by ConversationMonitor.speechThreshold.collectAsState()
+                val hysteresis by ConversationMonitor.speechHysteresis.collectAsState()
+                Text(UiText.get("speaker_view.gate.threshold", "value" to "%.2f".format(threshold),
+                    "ends" to "%.2f".format(threshold - hysteresis)), fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-0.10f, -0.05f, +0.05f, +0.10f).forEach { step ->
+                        OutlinedButton(
+                            onClick = { ConversationMonitor.setSpeechThreshold(threshold + step) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) { Text("%+.2f".format(step), fontSize = 12.sp) }
+                    }
+                }
+                Text(UiText.get("speaker_view.gate.hysteresis", "value" to "%.2f".format(hysteresis)), fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-0.10f, -0.05f, +0.05f, +0.10f).forEach { step ->
+                        OutlinedButton(
+                            onClick = { ConversationMonitor.setSpeechHysteresis(hysteresis + step) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) { Text("%+.2f".format(step), fontSize = 12.sp) }
+                    }
+                }
+            }
+            if (gateMode != SpeechGateMode.SILERO_ONLY) {
+                Text(UiText.get("speaker_view.gate.level_value", "value" to "%.0f".format(minLevel)), fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-5f, -1f, +1f, +5f).forEach { step ->
+                        OutlinedButton(
+                            onClick = { ConversationMonitor.setMinLevelDb(minLevel + step) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) { Text(if (step > 0) "+%.0f".format(step) else "%.0f".format(step), fontSize = 12.sp) }
+                    }
+                }
+            }
+            Text(UiText.get("speaker_view.gate.note"), fontSize = 11.sp, color = Color.Gray)
+
+            // Spoken feedback, only on this screen (see ConversationMonitor.maybeAnnounceInTest).
+            val announce by ConversationMonitor.announceInTest.collectAsState()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = announce, onCheckedChange = { ConversationMonitor.setAnnounceInTest(it) })
+                Text(
+                    UiText.get("speaker_view.announce", "seconds" to (ConversationMonitor.TEST_ANNOUNCE_COOLDOWN_MS / 1000)),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+
+            // How a piece is cut out of the stream: only the gated frames, or a continuous stretch.
+            if (method == DetectionMethod.OWNER || method == DetectionMethod.PAIRWISE) {
+                val continuous by ConversationMonitor.continuousPieces.collectAsState()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = continuous, onCheckedChange = { ConversationMonitor.setContinuousPieces(it) })
+                    Text(UiText.get("speaker_view.continuous"), fontSize = 12.sp,
+                        modifier = Modifier.padding(start = 8.dp))
+                }
+                Text(UiText.get("speaker_view.continuous.note"), fontSize = 11.sp, color = Color.Gray)
+            }
+
+            // One stray piece should not decide anything: a verdict that changes has to be repeated.
+            if (method != DetectionMethod.CHANGE) {
+                val confirm by ConversationMonitor.confirmTwice.collectAsState()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = confirm, onCheckedChange = { ConversationMonitor.setConfirmTwice(it) })
+                    Text(UiText.get("speaker_view.confirm_twice"), fontSize = 12.sp,
+                        modifier = Modifier.padding(start = 8.dp))
+                }
+                Text(UiText.get("speaker_view.confirm_twice.note"), fontSize = 11.sp, color = Color.Gray)
+            }
+
+            if (method == DetectionMethod.ACTIVITY) {
+                val share by ConversationMonitor.activityShare.collectAsState()
+                val windowMs by ConversationMonitor.activityWindowMs.collectAsState()
+                Text(UiText.get("speaker_view.activity.hint"), fontSize = 12.sp)
+                Text(UiText.get("speaker_view.activity.share", "value" to "%.0f".format(share * 100)), fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-0.10f, -0.05f, +0.05f, +0.10f).forEach { step ->
+                        OutlinedButton(
+                            onClick = { ConversationMonitor.setActivityShare(share + step) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) { Text("%+.0f".format(step * 100), fontSize = 12.sp) }
+                    }
+                }
+                Text(UiText.get("speaker_view.activity.window", "value" to (windowMs / 1000)), fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-10_000L, -5_000L, +5_000L, +10_000L).forEach { step ->
+                        OutlinedButton(
+                            onClick = { ConversationMonitor.setActivityWindowMs(windowMs + step) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) { Text("%+d s".format(step / 1000), fontSize = 12.sp) }
+                    }
+                }
+                val minSilence by ConversationMonitor.activityMinSilenceMs.collectAsState()
+                Text(UiText.get("speaker_view.activity.gap", "value" to minSilence), fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-100L, -50L, +50L, +100L).forEach { step ->
+                        OutlinedButton(
+                            onClick = { ConversationMonitor.setActivityMinSilenceMs(minSilence + step) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) { Text("%+d".format(step), fontSize = 12.sp) }
+                    }
+                }
+                Text(UiText.get("speaker_view.activity.gap_note"), fontSize = 11.sp, color = Color.Gray)
+                Text(
+                    UiText.get(
+                        "speaker_view.activity.now",
+                        "share" to "%.0f".format(snapshot.speechShare * 100),
+                        "needed" to "%.0f".format(snapshot.speechShareNeeded * 100),
+                        "filled" to "%.0f".format(snapshot.windowFilled * 100)
+                    ),
+                    fontSize = 13.sp
+                )
             }
             if (method == DetectionMethod.PAIRWISE) {
                 val differentBelow by ConversationMonitor.differentBelow.collectAsState()
@@ -147,6 +297,26 @@ fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit =
                     ),
                     fontSize = 13.sp
                 )
+                // The threshold belongs to the STORED voice, so it is stepped from the store and not from the
+                // snapshot: the snapshot carries 0 whenever the detector is not running (the voice screen has the
+                // microphone, the method was just switched, no piece yet), and 0 + 0.01 used to be clamped straight
+                // down to the minimum — which looked like "setting the threshold does not work" (owner, 2026-09-28).
+                val stored by OwnerVoiceprintStore.get(LocalContext.current).info.collectAsState()
+                Text(
+                    if (stored == null) UiText.get("speaker_view.owner.none")
+                    else UiText.get("speaker_view.owner.threshold", "value" to "%.2f".format(stored!!.threshold)),
+                    fontSize = 13.sp
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-0.05f, -0.01f, +0.01f, +0.05f).forEach { step ->
+                        OutlinedButton(
+                            enabled = stored != null,
+                            onClick = { stored?.let { ConversationMonitor.setOwnerThreshold(it.threshold + step) } },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) { Text("%+.2f".format(step), fontSize = 12.sp) }
+                    }
+                }
                 Text(
                     UiText.get("speaker_view.owner.counts", "owner" to snapshot.ownerPieces, "other" to snapshot.otherPieces),
                     fontSize = 13.sp

@@ -2,7 +2,7 @@
   "_readme": [
     "Settings of the object detection (ORB + pink marker). Change a value here and the robot uses it after the next start — no code change.",
     "\"general\" holds the settings for every reference image in assets/ORB_img.",
-    "\"images\" can override any of them for ONE image: use the file name (with or without extension, e.g. \"cal_prop_thick_outline.jpg\"). Everything not named there stays as in \"general\".",
+    "\"images\" can override any of them for a specific image: use the file name (\"cal_prop_thick_outline.jpg\"). Everything not named there stays as in \"general\".",
     "Per-image values that only concern that reference (keypoints of the reference picture, thresholds, whether it needs the pink frame) work exactly. Values that concern the whole camera picture (pink search, analysisScale, workers, passes per second) are taken from \"general\" only — an override there is ignored and logged.",
     "Keys are read by the code; do not rename them. Unknown keys are ignored (and logged), so a typo does not stop the app."
   ],

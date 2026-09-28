@@ -1650,3 +1650,266 @@ granted, the retry logs "could not load the map file: … (storage permission gr
 - **Owner's actual complaint (2026-09-24): "another person seems to have been detected as owner"** — that is a MISS, not a
   false alarm: the guest's similarity lands above the threshold. Multiple profiles are exactly the measurement for it
   (enrol the other person, switch, read the cross-similarities). Not yet measured.
+
+## Performance measurement with everything running (owner 2026-09-28, installed, smoke run VERIFIED)
+
+Owner: measure with **voice detection and both image detections running at once**, show **what the robot is doing when**
+(driving? feeding voice into the network? seeing an object?), care about **delays in object detection** and about
+**per-core CPU**, and produce many detailed graphs in a dated folder with a `note.md`.
+
+**New instrumentation (robocontrol only, roboguard untouched; numbers only, no audio/image/vector):**
+- `conversation/AudioLoad.kt` (new): per 2 s of audio, one Logcat line per detector —
+  `audio per 2,0 s: speech N % · pieces N · embedding N ms · vad N,NN ms per chunk · analysis N,NNN ms per frame`.
+  Wired into `OwnerVoiceDetector`, `PairwiseVoiceDetector` and `SpeakerChangeDetector` (the last one has no embedding, so
+  it fills `analysis` = MFCC + window statistics per frame instead).
+- Owner/Pairwise detectors now also log **"robot stopped speaking: listening again"**, so the spans in which the robot
+  muted its own microphone can be drawn (the change detector already logged both ends).
+- `vision/CalendarMonitor.kt`: **frame → decision delay** (`now − frame.timestampMs`, i.e. capture to result, which is
+  longer than one pass because frames wait while both workers are busy) per 2 s as
+  `delay frame→decision: avg N ms, worst N ms over N passes`; the announcement line gained `, delay N ms`; and
+  **`seen: <reference> (inliers N, delay N ms)` / `gone: <reference>`** transitions per reference image
+  (`SEEN_HOLD_MS` = 1500 ms of no full detection = gone), which is what the activity timeline draws as bars.
+- `PassLog` gained `delaySum/delayMax/delayPasses` and `lastSeen`. None of this changes a decision or an announcement.
+
+**Host side:**
+- `performance/record.py`: also samples **`/proc/stat` per core** (busy % per cpu0…cpu7; a core the kernel parked
+  reports no ticks and is stored as −1 = asleep, which is not 0 % busy), and collects the tags `OwnerVoice`,
+  `PairwiseVoice`, `SpeakerChange`, `ConversationMonitor` next to `CalendarMonitor` and `RoboGuardNav`.
+  data.json gained `cores` and `voice`.
+- `performance/graphs.py` (new): draws a whole set into the run folder and writes `note.md` describing what is measured:
+  `01_overview.png` (the old graphic, unchanged), `02_activity.png` (one row per activity: driving, avoiding, which
+  object is in view, camera/pink, microphone speech share, pieces embedded, robot speaking, silence resets,
+  conversation prompts, announcements, with RoboGuard and whole-robot CPU underneath on the same axis),
+  `03_cores.png` (every core on its own panel + average per core + a table of RoboGuard's threads with their share of
+  big-core samples), `04_object_delay.png` (delay over time with the announcing passes marked, delay distribution,
+  pass rate, pass time, how long each object was in view), `05_voice.png` (speech share, embedding ms, gate ms, pieces,
+  similarity per piece), `06_distance.png` (inliers/keypoints vs pink frame size — only when ORB ran on a pink area).
+  `plot.py` unchanged except that the voice threads now land in the audio group (/proc cuts names to 15 characters).
+- Usage: `python3 performance/record.py [seconds] [--label text]` → `performance/runs/<date>_<time>_<label>/`.
+
+**Smoke run 20260928_114359_smoke (40 s, VERIFIED, nothing in view, quiet room, PAIRWISE voice method):**
+- References loaded: **`[Calendar, Lego robot]`** (both image detections active), voice = PairwiseVoice with cohort.
+- **The robot is nearly saturated: every core 86–96 % busy** (cpu0–3 87/86/93/91, cpu4–7 96/94/90/91), sum ≈ 730 % of
+  800; the process sums come to ≈ 625 %, the ~100 % difference is kernel/irq time.
+- Object detection with no pink area: 11–12 passes/s, **delay frame → decision median 115 ms, worst 299 ms**.
+- Silero gate **3–12 ms per 32 ms chunk** on the audio thread (that is the voice cost while nobody speaks; no embeddings
+  ran, speech share ≈ 0 %).
+
+### Two bugs in the graph code, found on the first real run (2026-09-28, fixed)
+
+- `plot.py` step-time panel crashed with `ValueError: y1 must be greater than or equal to y0`: the stacked bar used
+  `smax` from the average pass time, but the step averages (resize + keypoints + knn + ratio + homography, each averaged
+  over the passes that had a pink area) can add up to MORE than that average, so a segment started below the panel.
+  Fixed: `smax` now covers the stacked sum, segments are clamped and a degenerate segment is skipped.
+- `graphs.py` activity rows drew a 1 px bar for every empty window, which read as a line through the row, and log lines
+  a fraction of a second older than the first CPU sample were drawn into the left margin. Fixed: empty windows stay
+  empty, `x_of` is clamped. `plot.parse_monitor` now also reads `detected`, `regions`, `rejected` and `best inliers`
+  from the 2 s summary, so the timeline has a "pink area found" and an "object seen in the pass" row.
+
+### Run 20260928_122232_alles-an (120 s, everything on, VERIFIED)
+
+Calendar and Lego robot shown, a drive with a privacy stop, one conversation prompt.
+- **CPU: all eight cores 91–98 % busy, together 764 % of 800** (789 % while driving, 760 % standing). The machine is
+  saturated, not loaded.
+- **Object detection delay (camera frame → decision): median 180 ms, worst 603 ms**; the four announcing passes were
+  230/252/349/392 ms old. 11 passes/s at 20 camera fps; a pass with a pink area took 258 ms, without one 116 ms.
+- Objects: Calendar in view 4 times / 12.5 s, Lego robot once / 4.5 s; 95 ORB runs, median 17 inliers at a median pink
+  frame side of 268 px; 4 announcements.
+- **Voice: one embedding took 1386 ms and 3424 ms** (only two pieces in this run, both while the CPU was saturated) —
+  i.e. up to LONGER than the 3 s of speech it describes, so under this load the owner/pairwise detectors cannot keep up
+  in real time. Silero cost 9.5 ms median, 19 ms worst per 32 ms chunk. To re-measure with the camera monitors off.
+- One robot warning in the whole run: `ConversationMonitor: not spoken: Interrupted` — the apology was cut off, the
+  navigation's privacy sentence and the prompt fell into the same second.
+
+### The "pink search" bar was mislabelled (2026-09-28, fixed, numbers VERIFIED)
+
+Owner: "the pink check took almost 200 ms in the overview". It did not — the first segment of the step panel was
+`max(0, avg − resize − keypoints − match − homography)` and was CALLED "Pink search + rest", so everything that is not
+the gated ORB landed in it. `plot.py` now draws the measured colour step as its own segment and the remainder as a grey
+"Rest: whole-frame references + overhead"; the panel is called "Object detection" (it is no longer only the calendar).
+Measured in run 20260928_122232_alles-an:
+- **colour/pink step: 24 ms standing, 26 ms while driving, 29 ms in passes that had a pink area** — essentially constant,
+  so CPU contention does not explain the 200 ms.
+- **whole pass: 122 ms standing → 209 ms while driving** (passes 11.0 → 8.5/s). Since the colour step is flat, those
+  +87 ms sit entirely in the ORB work.
+- **A pass without any pink area still costs 116 ms: 24 ms colour + ~92 ms full-frame ORB for `Lego robot.png`**
+  (`usePinkMarker: false`, 2000 features, 8 pyramid levels) — that reference is searched over the whole 1280×720 frame
+  on EVERY pass, whether anything is in view or not. It is the reason a "nothing in view" pass went from the 33–40 ms
+  measured on 2026-09-17 (calendar only) to 116 ms, and the main reason the frame→decision delay is a median of 180 ms.
+- Options proposed, owner has not chosen: (1) `pyramidLevels` 8 → 4 for the Lego robot, (2) `maxFeatures` 2000 → 1000,
+  (3) run whole-frame references only every Nth pass (~2/s) instead of every pass, (4) give the Lego robot a pink frame
+  so it is gated like the calendar.
+
+### The overview panels now say what was happening (owner 2026-09-28)
+
+Owner: "in the overview, in the first 3 graphs, can we mark on which timesteps what was happening?"
+`plot.py` gained two things, both fed by `graphs.py`'s log parsers (imported inside `activity_bands` — `graphs` imports
+`plot`, so the other direction has to be lazy):
+- **A three-lane strip under the time axis of the first three panels** (drawn in the gap between panels, which grew from
+  90 to 150 px): `driving` (blue / orange for obstacle avoidance), `object in view` (one colour per reference image,
+  from the `seen:`/`gone:` lines) and `voice` (grey = the robot was speaking and the microphone was ignored, green bars =
+  share of the window that counted as speech, purple tick = a piece went into the speaker network). Two caption lines
+  under the first strip name the colours, including which reference has which colour.
+- **One thin vertical line per single event in every shaded panel**: orange = an object was announced, red = a
+  conversation prompt was shown. So a bump in the CPU can be read against the moment it belongs to.
+Also: the step panel's first segment is now the MEASURED colour step, with everything else in a grey "rest" block
+(see above), and the panel is called "Object detection", not "Calendar detection".
+
+## Speech gate options, a fourth method, and spoken feedback on the test screen (owner 2026-09-28, installed)
+
+**Could the logs answer "did Silero ever say speech while the level gate said no"?** No. The detectors logged the gate as
+ONE boolean (`speech = p ≥ 0.5 && level > −65 dBFS`), so the two halves could not be told apart afterwards. The only
+lines that ever carried both numbers are `VoiceEnrolment`'s `mic:` lines, and there were none in the last 30 minutes.
+What the window did contain (19:36–19:53, PAIRWISE): 497 audio windows, 101 with speech > 0 %, 21 pieces embedded,
+embeddings 717–809 ms (much faster than the 1.4–3.4 s during the performance run, because the camera monitors were idle),
+five `piece: … another voice` readings, one prompt at 19:41:56. **Now measurable:** `AudioLoad.frame(speech, silero,
+loud)` counts the two disagreements and the 2 s line ends with `· gate: silero-only N, level-only N` —
+*silero-only* = Silero heard speech that the loudness floor threw away (the number that decides whether the floor is
+needed), *level-only* = loud enough but Silero said no (what the floor would let through on its own).
+
+**`SpeechGateMode` (new, in ConversationSettings):** `SILERO_AND_LEVEL` (default, the old rule) | `SILERO_ONLY` (no
+loudness floor) | `LEVEL_ONLY` (**Silero is not even constructed or called**, which also gives back its 3–19 ms per
+32 ms chunk). Applied in `OwnerVoiceDetector`, `PairwiseVoiceDetector` and the new activity detector; for the change
+method only `LEVEL_ONLY` reaches it, as its own adaptive `SpeechGate.LOUDNESS` (its floor follows the room's noise, so
+there is no fixed threshold to switch there). `ConversationMonitor.setGateMode` / `setMinLevelDb` (−90…−20 dBFS,
+prefs `speech_gate_mode` / `min_level_db`), both restart the detector.
+
+**Fourth method `DetectionMethod.ACTIVITY` — `conversation/SpeechActivityDetector.kt` (new).** Owner's rule: if Silero
+reports voice activity for **≥ 80 % of the last 10 s**, call it a conversation. One person leaves gaps to breathe and to
+think; a conversation fills them because somebody answers. The whole state is a ring of booleans (one per 10 ms hop) and
+the count of the true ones — **no cepstra, no Gaussians, no embeddings, no template**, so it is the cheapest method and
+the easiest to defend on privacy grounds, and the easiest to fool with a television. The window does not advance while
+the robot speaks. `activityShare` (0.3–1.0) and `activityWindowMs` (3–60 s) are adjustable on the screen and saved
+(`activity_share`, `activity_window_ms`); the snapshot carries `speechShare`, `speechShareNeeded`, `windowFilled`.
+
+**Spoken feedback, only on the speaker screen.** `ConversationMonitor.maybeAnnounceInTest()` speaks
+`speech.conversation_detected` ("Conversation detected") on every snapshot that says MULTIPLE_SPEAKERS, at most every
+`TEST_ANNOUNCE_COOLDOWN_MS` = 5 s, and only while `debugViewers > 0`, i.e. while the speaker debug screen is open.
+Completely independent of the prompt: no two-minute gap, no "once per conversation", no window. Switch on that screen
+(`announce_in_test`, default on). Note the side effect: while it speaks, `RobotSpeaking` blanks the microphone, so a
+held MULTIPLE state loses roughly two of every five seconds to the announcement.
+
+**Screen:** the four methods now sit in two rows of two; above them the gate block (three mode buttons, −5/−1/+1/+5 dB
+for the floor, a note) and the announcement switch; the ACTIVITY block has ±5/±10 % for the share, ±5/±10 s for the
+window and a live "now N % (needs M %) · window filled K %". texts.json: 13 new keys, 260 total.
+
+### Silero's own numbers are adjustable now, and a bug that killed the microphone (2026-09-28, VERIFIED)
+
+- **Adjustable (speaker screen, all methods):** `ConversationSettings.speechThreshold` (0.05–0.95) and the new
+  `speechHysteresis` (0–0.4, default 0.15). Owner/pairwise/activity had NO hysteresis until now, so they flipped the
+  gate every 32 ms chunk at the boundary while the change detector never did. Both are also handed to
+  `ChangeDetectorConfig`, so all four methods share them (prefs `silero_threshold`, `silero_hysteresis`).
+  The model itself cannot be tuned (fixed Silero v4 weights, 16 kHz pinned in the wrapper).
+- **Hangover for the activity method:** `activityMinSilenceMs` (0–2000, default 250; Silero's own utilities call it
+  `min_silence_duration_ms`). A gap shorter than this still counts as speech, so the share measures the pauses between
+  TURNS instead of the pauses between WORDS, which every single speaker has. Adjustable ±50/±100 ms.
+- **Owner threshold on the test screen too** (owner request): `ConversationMonitor.setOwnerThreshold` writes it into the
+  stored voice via `OwnerVoiceprintStore.setThreshold` and restarts the detector; ±0.01/±0.05 buttons next to the live
+  similarity. Same number as on the "Teach owner's voice" screen — a voiceprint carries its own threshold.
+- **BUG (mine, fixed): the activity detector reset itself on every frame.** The condition was
+  `timeMs - lastSpeechAtMs >= resetAfterSilenceMs && filled > 0`; after a reset the very next frame made `filled` 1
+  again while the silence clock had not moved, so it reset again — **12 158 log lines in half a minute**. That starved
+  the audio thread badly enough that the AudioRecord buffer ran over. Fixed with a `collected` flag (only reset when
+  something has actually been collected since the last one).
+- **What the new numbers showed (and it reverses the guess that the level floor is useless):** the 2 s line now ends
+  with `· level max N dB, above the floor N % · audio/clock N.NN`. In the broken process:
+  `gate: silero-only 200, level-only 0 · level max −108 dB, above the floor 0 %` — the microphone was delivering
+  **digital silence** while **Silero reported speech on all 200 frames of the window**. A neural VAD fed near-zero input
+  is not trustworthy, and the −65 dBFS floor is exactly what stopped that from becoming a detection. In the healthy
+  process right after: `silero-only 0, level-only 10–17, level max −48…−80 dB` — the floor never vetoed anything Silero
+  accepted, and it correctly rejected loud non-speech. **So: keep both halves; the floor earns its place.**
+  `audio/clock` = audio time per wall-clock time in the window; below 1 means the thread is not keeping up with the
+  microphone and speech is being lost (1.00–1.01 when healthy).
+
+### Outlier filter, and plots of the gate itself (owner 2026-09-28, installed + VERIFIED)
+
+- **`ConversationSettings.confirmTwice`** (switch on the speaker screen, default off, pref `confirm_twice`): a verdict
+  that CHANGES has to be repeated by the next piece before it counts; a verdict that continues counts at once, so the
+  delay (~one piece, 3 s) is paid only at transitions — which is where the measured mistakes were (the straddling piece
+  that read 0.402 as the owner, 2026-09-23). Owner: the held piece is entered with its OWN time when confirmed, so
+  nothing is lost, only delayed; a piece that is not repeated is logged as "dropped, not repeated". Pairwise: the first
+  "another voice" needs a second one. Activity: the crossing must hold for `CONFIRM_MS` = 1 s. The change detector is
+  untouched — it already confirms with ΔBIC plus the count/evidence rule.
+- **`AudioLoad` now also reports** `level mean`, `level max`, `above the floor %`, `silero mean`, `silero max` and
+  repeats a full `settings: …` line every 30 s, so a recording started later still knows what the detector was running
+  with. Each detector also logs one `gate: …` line at start.
+- **`performance/graphs.py`** draws three new panels in the voice figure: **microphone level** (mean + loudest frame,
+  with the noise gate as a dashed line), **Silero probability** (mean + highest, with the threshold and the hysteresis
+  line), and the **fingerprint readings** with the owner threshold and the "somebody else" line (threshold − margin), or
+  the pairwise threshold. The settings line is printed under the title.
+- **Collected output (owner's layout):** every run also copies the voice figure to
+  `performance/voice_fingerprinting/<dd-mm-yyyy>_<HHMM>_<METHOD>.png`. First two: `28-09-2026_1440_OWNER.png`,
+  `28-09-2026_1443_OWNER.png` (robot at that point: owner threshold 0,35, silero 0,35, floor −65 dBFS, cohort centred,
+  confirm twice off).
+
+### Pieces cut as a continuous stretch, and the combined plot (owner 2026-09-28, installed)
+
+**Owner's question: "can it be a problem that Silero mutes parts of the audio inside a chunk?" — yes.** Until now a piece
+was filled ONLY with frames that passed the gate, so three seconds were glued together from many fragments with every
+pause cut out. Three consequences, all worth stating in the thesis: (1) every cut is a jump in the signal, i.e. a
+broadband click in the log-mel spectrum, and **how often it cuts depends on the distance** (close = few toggles, far =
+many) — the error sits on exactly the axis the comparison is supposed to measure; (2) with no padding, the first tens of
+milliseconds of every utterance are lost, which is where the plosives are; (3) CAM++ pools mean and standard deviation
+over time and was trained on continuous speech including short pauses, so cutting the quiet frames is a domain shift.
+- **`ConversationSettings.continuousPieces`** (switch on the speaker screen, default OFF so earlier measurements stay
+  comparable, pref `continuous_pieces`), with `speechPadMs` = 30 and `bridgeGapMs` = 200: a ring buffer of the newest
+  hops supplies the 30 ms before the first gated frame, and a pause shorter than 200 ms is not cut at all. The
+  trailing silence of a piece is therefore bounded by `bridgeGapMs`, which doubles as the padding after the last word.
+  `speechSamples` still counts only gated frames, so the LISTENING/ONE/MULTIPLE logic is unchanged.
+- Implemented identically in `OwnerVoiceDetector` and `PairwiseVoiceDetector`; the repeated `settings:` line reports
+  `pieces continuous (+30 ms pad, 200 ms gaps kept)` or `pieces gated frames only`, so a graph always says which
+  assembly produced it.
+
+**Similarity points sat next to their own grid (owner, fixed).** The panel drew its grid with ticks 0/0.25/…/1.0 while
+the dots were mapped from the DATA range onto that box — after cohort centring the values run about −0.4…+0.6, so the
+two scales did not match and two sets of axis labels were drawn on top of each other. The panel now gets no ticks and
+draws its own grid from the real range, which also includes the decision lines so they are always visible. The
+thresholds are read from the repeated `settings:` line as well, not only from the start lines.
+
+**New combined panel (owner request):** "Speech probability and the readings together" — Silero's probability (left
+scale, with its threshold) and every similarity reading (right scale, with the owner / pairwise line) on one time axis,
+so it can be read whether a bad reading belongs to a weak gate moment.
+
+### The voice detector could die and never come back (2026-09-28, VERIFIED and fixed)
+
+**Owner: "I increased the Silero threshold and now nothing is detected — did the app crash?"** No crash: pid alive,
+`CalendarMonitor` logging happily every 2 s, settings all correct in `robocontrol_conversation.xml` (OWNER, silero 0.60,
+confirm twice true, continuous pieces true). But `dumpsys audio` showed **RoboGuard was not recording at all** — only
+RobotOS's own `com.ainirobot.remotedebug` held the microphone — and not one line from `ConversationMonitor` or
+`OwnerVoice` was in the log. The detector had stopped and nothing ever started it again.
+
+Two defects, both fixed:
+1. **Restart raced with itself.** Every setter did `stopDetector(); reevaluate()` on the CALLER's thread (the UI thread
+   of the speaker screen). `stop()` only interrupted the detector thread without waiting, so the next detector opened an
+   AudioRecord while the old one still held it — on Android 9 the second one gets silence or fails. Three settings
+   changed quickly one after another is enough. Now: `stop()` joins the thread (1 s timeout) in all four detectors, and
+   `ConversationMonitor.restartDetector(reason)` does the stop/start inside the monitor's own scope, so nothing blocks
+   the UI thread. 14 setters converted.
+2. **A dead detector stayed registered.** When a detector's thread ended by itself (microphone busy, model load failure,
+   exception) `ConversationMonitor.detector` still pointed at it, so `startDetector()` returned early for ever and the
+   robot stayed deaf until the app was reinstalled. Now `watch()` notices a snapshot with `running == false` and an
+   error, logs it, and after `RESTART_DELAY_MS` = 5 s gives the detector back and calls `reevaluate()`.
+
+After the install: `conditions met, listening` → `gate: SILERO_AND_LEVEL, silero 0,60 …` → `session:521 source:CAMCORDER
+pack:com.example.roboguard` in `dumpsys audio`. Recovery without a new build is possible too: changing any setting on the
+speaker screen calls `stopDetector`, which clears the dead reference.
+
+### Why the owner read 0.20–0.73 while speaking alone (2026-09-28, cause found, fixed)
+
+**Owner: "I am speaking alone and still get fake detections."** Logcat, eight pieces in a row from the same person
+(21:28:43–21:29:11, threshold 0.35): **0,727 · 0,621 · 0,365 · 0,561 · 0,286 · 0,434 · 0,625 · 0,201** — two of the eight
+below the threshold, and the last one even reached "confirmed" through the stale-pending bug fixed an hour earlier.
+`anyOtherIsConversation` was ON at the time (`1 pieces for somebody else`), so a single bad piece is enough for a prompt.
+
+**Cause: the template and the live pieces were cut differently.** `VoiceEnrolment` had its own hard-coded gate —
+`SPEECH_THRESHOLD = 0.5`, no loudness floor, no hysteresis, always the glued-together assembly — while the detector was
+running at Silero 0.70 with hysteresis 0.20, a −65 dBFS floor and the new continuous assembly. A voiceprint is only
+meaningful against pieces cut the way it was cut; the difference lands in the embedding as a channel component, which is
+exactly what the cosine measures. This was self-inflicted: `continuousPieces` was added to the detectors today and not to
+the enrolment.
+
+**Fix:** `ConversationMonitor.audioSettings()` returns the gate and the assembly (gateMode, speechThreshold,
+speechHysteresis, minLevelDb, continuousPieces + pad/bridge), and `VoiceEnrolment` now uses it for both the gate and the
+piece assembly, including the pre-roll and gap bridging. It logs one `gate: …` line per run, so the log says which
+assembly produced a template. **Consequence: after changing the gate or the assembly the voice has to be taught again** —
+an old template is not comparable with new pieces.

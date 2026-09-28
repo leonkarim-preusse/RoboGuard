@@ -44,6 +44,12 @@ object CalendarMonitor {
 
     private const val TAG = "CalendarMonitor"
 
+    /**
+     * How long a reference counts as "still in view" after its last full detection, for the "seen"/"gone" lines the
+     * performance graphs draw as bars. Only a report: it changes no decision and no announcement.
+     */
+    private const val SEEN_HOLD_MS = 1_500L
+
     /** Name of the phone's situational switch that turns object detection on. */
     const val PIXELATE_OBJECTS = "Pixelate Objects"
 
@@ -318,6 +324,10 @@ object CalendarMonitor {
         var previewMsSum = 0L; var regionPasses = 0; var regionMsSum = 0L; val orb = ORB.Timings()
         /** Per reference image, over passes with a pink area: inlier sum, best, passes where it was the strongest. */
         val refInliers = HashMap<String, IntArray>()
+        /** Frame → decision delay over the window (ms): sum, worst, number of passes. */
+        var delaySum = 0L; var delayMax = 0L; var delayPasses = 0
+        /** Reference name → elapsedRealtime of its last full detection, for the "seen"/"gone" lines of the timeline. */
+        val lastSeen = HashMap<String, Long>()
     }
 
     private suspend fun detectUntilError(
@@ -373,6 +383,14 @@ object CalendarMonitor {
             val now = SystemClock.elapsedRealtime()
             val ts = camera.latest.get()?.timestampMs ?: 0L
             if (ts != lastFrameTs) { lastFrameTs = ts; lastFrameAt = now }
+            synchronized(log) {
+                for (name in log.lastSeen.keys.toList()) {
+                    if (now - (log.lastSeen[name] ?: 0L) > SEEN_HOLD_MS) {
+                        log.lastSeen.remove(name)
+                        Log.i(TAG, "gone: $name")
+                    }
+                }
+            }
             if (now - lastFrameAt > 10_000) {
                 Log.w(TAG, "no camera frame for 10 s, restarting the stream")
                 break
@@ -388,6 +406,10 @@ object CalendarMonitor {
                         log.regions.toDouble() / n, log.rejectedFrame, log.rejectedWhite, log.bestInliers,
                         (if (log.outOfOrder > 0) " · out of order ${log.outOfOrder}" else "") +
                         if (log.skipped > 0) " · skipped (ORB busy) ${log.skipped}" else ""))
+                    if (log.delayPasses > 0) {
+                        Log.i(TAG, "delay frame→decision: avg ${log.delaySum / log.delayPasses} ms, worst ${log.delayMax} ms over ${log.delayPasses} passes")
+                    }
+                    log.delaySum = 0; log.delayMax = 0; log.delayPasses = 0
                     log.skipped = 0
                     if (log.regionPasses > 0) {
                         val r = log.regionPasses
@@ -499,7 +521,20 @@ object CalendarMonitor {
         for (c in pass.checks) {
             Log.i(TAG, "check: frame ${c.frameSide} px, scale %.2f, keypoints ${c.keypoints}, good ${c.goodMatches}, inliers ${c.inliers}, features ${orbFeatures}".format(c.scale))
         }
+        // How old the picture was when the decision was made: capture → result. This is the delay the owner sees, and it
+        // is NOT the same as the time one pass takes, because a frame waits while the workers are busy.
+        val delayMs = now - frameTs
         synchronized(log) {
+            log.delaySum += delayMs; log.delayMax = maxOf(log.delayMax, delayMs); log.delayPasses++
+            // One line when an object starts being seen, one when it has not been seen for SEEN_HOLD_MS (in the 200 ms loop
+            // below), so the graphs can draw a bar for "this object is in view" instead of only the announcements.
+            for (r in pass.results) {
+                if (r.detected && r.inliers >= fullInliersFor(r.className)) {
+                    if (log.lastSeen.put(r.className, now) == null) {
+                        Log.i(TAG, "seen: ${r.className} (inliers ${r.inliers}, delay $delayMs ms)")
+                    }
+                }
+            }
             log.passes++; log.msSum += ms; log.colourMsSum += pass.marker?.millis ?: 0
             log.previewMsSum += pass.previewMs
             pass.marker?.stageMs?.forEachIndexed { i, v -> log.pinkStages[i] += v }
@@ -548,7 +583,8 @@ object CalendarMonitor {
         if (announce) {
             val strongest = pass.results.maxByOrNull { it.inliers }
             Log.i(TAG, "object detected (${if (_announceEveryDetection.value) "every detection" else "$recent/$window passes"}): " +
-                "${strongest?.className} good ${strongest?.goodMatches}, inliers ${strongest?.inliers}, pink regions ${pass.regions.size}")
+                "${strongest?.className} good ${strongest?.goodMatches}, inliers ${strongest?.inliers}, pink regions ${pass.regions.size}, " +
+                "delay $delayMs ms")
             val spoken = sentenceFor(strongest?.className)
             scope?.launch { speak(spoken) }
         }
