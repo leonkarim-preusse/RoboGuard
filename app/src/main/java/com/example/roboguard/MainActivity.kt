@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.roboguard.ui.theme.RoboGuardTheme
 import com.example.robocontrol.movement.MapNavigationActivity
+import com.example.robocontrol.system.AppDisabled
 import com.example.robocontrol.system.DefaultAppSetting
 import com.example.robocontrol.text.UiText
 import kotlinx.coroutines.delay
@@ -47,7 +48,9 @@ class MainActivity : ComponentActivity() {
         UiText.init(applicationContext)
         // Make RoboGuard the robot's default app, so RobotOS gives it SDK control whenever it is in the foreground
         // (not only after a launch from the home screen). Only writes if not already set; see DefaultAppSetting.
-        DefaultAppSetting.ensureRoboGuardIsDefault(this)
+        // Debug switch "Disable RoboGuard" (Navigation and Map, Show debug): no default app, no service while it is on.
+        val disabled = AppDisabled.isDisabled(this)
+        if (!disabled) DefaultAppSetting.ensureRoboGuardIsDefault(this)
         enableEdgeToEdge()
         setContent {
             RoboGuardTheme {
@@ -59,6 +62,7 @@ class MainActivity : ComponentActivity() {
 
                     // Start and bind the RobotServerService on launch
                     LaunchedEffect(Unit) {
+                        if (disabled) return@LaunchedEffect
                         val intent = Intent(this@MainActivity, RobotServerService::class.java)
                         startForegroundService(intent)
 
@@ -132,6 +136,15 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         } ?: Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            if (disabled) {
+                                // Disabled: only the way to the switch that turns RoboGuard back on.
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(UiText.get("app.disabled"), fontSize = 18.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(16.dp).widthIn(max = 500.dp))
+                                    Button(onClick = { startActivity(Intent(this@MainActivity, MapNavigationActivity::class.java)) }) {
+                                        Text(UiText.get("app.button.navigation"), fontSize = 16.sp)
+                                    }
+                                }
+                            } else
                             Text(UiText.get("app.waiting_for_server"))
                         }
                     }

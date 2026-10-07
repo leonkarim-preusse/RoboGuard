@@ -3,6 +3,7 @@ package com.example.roboguard
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.example.robocontrol.system.AppDisabled
 
 /**
  * Listens for system boot events to ensure the RoboGuard server starts automatically.
@@ -15,6 +16,8 @@ class BootReceiver : BroadcastReceiver() {
      */
     override fun onReceive(context: Context, intent: Intent) {
         if (Intent.ACTION_BOOT_COMPLETED == intent.action) {
+            // Debug switch "Disable RoboGuard": nothing starts by itself while it is on.
+            if (AppDisabled.isDisabled(context)) return
             val serviceIntent = Intent(context, RobotServerService::class.java)
 
             // Android 8.0 (API 26) and above requires startForegroundService for background services

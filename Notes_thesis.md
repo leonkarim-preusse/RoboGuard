@@ -329,3 +329,10 @@ run the neural model at all, which gives back 3–19 ms per 32 ms of audio.
 - ~~**Driving stops when the Navigation screen is left**~~ (solved 2026-09-21 by the service-owned navigation, see section 9).
 - **Driving stops when the Navigation screen is left** (`MapNavigationActivity.onStop` → stop, on purpose: "a robot must never keep driving while nobody sees the screen that controls it"). Owner (2026-09-17): must be adjusted eventually, e.g. for popups, other RoboGuard screens or background tasks during a drive. Debug camera view was therefore built inside the navigation screen.
 
+
+## Debug switch "Disable RoboGuard" (2026-10-07, built, not yet run)
+
+- Switch under Navigation and Map → Show debug. On: RoboGuard is no longer the robot's default app, does not start at boot,
+  its service and both detectors are stopped, so nothing of it holds the camera stream or the microphone. The app closes and
+  can be opened by hand to switch it back on.
+- Earlier applied sensor states (camera disabled by device policy, microphone muted) are left as they were.

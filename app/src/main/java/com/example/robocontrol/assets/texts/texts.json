@@ -255,6 +255,18 @@
       "text": "✕",
       "note": "Map screen: small button that takes back a temporary permission to cross an area"
     },
+    "nav.label.disable_app": {
+      "text": "Disable RoboGuard",
+      "note": "Map screen, Show debug: switch that turns the whole app off (no autostart, no background service, no camera stream, no microphone)"
+    },
+    "nav.label.disable_app_note": {
+      "text": "On: RoboGuard closes, does not start with the robot and uses neither camera nor microphone. Open the app and come back here to switch it on again.",
+      "note": "Map screen, Show debug: explanation under the Disable RoboGuard switch"
+    },
+    "app.disabled": {
+      "text": "RoboGuard is disabled. To switch it on again: Navigation and Map, Show debug, Disable RoboGuard.",
+      "note": "Start screen while the app is disabled by the debug switch"
+    },
     "nav.label.debug": {
       "text": "Show debug",
       "note": "Map screen: switch that shows technical lines and the event log"

@@ -1913,3 +1913,18 @@ speechHysteresis, minLevelDb, continuousPieces + pad/bridge), and `VoiceEnrolmen
 piece assembly, including the pre-roll and gap bridging. It logs one `gate: …` line per run, so the log says which
 assembly produced a template. **Consequence: after changing the gate or the assembly the voice has to be taught again** —
 an old template is not comparable with new pieces.
+
+## Debug switch "Disable RoboGuard" (owner request 2026-10-07, compiled, NOT installed, not run)
+
+- Navigation and Map → Show debug → switch "Disable RoboGuard". State in SharedPreferences `robocontrol_app_disabled`/`disabled`
+  (survives a reboot). New `robocontrol/system/AppDisabled.kt` (`isDisabled`, `setDisabled`).
+- ON: `DefaultAppSetting.restorePrevious` (RobotOS no longer starts RoboGuard as default app), `ConversationMonitor.stop()`,
+  `CalendarMonitor.stop()`, `NavigationHub.stop()`, `stopService(RobotServerService)`, then `finishAffinity()`. `BootReceiver`
+  returns early; `MainActivity` neither sets the default app nor starts/binds the service and shows "RoboGuard is disabled" plus the
+  Navigation and Map button; `MapNavigationActivity` does not start the NavigationHub (own navigation, ends with the screen).
+- OFF: `ensureRoboGuardIsDefault`, `startForegroundService`, screen `recreate()`.
+- NOT touched by the switch: the sensor states RoboGuard applied earlier (device-policy camera disable, microphone mute, SDK ASR)
+  stay as they were; test screens and "Teach owner's voice" still use camera/microphone when opened by hand.
+- Unverified: whether `restorePrevious` succeeds without SDK control, and what RobotOS starts instead after a reboot.
+- A read-only code review finished 2026-10-02: 106 verified findings in `~/RoboGuard_review/review_2026-10-02.md` (not in the repo).
+  Its critical item: the uncommitted embedding worker in OwnerVoiceDetector.kt can crash the process on stop — do not install as is.
