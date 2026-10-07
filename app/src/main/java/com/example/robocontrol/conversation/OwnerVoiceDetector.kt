@@ -86,7 +86,6 @@ class OwnerVoiceDetector(
         // Average of other voices through this microphone; subtracted from both sides when comparing (see Voiceprint).
         val cohort = store.loadCohort()
         var vad: SileroVad? = null
-        var embedder: SpeakerEmbedder? = null
         val piece = FloatArray((settings.pieceSeconds * 16_000).toInt())
         var fill = 0
         val read = ShortArray(HOP)
@@ -138,10 +137,11 @@ class OwnerVoiceDetector(
         val toEmbed = java.util.concurrent.ArrayBlockingQueue<PieceToEmbed>(1)
         val results = java.util.concurrent.ConcurrentLinkedQueue<PieceResult>()
         var embedThread: Thread? = null
+        // Set by the embedding thread when it cannot go on (model did not load, unexpected error); the loop below ends then.
+        val embedError = java.util.concurrent.atomic.AtomicReference<String?>(null)
 
         try {
             vad = SileroVad(context)
-            embedder = SpeakerEmbedder(context)
             val openError = source.open()
             if (openError != null) {
                 _snapshot.value = _snapshot.value.copy(running = false, error = openError)
@@ -153,9 +153,13 @@ class OwnerVoiceDetector(
             // One line the graphs can read the threshold lines from (performance/graphs.py).
             Log.i(TAG, "gate: %s, silero %.2f (hysteresis %.2f), level floor %.0f dBFS".format(
                 settings.gateMode, settings.speechThreshold, settings.speechHysteresis, settings.minLevelDb))
-            val worker = embedder
+            // The embedding thread OWNS the speaker model: it loads it, and it alone closes it, after its last run has
+            // returned. Closing the session from this thread while a run is still inside native code frees the model
+            // under it and takes the whole process down (a run takes 0.6-3.4 s, far longer than any wait here).
             embedThread = Thread({
+                var worker: SpeakerEmbedder? = null
                 try {
+                    worker = SpeakerEmbedder(context)
                     while (!Thread.currentThread().isInterrupted) {
                         val next = toEmbed.take()
                         val started = System.nanoTime()
@@ -172,6 +176,12 @@ class OwnerVoiceDetector(
                     // stop() while waiting for a piece: a normal end
                 } catch (e: Exception) {
                     Log.e(TAG, "embedding stopped", e)
+                    embedError.set("speaker model: " + (e.message ?: e.toString()))
+                } finally {
+                    runCatching { worker?.close() }
+                    while (true) (toEmbed.poll() ?: break).samples.fill(0f)
+                    template.zero()
+                    cohort?.fill(0f)
                 }
             }, "OwnerVoiceEmbed").apply { isDaemon = true; start() }
             Log.i(TAG, "listening for the owner's voice (threshold %.2f, margin %.2f, %s)".format(
@@ -319,6 +329,7 @@ class OwnerVoiceDetector(
                 }
 
                 // Results come back on the next turn through the loop, so all the decision state stays on this thread.
+                embedError.get()?.let { throw IllegalStateException(it) }
                 while (true) {
                     val done = results.poll() ?: break
                     load.piece(done.embedNs)
@@ -409,8 +420,11 @@ class OwnerVoiceDetector(
             Log.e(TAG, "detector stopped", e)
             _snapshot.value = _snapshot.value.copy(error = e.message ?: e.toString())
         } finally {
-            embedThread?.interrupt()
-            runCatching { embedThread?.join(500) }
+            // The microphone first, so the next detector can open it at once. The embedding thread is only told to stop:
+            // it finishes the run it is in, then closes the model and erases the voiceprint itself (see above).
+            runCatching { source.close() }
+            val embedding = embedThread
+            if (embedding != null) embedding.interrupt() else { template.zero(); cohort?.fill(0f) }
             while (true) (toEmbed.poll() ?: break).samples.fill(0f)
             results.clear()
             preRoll.fill(0)
@@ -418,11 +432,7 @@ class OwnerVoiceDetector(
             read.fill(0)
             hop.fill(0)
             chunk.fill(0)
-            template.zero()
-            cohort?.fill(0f)
             runCatching { vad?.close() }
-            runCatching { embedder?.close() }
-            runCatching { source.close() }
             _snapshot.value = _snapshot.value.copy(running = false)
             thread = null
         }
