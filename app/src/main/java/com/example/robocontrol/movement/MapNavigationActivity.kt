@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import com.example.robocontrol.system.AppDisabled
 import com.example.robocontrol.text.UiText
 import kotlinx.coroutines.launch
 import kotlin.math.cos
@@ -97,7 +98,8 @@ class MapNavigationActivity : ComponentActivity() {
         UiText.init(applicationContext)
         // The navigation runs in the service (NavigationHub), so the phone app sees the same state and a drive does not
         // stop when this screen closes. Started here as well in case the service is not up yet.
-        NavigationHub.start(applicationContext)
+        // Not while RoboGuard is disabled: then this screen uses its own navigation, which ends with the screen.
+        if (!AppDisabled.isDisabled(this)) NavigationHub.start(applicationContext)
         log = NavigationHub.log
         probe = NavigationHub.current ?: MapNavigation(applicationContext, log, lifecycleScope).also { it.start() }
 
@@ -520,6 +522,21 @@ class MapNavigationActivity : ComponentActivity() {
                     Button(onClick = { speakerView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.show_speaker")) }
                     Button(onClick = { voiceView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.teach_voice")) }
                     OutlinedButton(onClick = { log.clearScreen() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.clear_log")) }
+
+                    // Switches the whole app off: no autostart, no service, no camera stream, no microphone.
+                    var appDisabled by remember { mutableStateOf(AppDisabled.isDisabled(this@MapNavigationActivity)) }
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                        Switch(checked = appDisabled, onCheckedChange = {
+                            appDisabled = it
+                            probe.stop("RoboGuard " + if (it) "disabled" else "enabled")
+                            AppDisabled.setDisabled(this@MapNavigationActivity, it)
+                            // Off: close every RoboGuard screen. On: rebuild this one on the service's navigation.
+                            if (it) finishAffinity() else recreate()
+                        })
+                        Spacer(Modifier.width(8.dp))
+                        Text(UiText.get("nav.label.disable_app"))
+                    }
+                    Text(UiText.get("nav.label.disable_app_note"), fontSize = 12.sp)
                 }
             }
             }

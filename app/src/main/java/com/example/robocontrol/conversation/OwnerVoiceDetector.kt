@@ -28,6 +28,18 @@ import kotlin.math.sqrt
  * decision window keeps nothing but two counters and a handful of similarity NUMBERS — no vectors. Everything is zeroed
  * when the detector stops or after [ConversationSettings.resetAfterSilenceMs] of silence.
  */
+/** One finished piece on its way to the embedding thread. The samples are zeroed as soon as they have been used. */
+private class PieceToEmbed(val samples: FloatArray, val timeMs: Long, val levelDb: Double, val spanMs: Long)
+
+/** What comes back: numbers only, never a vector. */
+private class PieceResult(
+    val similarity: Float,
+    val timeMs: Long,
+    val levelDb: Double,
+    val spanMs: Long,
+    val embedNs: Long
+)
+
 class OwnerVoiceDetector(
     private val context: Context,
     private val source: PcmSource = AndroidMicSource(),
@@ -121,6 +133,12 @@ class OwnerVoiceDetector(
         var lastSpeechAtMs = Long.MIN_VALUE / 2
         var lastPublish = -1_000L
 
+        // Handover to the embedding thread: one piece at a time (a piece judged seconds late is worthless) and the
+        // results come back as plain numbers.
+        val toEmbed = java.util.concurrent.ArrayBlockingQueue<PieceToEmbed>(1)
+        val results = java.util.concurrent.ConcurrentLinkedQueue<PieceResult>()
+        var embedThread: Thread? = null
+
         try {
             vad = SileroVad(context)
             embedder = SpeakerEmbedder(context)
@@ -135,6 +153,27 @@ class OwnerVoiceDetector(
             // One line the graphs can read the threshold lines from (performance/graphs.py).
             Log.i(TAG, "gate: %s, silero %.2f (hysteresis %.2f), level floor %.0f dBFS".format(
                 settings.gateMode, settings.speechThreshold, settings.speechHysteresis, settings.minLevelDb))
+            val worker = embedder
+            embedThread = Thread({
+                try {
+                    while (!Thread.currentThread().isInterrupted) {
+                        val next = toEmbed.take()
+                        val started = System.nanoTime()
+                        val embedding = runCatching { worker.embed(next.samples, next.samples.size) }.getOrNull()
+                        next.samples.fill(0f)
+                        if (embedding != null) {
+                            val similarity = template.similarityTo(embedding, cohort)
+                            embedding.fill(0f)
+                            results.add(PieceResult(similarity, next.timeMs, next.levelDb, next.spanMs,
+                                System.nanoTime() - started))
+                        }
+                    }
+                } catch (_: InterruptedException) {
+                    // stop() while waiting for a piece: a normal end
+                } catch (e: Exception) {
+                    Log.e(TAG, "embedding stopped", e)
+                }
+            }, "OwnerVoiceEmbed").apply { isDaemon = true; start() }
             Log.i(TAG, "listening for the owner's voice (threshold %.2f, margin %.2f, %s)".format(
                 template.info.threshold, settings.margin,
                 if (cohort != null) "centred on ${cohort.size} values of other voices" else "no cohort recorded"))
@@ -255,20 +294,38 @@ class OwnerVoiceDetector(
                     Log.i(TAG, "reset after ${settings.resetAfterSilenceMs} ms of silence")
                 }
 
+                // A full piece is handed to the embedding thread and the loop goes straight back to the microphone.
+                // The embedding needs 0.7 s on an idle robot and up to 3.4 s under load; doing it here meant the
+                // microphone was not read for that long, and the audio beyond the buffer was lost — right in the middle
+                // of the next words (measured 2026-09-28: audio/clock 0.76-0.87 while the owner was speaking normally).
                 if (fill >= piece.size) {
-                    val pieceLevel = if (pieceLevelFrames > 0) pieceLevelSum / pieceLevelFrames else Double.NEGATIVE_INFINITY
-                    val pieceSpanMs = if (pieceStartedMs >= 0) timeMs - pieceStartedMs else 0L
-                    val embedStart = System.nanoTime()
-                    val embedding = embedder.embed(piece, fill)
-                    load.piece(System.nanoTime() - embedStart)
+                    val ready = PieceToEmbed(
+                        samples = piece.copyOf(),
+                        timeMs = timeMs,
+                        levelDb = if (pieceLevelFrames > 0) pieceLevelSum / pieceLevelFrames else Double.NEGATIVE_INFINITY,
+                        spanMs = if (pieceStartedMs >= 0) timeMs - pieceStartedMs else 0L
+                    )
                     fill = 0
                     piece.fill(0f)
                     pieceLevelSum = 0.0
                     pieceLevelFrames = 0
                     pieceStartedMs = -1L
-                    if (embedding != null) {
-                        val similarity = template.similarityTo(embedding, cohort)
-                        embedding.fill(0f)
+                    if (!toEmbed.offer(ready)) {
+                        // The thread is still busy with the piece before this one: dropping it is better than queueing,
+                        // because a piece judged seconds late says nothing about the room now.
+                        ready.samples.fill(0f)
+                        Log.w(TAG, "embedding still busy: piece dropped")
+                    }
+                }
+
+                // Results come back on the next turn through the loop, so all the decision state stays on this thread.
+                while (true) {
+                    val done = results.poll() ?: break
+                    load.piece(done.embedNs)
+                    val similarity = done.similarity
+                    val pieceLevel = done.levelDb
+                    val pieceSpanMs = done.spanMs
+                    run {
                         val isOwner = similarity >= template.info.threshold
                         val isOther = similarity < template.info.threshold - settings.margin
                         readings = (listOf(similarity) + readings).take(READINGS_KEPT)
@@ -279,8 +336,8 @@ class OwnerVoiceDetector(
                         // is lost, it is only delayed.
                         when {
                             !settings.confirmTwice -> {
-                                if (verdict == OWNER) ownerTimes.addLast(timeMs)
-                                else if (verdict == OTHER) otherTimes.addLast(timeMs)
+                                if (verdict == OWNER) ownerTimes.addLast(done.timeMs)
+                                else if (verdict == OTHER) otherTimes.addLast(done.timeMs)
                                 if (verdict != UNCLEAR) confirmedVerdict = verdict
                             }
                             // The two pieces that confirm each other have to be the two pieces that FOLLOWED each other.
@@ -291,12 +348,12 @@ class OwnerVoiceDetector(
                             }
                             // A verdict that simply continues needs no second piece — only a CHANGE does.
                             verdict == confirmedVerdict -> {
-                                if (verdict == OWNER) ownerTimes.addLast(timeMs) else otherTimes.addLast(timeMs)
+                                if (verdict == OWNER) ownerTimes.addLast(done.timeMs) else otherTimes.addLast(done.timeMs)
                                 pendingVerdict = UNCLEAR
                             }
                             verdict == pendingVerdict -> {
-                                if (verdict == OWNER) { ownerTimes.addLast(pendingTimeMs); ownerTimes.addLast(timeMs) }
-                                else { otherTimes.addLast(pendingTimeMs); otherTimes.addLast(timeMs) }
+                                if (verdict == OWNER) { ownerTimes.addLast(pendingTimeMs); ownerTimes.addLast(done.timeMs) }
+                                else { otherTimes.addLast(pendingTimeMs); otherTimes.addLast(done.timeMs) }
                                 confirmedVerdict = verdict
                                 pendingVerdict = UNCLEAR
                                 note = " (confirmed by the piece right before it)"
@@ -304,7 +361,7 @@ class OwnerVoiceDetector(
                             else -> {
                                 if (pendingVerdict != UNCLEAR) note = " (dropped, not repeated)"
                                 pendingVerdict = verdict
-                                pendingTimeMs = timeMs
+                                pendingTimeMs = done.timeMs
                                 if (note.isEmpty()) note = " (waiting for the very next piece)"
                             }
                         }
@@ -352,6 +409,10 @@ class OwnerVoiceDetector(
             Log.e(TAG, "detector stopped", e)
             _snapshot.value = _snapshot.value.copy(error = e.message ?: e.toString())
         } finally {
+            embedThread?.interrupt()
+            runCatching { embedThread?.join(500) }
+            while (true) (toEmbed.poll() ?: break).samples.fill(0f)
+            results.clear()
             preRoll.fill(0)
             piece.fill(0f)
             read.fill(0)
