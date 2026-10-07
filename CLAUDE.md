@@ -1928,3 +1928,9 @@ an old template is not comparable with new pieces.
 - Unverified: whether `restorePrevious` succeeds without SDK control, and what RobotOS starts instead after a reboot.
 - A read-only code review finished 2026-10-02: 106 verified findings in `~/RoboGuard_review/review_2026-10-02.md` (not in the repo).
   Its critical item: the uncommitted embedding worker in OwnerVoiceDetector.kt can crash the process on stop — do not install as is.
+- **Review item 1 fixed (2026-10-07, compiled, NOT installed, not run):** in `OwnerVoiceDetector` the embedding thread now owns the
+  CAM++ session: it creates `SpeakerEmbedder` itself and closes it in its own `finally`, after its last run returned, and zeroes the
+  template and cohort there. The detector thread only closes the microphone first and interrupts the worker (no timed join, no
+  close). A worker failure (model load, exception) reaches the loop through `embedError` and ends the detector with an error
+  snapshot, so the watchdog restarts it. Consequence: after a stop the old model can stay in memory for up to one embedding
+  (0.6-3.4 s) next to the new detector's.
