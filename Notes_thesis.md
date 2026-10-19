@@ -343,3 +343,8 @@ run the neural model at all, which gives back 3–19 ms per 32 ms of audio.
 - OpenCV limited to 1 thread (its pool used ~0.9 core); whole-picture search (Lego) only every 500 ms instead of every check. Effect on CPU and delay still to be measured with performance/record.py.
 - Voice: cohort saved correctly after Stop; detector restarts when the stored voice/cohort changes; silence reset fixed after robot speech.
 - Navigation: a second drive while driving is refused (it could switch off the in-motion privacy check).
+
+## Review fixes, functional (2026-10-19, installed, not yet measured)
+- Privacy navigation: crossing questions expire (90 s) and are cancelled by STOP or a new drive; when a crossing permission ends inside the area the robot asks again and otherwise leaves; LIDAR off blocks driving; an unreadable map name no longer clears the private areas; privacy decisions are shown (debug) and sent to the phone.
+- Voice: one shared front end (gate, piece assembly, embedding thread) for owner, pairwise and enrolment, so templates and live pieces are cut identically; pieces end at pauses > 2 s and are split at detected voice changes (+1.6 s delay); owner unclear band per voice (0.07) and confirm-twice on by default; pairwise decides on the median; the threshold is bound to its cohort; enrolment no longer overwrites a hand-set threshold.
+- Objects: frame-side settings per image, stricter pink-gate fallback (inliers spread over ≥ 2 quadrants), ring test for the pink frame (0.6, to be checked), Lego cut-out masked, geometry check for whole-picture matches.

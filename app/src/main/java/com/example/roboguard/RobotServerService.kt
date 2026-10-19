@@ -493,7 +493,7 @@ class RobotServerService : Service() {
         val situationalNames = listOf("Discretion Mode", "pixelate objects")
 
         val sensors = sensorNames.associateWith { true }
-        val situational = situationalNames.associateWith { false }
+        val situational = situationalNames.associateWith { true }
         val rooms = roomNames.map { name -> RoomSettings(name, sensors) }
 
         return AppSettings(
@@ -535,7 +535,7 @@ class RobotServerService : Service() {
         applyJob = serviceScope.launch {
             waitForSdkControl()
             val sensorsApplied = applySensorSettings(settings)
-            speakGerman(
+            speakInLanguage(
                 if (sensorsApplied) UiText.get("speech.settings_updated")
                 else UiText.get("speech.settings_sensors_failed")
             )
@@ -546,7 +546,7 @@ class RobotServerService : Service() {
     private fun speakWhenInControl(sentence: String) {
         serviceScope.launch {
             waitForSdkControl()
-            speakGerman(sentence)
+            speakInLanguage(sentence)
         }
     }
 
@@ -622,10 +622,10 @@ class RobotServerService : Service() {
     private var pendingSentence: String? = null
 
     /**
-     * Speaks [sentence] in German. Never throws: every problem (not connected, SDK error, speech rejected)
+     * Speaks [sentence] in the language of the texts file (meta.speechLanguage, en_US since 2026-10-19). Never throws: every problem (not connected, SDK error, speech rejected)
      * is logged under the tag "ServerTts" so a failed announcement cannot break a request.
      */
-    private fun speakGerman(sentence: String) {
+    private fun speakInLanguage(sentence: String) {
         try {
             val speech = synchronized(ttsLock) { tts ?: OrionStarTts(applicationContext).also { tts = it } }
             if (speech.connected.value) {
@@ -658,7 +658,7 @@ class RobotServerService : Service() {
     }
 
     private fun say(speech: OrionStarTts, sentence: String) {
-        val accepted = speech.speakGerman(sentence, object : TtsListener {
+        val accepted = speech.speakConfigured(sentence, object : TtsListener {
             override fun onFailed(failure: TtsFailure) {
                 Log.e("ServerTts", "Not spoken: \"$sentence\" ($failure)")
             }

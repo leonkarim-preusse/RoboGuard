@@ -22,7 +22,49 @@ enum class ConversationState {
  * One 10 ms audio frame for the debug screen: how loud it was, what Silero thought, and whether the gate counted it as speech.
  * Only numbers — no audio is kept or copied out of the detector.
  */
-data class AudioFrame(val timeMs: Long, val levelDb: Double, val probability: Double?, val speech: Boolean)
+data class AudioFrame(
+    val timeMs: Long,
+    val levelDb: Double,
+    val probability: Double?,
+    /** What finally counted as speech (both halves of the gate, and not while the robot itself speaks). */
+    val speech: Boolean,
+    /** Silero's half of the gate (with its hysteresis). */
+    val silero: Boolean = false,
+    /** The loudness half: above the level floor. */
+    val loud: Boolean = false,
+    /** The robot itself was speaking; its own voice never counts. */
+    val robot: Boolean = false
+)
+
+/**
+ * The debug screen's last 15 s: frames and events, collected only while it is open. Numbers only. One audio thread.
+ */
+internal class DebugTimeline {
+    private val frames = ArrayDeque<AudioFrame>()
+    private val events = ArrayDeque<ConversationEvent>()
+
+    fun frame(enabled: Boolean, f: AudioFrame) {
+        if (!enabled) {
+            if (frames.isNotEmpty() || events.isNotEmpty()) { frames.clear(); events.clear() }
+            return
+        }
+        frames.addLast(f)
+        while (frames.size > FRAMES) frames.removeFirst()
+        while (events.isNotEmpty() && f.timeMs - events.first().timeMs > FRAMES * 10L) events.removeFirst()
+    }
+
+    fun event(enabled: Boolean, e: ConversationEvent) {
+        if (enabled) events.addLast(e)
+    }
+
+    fun frames(enabled: Boolean): List<AudioFrame> = if (enabled) frames.toList() else emptyList()
+    fun events(enabled: Boolean): List<ConversationEvent> = if (enabled) events.toList() else emptyList()
+
+    private companion object {
+        /** 1500 × 10 ms = 15 s. */
+        const val FRAMES = 1500
+    }
+}
 
 /** Something worth marking on the debug timeline. */
 enum class ConversationEventKind { CHANGE, CANDIDATE_REJECTED, RESET, MULTIPLE }
@@ -55,6 +97,11 @@ data class ConversationSnapshot(
     val timeline: List<AudioFrame> = emptyList(),
     /** Events in that same span (speaker changes, rejected candidates, conversation resets). */
     val events: List<ConversationEvent> = emptyList(),
+    /** Gate lines for the timeline: Silero starts at [sileroThreshold] and ends below [sileroRelease]; null = not used. */
+    val sileroThreshold: Double? = null,
+    val sileroRelease: Double? = null,
+    /** The level a frame had to beat (dBFS); null = no level gate. */
+    val levelFloorDb: Double? = null,
     /** Recent KL2 values, oldest first, for a live graph. */
     val kl2History: List<Double> = emptyList(),
     /** Recent candidates, newest last (accepted = counted as a change). */
@@ -67,6 +114,8 @@ data class ConversationSnapshot(
     val ownerSimilarity: Float? = null,
     /** Owner detector: the threshold that piece was judged against. */
     val ownerThreshold: Float = 0f,
+    /** Owner detector: how far below the threshold a piece must be to count as somebody else. */
+    val ownerMargin: Float = 0f,
     /** Owner detector: the last readings, newest first (both owner and other pieces). */
     val ownerReadings: List<Float> = emptyList(),
     /** Owner detector: pieces in the decision window that matched the owner, and pieces that did not. */
@@ -83,6 +132,9 @@ data class ConversationSnapshot(
     val pairwiseReadings: List<Float> = emptyList(),
     /** Pairwise method: pieces currently held for comparison. */
     val piecesHeld: Int = 0,
+    /** Something the screen should show that does not stop the detector (e.g. Silero fell back to loudness). */
+    val warning: String? = null,
+    /** Set when the detector stopped because of it; the monitor then restarts it. */
     val error: String? = null
 )
 
@@ -121,8 +173,14 @@ enum class DetectionMethod {
 /** Detects whether more than one person is talking. Implementations must not store or send audio. */
 interface ConversationDetector {
     val snapshot: StateFlow<ConversationSnapshot>
+
+    /** Collect the audio timeline and events for the debug screen (off = nothing extra is kept or copied). */
+    var debugTimeline: Boolean
+
     fun start()
-    fun stop()
+
+    /** Stops and waits a moment for the thread; true if it really ended (the microphone is free again). */
+    fun stop(): Boolean
 }
 
 /**
@@ -143,7 +201,7 @@ class SpeakerChangeDetector(
      * Tells the detector when the robot itself is making a sound, so its own voice is not taken for a second speaker
      * (see [RobotSpeaking]). Null — the default, used by the offline tests with synthetic audio — means it never is.
      */
-    private val robotSpeaking: (() -> Boolean)? = null,
+    private val robotSpeaking: ((audioTimeMs: Long) -> Boolean)? = null,
     /** Called on the audio thread for every evaluated candidate (for logging / tests). Last, so it can be a trailing lambda. */
     private val onCandidate: (ChangeCandidate) -> Unit = {}
 ) : ConversationDetector {
@@ -153,7 +211,7 @@ class SpeakerChangeDetector(
      * ~1500 numbers into every snapshot.
      */
     @Volatile
-    var debugTimeline: Boolean = false
+    override var debugTimeline: Boolean = false
 
     private var lastState = ConversationState.NO_SPEECH
 
@@ -172,12 +230,13 @@ class SpeakerChangeDetector(
         thread = Thread(::run, "SpeakerChangeDetector").also { it.start() }
     }
 
-    override fun stop() {
-        val t = thread ?: return
+    override fun stop(): Boolean {
+        val t = thread ?: return true
         thread = null
         t.interrupt()
         // Wait for the microphone to be released before the next detector opens it (see OwnerVoiceDetector.stop).
         runCatching { t.join(1_000) }
+        return !t.isAlive
     }
 
     /** Runs until the source ends or [stop] is called. Blocking; for offline tests call directly instead of [start]. */
@@ -208,6 +267,14 @@ class SpeakerChangeDetector(
         var lastKl2Seen = Double.NaN
         var resetsSeen = 0
 
+        // The microphone first: an open error used to return after Silero was created, and its session leaked on every
+        // retry (review 2026-10-02, item 35).
+        val openError = source.open()
+        if (openError != null) {
+            _snapshot.value = ConversationSnapshot(running = false, error = openError)
+            thread = null
+            return
+        }
         // Silero VAD: 512-sample chunks (32 ms), filled from the 10 ms hops; the latest probability applies to the next frames.
         var vad: SileroVad? = null
         var gateError: String? = null
@@ -229,22 +296,23 @@ class SpeakerChangeDetector(
             config.windowFrames / 100.0, config.bicLambda, config.decisionRule, config.speechGate,
             config.sileroThreshold, config.sileroHysteresis))
         var speechProbability: Double? = if (vad != null) 0.0 else null
-
-        val openError = source.open()
-        if (openError != null) {
-            _snapshot.value = ConversationSnapshot(running = false, error = openError)
-            thread = null
-            return
-        }
         // Audio analysis needs little CPU per 10 ms hop; background priority leaves the fast cores to calendar detection (owner,
         // 2026-09-18: service work should be low intensity). AudioRecord's own buffering keeps capture running if a hop is late.
         runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
         try {
             while (!Thread.currentThread().isInterrupted) {
                 var filled = 0
+                var emptyReads = 0
                 while (filled < hop) {
+                    if (Thread.currentThread().isInterrupted) throw InterruptedException()
                     val n = source.read(readBuffer, hop - filled)
-                    if (n < 0) return
+                    if (n < 0 || (n == 0 && ++emptyReads > 200)) {
+                        // The end of a synthetic feed is a normal end; a microphone that stops is not.
+                        if (source is AndroidMicSource) _snapshot.value = _snapshot.value.copy(running = false, error = "microphone stopped delivering audio")
+                        return
+                    }
+                    if (n == 0) { Thread.sleep(5); continue }
+                    emptyReads = 0
                     readBuffer.copyInto(hopBuffer, filled, 0, n)
                     filled += n
                 }
@@ -272,7 +340,7 @@ class SpeakerChangeDetector(
 
                 val analysisStart = System.nanoTime()
                 val levelDb = mfcc.compute(frame, features)
-                val robotTalking = robotSpeaking?.invoke() == true
+                val robotTalking = robotSpeaking?.invoke(timeMs) == true
                 if (robotTalking != wasRobotTalking) {
                     Log.i(TAG, if (robotTalking) "robot is speaking: ignoring the microphone until it stops"
                     else "robot stopped speaking: listening again")
@@ -288,7 +356,8 @@ class SpeakerChangeDetector(
                 load.frame(detector.lastFrameWasSpeech)
                 load.tick(timeMs)
                 if (debugTimeline) {
-                    timeline.addLast(AudioFrame(timeMs, levelDb, speechProbability, detector.lastFrameWasSpeech))
+                    timeline.addLast(AudioFrame(timeMs, levelDb, speechProbability, detector.lastFrameWasSpeech,
+                        detector.lastSilero, detector.lastLoud, robotTalking))
                     while (timeline.size > TIMELINE_FRAMES) timeline.removeFirst()
                     while (events.isNotEmpty() && timeMs - events.first().timeMs > TIMELINE_FRAMES * 10L) events.removeFirst()
                 } else if (timeline.isNotEmpty()) {
@@ -357,7 +426,7 @@ class SpeakerChangeDetector(
                         speechNow = detector.lastFrameWasSpeech,
                         speechProbability = speechProbability,
                         speechGate = if (vad != null) SpeechGate.SILERO else SpeechGate.LOUDNESS,
-                        error = gateError,
+                        warning = gateError,
                         speechSeconds = detector.speechFrames / 100.0,
                         lastKl2 = detector.lastKl2,
                         kl2Mean = detector.runningKl2Mean,
@@ -368,6 +437,9 @@ class SpeakerChangeDetector(
                         decisionRule = config.decisionRule,
                         timeline = if (debugTimeline) timeline.toList() else emptyList(),
                         events = if (debugTimeline) events.toList() else emptyList(),
+                        sileroThreshold = if (vad != null) config.sileroThreshold else null,
+                        sileroRelease = if (vad != null) config.sileroThreshold - config.sileroHysteresis else null,
+                        levelFloorDb = detector.lastLevelFloorDb.takeIf { it.isFinite() },
                         totalChanges = totalChanges,
                         kl2History = kl2History.toList(),
                         candidates = candidates.toList(),

@@ -76,7 +76,10 @@ class ConversationPromptActivity : ComponentActivity() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
-                            startActivity(Intent(this@ConversationPromptActivity, MapNavigationActivity::class.java))
+                            // The existing map screen, not a second one on top: a second instance left the first one's
+                            // debug view composed, and the test announcement kept running (item 25).
+                            startActivity(Intent(this@ConversationPromptActivity, MapNavigationActivity::class.java)
+                                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
                             finish()
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50), contentColor = Color.White),

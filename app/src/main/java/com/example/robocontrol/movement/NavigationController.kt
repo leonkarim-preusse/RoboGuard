@@ -222,16 +222,22 @@ class NavigationController(
             private val current get() = driveId == id
             override fun onStarted() { if (current) listener.onStarted() }
             override fun onProgress(event: NavEvent) { if (current) listener.onProgress(event) }
+            // SDK callbacks arrive on RobotOS's thread: check and clear under this controller's lock (the same one
+            // MapNavigation holds for onPose / stop), and call the listener after leaving it (review 2026-10-02, item 75).
             override fun onArrived() {
-                if (!current) return
-                activeTarget = null
-                activeListener = null
+                synchronized(this@NavigationController) {
+                    if (!current) return
+                    activeTarget = null
+                    activeListener = null
+                }
                 listener.onArrived()
             }
             override fun onFailed(failure: NavFailure) {
-                if (!current) return
-                activeTarget = null
-                activeListener = null
+                synchronized(this@NavigationController) {
+                    if (!current) return
+                    activeTarget = null
+                    activeListener = null
+                }
                 listener.onFailed(failure)
             }
         })

@@ -1975,3 +1975,108 @@ an old template is not comparable with new pieces.
   - **#9** `Core.setNumThreads(openCvThreads)` (settings.json, default 1) right after OpenCV loads.
 - New settings.json keys (general): `openCvThreads`, `wholeFrameIntervalMs`, `rearmAfterGoneSeconds`, `popupCooldownSeconds`;
   per image: `calendarPopup`.
+
+## Review fixes, functional list (owner 2026-10-19: "fix everything except RG System stuff"; robot INSTALLED, nothing run yet)
+
+All review items that affect functionality, except those whose fix lies in roboguard/ ([RG]: 24, 26, 27, 28, 33, 51, 62, 70, 80, 93,
+plus 7 and 36). Not touched either: measurement tooling (39–44, 97–102), pure speed (38, 83–94), unmeasured method ideas (49, 105, 106),
+debug-display items (95, 96), hygiene (71, 72, 79, 82).
+- **Navigation:** crossing questions have an outcome (allowed/denied/superseded/cancelled/expired after 90 s), STOP and a new drive
+  cancel them, only a person's yes/no speaks or moves (21); a permission that ends while the robot stands in the area → spoken + asked
+  again, no/expired → drives back to the last position outside (20); permissions revoked on map change (20); LIDAR off refuses drives
+  and turns, LIDAR switched off stops a drive (22); unreadable map name keeps the old map/areas, or blocks driving if none known (23);
+  audit only on entering an area, decisions logged + shown in debug + `/nav/state.audit`, phone answers recorded as "phone \"name\""
+  (29); loads that overlap an edit keep the edit (32); phone `drive` carries the target it shows and is refused if the robot's
+  selection changed (59, phone NavigationScreen.kt changed, compiled, not installed); margin drawn as the exact band (60, also movement
+  test); remote-control banner expires from the poll loop (61); TTS/question outside the controller lock, SDK callbacks under it (75);
+  reload never in the poll loop, own position watchdog coroutine (76); phone coordinates must be finite and inside the map, minutes
+  1–60, grant before speaking (77).
+- **Voice (shared code in `conversation/SpeechPieces.kt`):** `readHop` (interrupt checks, stops on a dead microphone), `SpeechGateState`
+  (bounded Silero release, digital silence never speech, 78), `PieceAssembler` (pause > 2 s ends a piece, 13; pre-roll only of
+  unappended hops, 55; split at accepted voice changes with 1.6 s hold, 46; robot speech flushes), `EmbeddingWorker` (owns the model,
+  own thread at FOREGROUND priority, 37/52). Owner, Pairwise and the enrolment all use them. Owner: margin per voice (default 0.07,
+  speaker + voice screen), confirm-twice default ON, any-other mode needs 2 pieces without it (10); late results keep the state alive
+  (52). Pairwise: median instead of minimum (47), pending outlier kept out of `held` (14). Threshold bound to the cohort it was set
+  with (`VoiceprintInfo.cohortId`, pairwise pref `different_voice_below_cohort`; mismatch = status reason, owner method off) (11).
+  Enrolment: leave-one-out scores + median−3·MAD filter, existing threshold kept and the computed one offered as "suggested" (12),
+  robot-speech mask, cancel = nothing saved (58), stop on "microphone off" (50), permission keeps the pressed button (57), runs end on
+  ON_STOP (25), tests end after 10 min. `RobotSpeaking` records playback via AudioPlaybackCallback and answers for the capture time (54);
+  activity hangover armed only by usable frames (53); names normalised in the store (56); reasons instead of restart loops (81).
+- **Monitor:** every start/stop on one lifecycle thread, collectors write only while current, backoff 5/10/20/60 s, stale-snapshot health
+  check (30, 35); microphone leases (`acquireMicrophone`) instead of one flag, also in sensor/mic tests (31); test announcement once per
+  episode, never on the prompt's snapshot (45); AndroidMicSource checks recordingState (35); Sensors applies sensor + situational state
+  before notifying (63).
+- **Objects:** per-image frame-side settings incl. `framePyramidLevels` (18; NOTE: the Lego search now describes the camera picture
+  with its own 2000 features / FAST 15 instead of the general 1500/10 — cost not measured); stepper only overrides settings.json
+  (19); pink gate: outline centre must be in the pink area, "area" rejections stay rejected, fallback needs inliers in ≥ 2 quadrants,
+  confirm floor 8, spread logged in "check:" (17); regions filtered by size before the cap (68), scale target from gated refs (69); two-stage
+  grouping retry (16), shared hold memory + size check + union bounds (64, 65), ring share ≥ `minRingShare` 0.6 (new, untested on the
+  robot) and white without pink (66), neutral-pixel white balance with clamped smoothed gains (67), orientation search for near-square
+  frames (104); Lego alpha mask (48); geometry check for whole-picture matches (103); camera close serialised with the callback (73);
+  settings clamped, exception handler, failed loop restarts after 30 s (74); object test waits for the monitor's stream and retries −14,
+  separate stream names (34); camera leases (31).
+- **Correction 2026-10-19 (owner: calendar detected worse, Lego changes back):** log after the install showed ORB fine when a pink
+  area was accepted (e.g. 7/18 detected, 23–40 inliers) but pink areas were almost always rejected ("regions 0,0", 20–46 rejected
+  per 2 s). The new ring test was counted under "frame", so the cause is not yet pinned down. Ring test now measured only
+  (`minRingShare` 0 = off), rejections logged per reason (frame / ring / white) plus "largest rejected pink area: … sides, ring,
+  white -> reason" every 2 s. Other suspects if it stays worse: the hold now needs ≥ half the remembered size (item 65), the neutral
+  white balance (item 67). Lego back to before: no alpha mask (it kept 746 of 2000 keypoints), no geometry check, camera side
+  described with the GENERAL settings again (per-image frame side reverted; `FrameKey` stays, always the general one).
+- **Reverted 2026-10-19 (owner: "lediglich die Änderungen die die Kalendar detection betreffen"):** all of `robocontrol/vision/`,
+  `assets/settings/settings.json` and `testing/objectprobe/ObjectProbeActivity.kt` are back at commit 2d9398f ("before major review
+  changes" = after the high fixes: popup, presence latch, Lego every 100 ms, OpenCV 1 thread). So the object items of the functional
+  round (15 rest, 16, 17, 18, 19, 34, 48, 64–69, 73, 74, 103, 104, the camera lease of 31 and the camera view's ON_STOP of 25) are NOT
+  in the code any more; the sensor test no longer takes a camera lease. Voice, navigation, monitor and phone-route fixes stay.
+- 2026-10-19 (owner): ACTIVITY method defaults now **8 s window, 50 % speech** (was 10 s / 80 %); the robot had no saved value for
+  either, so the new defaults apply directly (installed). Saved conversation prefs on the robot at that time: method ACTIVITY,
+  Silero 0.60 / hysteresis 0.15, gate SILERO_AND_LEVEL (floor default −65 dBFS), confirm twice on.
+- 2026-10-19 (owner): **silence reset = at most 10 % speech over the last 30 s** (`SilenceWindow` in ChangeDetector.kt, used by all
+  four methods; `resetMaxSpeechShare` 0.10 in ConversationSettings and ChangeDetectorConfig). Before, a single speech frame
+  restarted the 30 s. After a reset the next one needs another full 30 s. **"Don't ask again for N min" now replaces the 2-minute
+  gap** between prompts (pauseFor clears lastPromptAt); the gap still applies after Close / Leave room / Mute mic. Installed.
+- 2026-10-19 (owner): the speaker debug screen's timeline now works for ALL methods (was CHANGE only, review #95). `AudioFrame`
+  carries `silero`, `loud`, `robot`; `DebugTimeline` (ConversationDetector.kt) is filled by Owner/Pairwise/Activity while the screen
+  is open (`ConversationDetector.debugTimeline` is now on the interface); snapshots carry `sileroThreshold`, `sileroRelease`,
+  `levelFloorDb`. Drawn: three bands (Silero on / above the level floor / robot speaking), green = counted as speech, level line with
+  the floor dashed, Silero line with start (dashed) and end (dotted) threshold; marks for reset and "more than one". Installed.
+- 2026-10-19 (owner: "Reset detection cooldown" seemed not to work; installed 2026-10-19 after the owner's OK): the log showed
+  (a) a reset during a "don't ask again" pause did nothing (the pause was deliberately kept) and (b) a reset at 21:24:21.9 opened
+  the prompt 0.2 s later from the OLD detector's window (it ran on for the 400 ms debounce). Now the reset also lifts the pause and
+  re-arms the test announcement, restarts the detector at once (no debounce), and a detector started before the last reset may not
+  open a prompt (`cooldownResetAt`).
+- 2026-10-19 (owner reviewed the English texts; robot installed, phone compiled only): STOP is greyed out and
+  inactive unless the robot drives or turns (`MapNavigation.turning` + `driving`; `/nav/state.moving` for the phone, phone STOP
+  likewise); "Clear temporary points" moved to the bottom; "Set Point as Private Area" 9 sp on one line; place lists show names
+  without coordinates (robot and phone; phone key `nav.label.place` removed); default area name "Area N" (numbering also
+  continues from old "Bereich N"); all `speech.*` texts translated to English and `meta.speechLanguage` = en_US. OPEN: the three
+  /save sentences are spoken by roboguard/RobotServerService through `OrionStarTts.speakGerman` (German voice) — needs a one-line
+  roboguard change to `speakConfigured`, not done without the owner's OK.
+- 2026-10-19 (owner): English names. RobotOS places are shown with their English name from `<map>/place.json` (every place has
+  ~30 languages there; the SDK answers in the map language de_DE): Empfangsstelle → Reception Point, Ladestapel → Charging Pole,
+  Aufladepunkt → Charging Point. Display only; RobotOS's map is not changed, drives use coordinates. Stored private areas named
+  "Bereich N" / "Privat: Bereich N" are renamed to "Area N" on load and saved (robot had: Bereich 1, Bathroon, Living Room,
+  Bereich 2). The phone app `com.example.roboguardandroid` was uninstalled from the robot (owner: installed there by mistake).
+- 2026-10-19 (owner): the light red margin band around private areas is no longer drawn (main map screen; movement test unchanged).
+  Situational features are ON by default: `Sensors.DEFAULT_SITUATIONAL` (Discretion Mode, Pixelate Objects = true) when no
+  privacy_settings.json exists, and both monitors treat a feature the phone never sent as on (`!= false`); the robot's saved file
+  still decides. roboguard/RobotServerService.getDefaultSettings now also sets situational = true (owner asked, 2026-10-19). Phone:
+  situational switches start on, Sleep category commented out (value still sent), info-dialog match case-insensitive (the robot
+  sends "Pixelate Objects", the phone matched only "pixelate objects"), new info texts for both features. Robot installed, phone
+  compiled only.
+- 2026-10-19 (owner: "all TTS should be english now"): roboguard/RobotServerService speaks the /save sentences through
+  `OrionStarTts.speakConfigured` (voice from meta.speechLanguage = en_US) instead of `speakGerman`; its private helper is now
+  `speakInLanguage`. Every product sentence is English now; only the RG test screens still use their own German/English tests.
+- 2026-10-19: phone app installed on the owner's Pixel 7a (debug build) with: debug mode by header taps, STOP greyed while the robot
+  stands, place names without coordinates, "Clear temporary points", drive carries its target, situational switches on by default,
+  Sleep hidden, new info texts.
+- **TTS voice (2026-10-19, VERIFIED cause from robot logcat):** the speech service uses cloud TTS with a robot-wide speaker
+  `type=de-de-wavenet-c`; our per-sentence `SpeechLanguage=en_US` only set `lan=en_US`, so English text came out in the German
+  voice. `OrionStarTts.speak(…, voice)` now also sets `TTSParams.SPEAKERROLE` per sentence from texts.json `meta.speechVoice`
+  ("en-us-wavenet-c", Google naming, female like the German one). Not yet verified that the cloud accepts that name — check the
+  log for `type=en-us-wavenet-c` and whether the sentence played; if it fails, try another name there.
+- **TTS voice, second try (2026-10-19):** `en-us-wavenet-c` was refused by the cloud (PcmSynthesizer error 400, nothing spoken).
+  The speech service keeps the cloud's voice list in `content://com.ainirobot.speechservice.SpokesmanProvider/spokesman_list`
+  (langCode, nickname, type, is_default; permission `com.ainirobot.speechservice.SpokesmanProvider`, protection normal — added to
+  the manifest, granted=true). New `robocontrol/audio/TtsVoices.voiceFor(context, "en_US")` picks the list's default (else first)
+  English entry's `type` as SpeakerRole; texts.json `meta.speechVoice` is now "" (= use the list). Installed; log tag TtsVoices
+  prints all offered voices on first use. Not yet heard on the robot.

@@ -40,6 +40,11 @@ class SpeechActivityDetector(
     @Volatile
     private var thread: Thread? = null
 
+    @Volatile
+    override var debugTimeline: Boolean = false
+    private val debug = DebugTimeline()
+    private var lastStateForDebug = ConversationState.NO_SPEECH
+
     @Synchronized
     override fun start() {
         if (thread != null) return
@@ -50,13 +55,14 @@ class SpeechActivityDetector(
     }
 
     @Synchronized
-    override fun stop() {
+    override fun stop(): Boolean {
         val t = thread
         thread = null
         t?.interrupt()
         // Wait for the thread to close the microphone. The next detector opens it immediately afterwards, and two
         // AudioRecords on the same device give silence on Android 9 rather than an error.
         runCatching { t?.join(STOP_TIMEOUT_MS) }
+        return t == null || !t.isAlive
     }
 
     private fun run() {
@@ -68,7 +74,7 @@ class SpeechActivityDetector(
         var probability = 0.0
         val speaking = RobotSpeaking(context)
         var wasRobotTalking = false
-        var sileroWasSpeech = false
+        val speechGate = SpeechGateState(settings)
         val load = AudioLoad(TAG, "speech activity, %.0f %% of the last %.0f s, gaps up to %d ms count, ".format(
             settings.activityShare * 100, settings.activityWindowMs / 1000.0, settings.activityMinSilenceMs) +
             "confirm twice %b, gate %s, silero %.2f (hysteresis %.2f), floor %.0f dBFS".format(
@@ -94,14 +100,16 @@ class SpeechActivityDetector(
         // moved — which spins the loop and floods the log (seen on the robot 2026-09-28: 12 158 lines in half a minute,
         // which starved the audio thread badly enough to lose microphone data).
         var collected = false
+        val silence = SilenceWindow(settings.resetAfterSilenceMs, settings.resetMaxSpeechShare)
 
         try {
-            if (settings.gateMode != SpeechGateMode.LEVEL_ONLY) vad = SileroVad(context)
+            // The microphone first: if it cannot be opened, no model has been loaded for nothing (item 35).
             val openError = source.open()
             if (openError != null) {
                 _snapshot.value = _snapshot.value.copy(running = false, error = openError)
                 return
             }
+            if (settings.gateMode != SpeechGateMode.LEVEL_ONLY) vad = SileroVad(context)
             // Audio that is not read in time is gone for good, unlike a camera frame: this loop outranks the detection
             // workers (which run at THREAD_PRIORITY_URGENT_DISPLAY, -8).
             runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
@@ -113,12 +121,9 @@ class SpeechActivityDetector(
                 settings.gateMode))
 
             while (!Thread.currentThread().isInterrupted) {
-                var got = 0
-                while (got < HOP) {
-                    val n = source.read(read, HOP - got)
-                    if (n < 0) return
-                    read.copyInto(hop, got, 0, n)
-                    got += n
+                if (!readHop(source, read, hop)) {
+                    _snapshot.value = _snapshot.value.copy(running = false, error = "microphone stopped delivering audio")
+                    return
                 }
                 samples += HOP
                 val timeMs = samples * 1000 / source.sampleRate
@@ -145,19 +150,11 @@ class SpeechActivityDetector(
                 }
                 val levelDb = 20 * log10(max(sqrt(sum / HOP), 1e-9))
 
-                // Hysteresis: while speech is running the bar is lower, so a probability sitting on the threshold does
-                // not flip the gate every chunk.
-                val sileroLimit = if (sileroWasSpeech) settings.speechThreshold - settings.speechHysteresis
-                else settings.speechThreshold
-                val sileroSaysSpeech = probability >= sileroLimit
-                sileroWasSpeech = sileroSaysSpeech
-                val loudEnough = levelDb > settings.minLevelDb
-                val gate = when (settings.gateMode) {
-                    SpeechGateMode.SILERO_AND_LEVEL -> sileroSaysSpeech && loudEnough
-                    SpeechGateMode.SILERO_ONLY -> sileroSaysSpeech
-                    SpeechGateMode.LEVEL_ONLY -> loudEnough
-                }
-                val robotTalking = speaking.active()
+                // Hysteresis with a bounded release bar (see SpeechGateState).
+                val gate = speechGate.decide(probability, levelDb)
+                val sileroSaysSpeech = speechGate.silero
+                val loudEnough = speechGate.loud
+                val robotTalking = speaking.active(timeMs)
                 if (robotTalking != wasRobotTalking) {
                     Log.i(TAG, if (robotTalking) "robot is speaking: ignoring the microphone until it stops"
                     else "robot stopped speaking: listening again")
@@ -167,8 +164,13 @@ class SpeechActivityDetector(
 
                 // A gap shorter than the hangover is part of the same utterance: without this the share would measure
                 // the pauses between WORDS, which one speaker has just as much as two.
-                if (gate) speechUntilMs = timeMs + settings.activityMinSilenceMs
-                val counts = gate || timeMs <= speechUntilMs
+                // Armed only by frames the window will use: the robot's own echo used to arm it during the speech
+                // tail and then entered the window as speech once the robot was quiet (item 53).
+                if (robotTalking) speechUntilMs = Long.MIN_VALUE / 2
+                else if (gate) speechUntilMs = timeMs + settings.activityMinSilenceMs
+                val counts = !robotTalking && (gate || timeMs <= speechUntilMs)
+                debug.frame(debugTimeline, AudioFrame(timeMs, levelDb, if (vad != null) probability else null, counts,
+                    sileroSaysSpeech, loudEnough, robotTalking))
 
                 if (!robotTalking) {
                     // Advance the ring by one frame: forget the oldest, remember this one.
@@ -184,8 +186,10 @@ class SpeechActivityDetector(
                     }
                 }
 
-                // A long silence ends the conversation: the window starts empty again, like the other methods' reset.
-                if (collected && timeMs - lastSpeechAtMs >= settings.resetAfterSilenceMs) {
+                // A long (mostly) silence ends the conversation: at most 10 % speech over the window counts as silence
+                // (owner, 2026-10-19). The window starts empty again, like the other methods' reset.
+                if (silence.add(counts) && collected) {
+                    silence.clear()
                     window.fill(false)
                     writeAt = 0; filled = 0; speechInWindow = 0; speechSamples = 0
                     wasOverThreshold = false
@@ -193,7 +197,9 @@ class SpeechActivityDetector(
                     speechUntilMs = Long.MIN_VALUE / 2
                     aboveSince = Long.MIN_VALUE / 2
                     vad?.reset()
+                    speechGate.reset()
                     Log.i(TAG, "reset after ${settings.resetAfterSilenceMs} ms of silence")
+                    debug.event(debugTimeline, ConversationEvent(timeMs, ConversationEventKind.RESET))
                 }
 
                 val share = if (filled > 0) speechInWindow.toDouble() / filled else 0.0
@@ -215,13 +221,23 @@ class SpeechActivityDetector(
                 if (timeMs - lastPublish >= PUBLISH_MS) {
                     lastPublish = timeMs
                     val speechRecently = timeMs - lastSpeechAtMs <= settings.speechHoldMs
+                    val state = when {
+                        !speechRecently -> ConversationState.NO_SPEECH
+                        over -> ConversationState.MULTIPLE_SPEAKERS
+                        !full -> ConversationState.LISTENING
+                        else -> ConversationState.ONE_SPEAKER
+                    }
+                    if (state == ConversationState.MULTIPLE_SPEAKERS && lastStateForDebug != state) {
+                        debug.event(debugTimeline, ConversationEvent(timeMs, ConversationEventKind.MULTIPLE))
+                    }
+                    lastStateForDebug = state
                     _snapshot.value = ConversationSnapshot(
-                        state = when {
-                            !speechRecently -> ConversationState.NO_SPEECH
-                            over -> ConversationState.MULTIPLE_SPEAKERS
-                            !full -> ConversationState.LISTENING
-                            else -> ConversationState.ONE_SPEAKER
-                        },
+                        state = state,
+                        timeline = debug.frames(debugTimeline),
+                        events = debug.events(debugTimeline),
+                        sileroThreshold = if (vad != null) settings.speechThreshold else null,
+                        sileroRelease = if (vad != null) settings.sileroRelease else null,
+                        levelFloorDb = if (settings.gateMode != SpeechGateMode.SILERO_ONLY) settings.minLevelDb else null,
                         running = true,
                         levelDb = levelDb,
                         speechNow = !robotTalking && counts,

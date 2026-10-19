@@ -52,8 +52,10 @@ OWNER_CONFIG_RE = re.compile(r"listening for the owner's voice \(threshold (\d+[
 PAIRWISE_CONFIG_RE = re.compile(r"comparing voices with each other \(different below (\d+[.,]\d+)")
 # The repeated "settings: …" line carries every threshold, and unlike the start lines it is in every long enough run.
 SET_OWNER_RE = re.compile(r"owner comparison, threshold (\d+[.,]\d+), margin (\d+[.,]\d+)")
-SET_PAIR_RE = re.compile(r"compare pieces, another voice below (\d+[.,]\d+)")
-SET_GATE_RE = re.compile(r"silero (\d+[.,]\d+) \(hysteresis (\d+[.,]\d+)\), floor (-?\d+) dBFS")
+# Since 2026-10-19 the pairwise method decides on the median, and the settings line gives Silero's release bar instead of the
+# hysteresis (release = threshold - hysteresis, bounded); both forms are read.
+SET_PAIR_RE = re.compile(r"compare pieces, another voice (?:when the median is )?below (\d+[.,]\d+)")
+SET_GATE_RE = re.compile(r"silero (\d+[.,]\d+) \((hysteresis|release) (\d+[.,]\d+)\), floor (-?\d+) dBFS")
 SET_ACTIVITY_RE = re.compile(r"speech activity, (\d+) % of the last ([\d,.]+) s, gaps up to (\d+) ms")
 
 
@@ -84,7 +86,10 @@ def parse_gate(voice):
             out.update(pairwiseThreshold=fnum(m.group(1)))
         m = SET_GATE_RE.search(e["text"])
         if m:
-            out.update(silero=fnum(m.group(1)), hysteresis=fnum(m.group(2)), floor=fnum(m.group(3)))
+            second = fnum(m.group(3))
+            out.update(silero=fnum(m.group(1)),
+                       hysteresis=second if m.group(2) == "hysteresis" else fnum(m.group(1)) - second,
+                       floor=fnum(m.group(4)))
         m = SET_ACTIVITY_RE.search(e["text"])
         if m:
             out.update(activityShare=int(m.group(1)) / 100.0, activityWindow=fnum(m.group(2)),
@@ -93,9 +98,10 @@ def parse_gate(voice):
 DELAY_RE = re.compile(r"delay frame→decision: avg (\d+) ms, worst (\d+) ms over (\d+) passes")
 SEEN_RE = re.compile(r"seen: (.+?) \(inliers (\d+), delay (\d+) ms\)")
 GONE_RE = re.compile(r"gone: (.+)$")
-ANNOUNCE_RE = re.compile(r"object detected \((.+?)\): (\S+) good (\d+), inliers (\d+), pink regions (\d+)(?:, delay (\d+) ms)?")
+# The name may have spaces ("Lego robot"), which the old pattern dropped silently.
+ANNOUNCE_RE = re.compile(r"object detected \((.+?)\): (.+?) good (\d+), inliers (\d+), pink regions (\d+)(?:, delay (\d+) ms)?")
 SIM_RE = re.compile(r"piece: similarity ([\d,.-]+) -> (\w+)")
-PAIR_RE = re.compile(r"piece: lowest similarity to the (\d+) held pieces ([\d,.-]+) -> (.+)$")
+PAIR_RE = re.compile(r"piece: (?:lowest|median) similarity to the (\d+) held pieces ([\d,.-]+)(?: \(lowest [\d,.-]+\))? -> (.+)$")
 
 
 def parse_audio(voice):

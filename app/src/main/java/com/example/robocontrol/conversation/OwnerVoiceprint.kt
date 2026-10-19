@@ -65,6 +65,14 @@ class Voiceprint internal constructor(private val values: FloatArray, val info: 
  * @property selfSimilarityMean how close the enrolment pieces were to the finished template on average
  * @property selfSimilarityMin the worst of those pieces — the basis for [threshold]
  * @property threshold similarity from which a voice counts as the owner
+ * @property margin how far below [threshold] a piece must be to count as somebody else (the unclear band). Per voice,
+ *           because it should be about half the owner's own spread; 0.02 for everybody was far too narrow next to a
+ *           measured spread of 0.14–0.20 (review 2026-10-02, item 10).
+ * @property cohortId which cohort the threshold was set against: its creation time, [NO_COHORT] for the raw scale, null
+ *           for voices stored before this was recorded. Removing or re-recording the cohort changes the scale of every
+ *           similarity, so a threshold only means something together with its cohort (item 11).
+ * @property suggestedThreshold what the last enrolment computed, kept next to a hand-set [threshold] instead of
+ *           overwriting it (item 12)
  */
 data class VoiceprintInfo(
     val model: String,
@@ -74,8 +82,19 @@ data class VoiceprintInfo(
     val pieces: Int,
     val selfSimilarityMean: Float,
     val selfSimilarityMin: Float,
-    val threshold: Float
-)
+    val threshold: Float,
+    val margin: Float = DEFAULT_MARGIN,
+    val cohortId: Long? = null,
+    val suggestedThreshold: Float? = null
+) {
+    companion object {
+        /** About half the owner's measured spread (0.14–0.20); the replay of three owner runs gave no false episode with it. */
+        const val DEFAULT_MARGIN = 0.07f
+
+        /** [cohortId] of a threshold set on the raw scale, without a cohort. */
+        const val NO_COHORT = 0L
+    }
+}
 
 /**
  * Stores the owner's template, encrypted with its own Android Keystore key (AES-256-GCM, the same arrangement as the
@@ -96,7 +115,7 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
      */
     private val prefs get() = context.getSharedPreferences("robocontrol_voice", Context.MODE_PRIVATE)
 
-    private val _active = MutableStateFlow(prefs.getString(KEY_ACTIVE, null) ?: DEFAULT_PROFILE)
+    private val _active = MutableStateFlow(safeName(prefs.getString(KEY_ACTIVE, null) ?: DEFAULT_PROFILE))
 
     private val _generation = MutableStateFlow(0L)
 
@@ -121,8 +140,11 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
 
     private fun fileFor(profile: String) = File(folder, safeName(profile) + ".print")
 
-    /** File names are user input: keep them to letters, digits and a few separators. */
-    private fun safeName(profile: String) = profile.trim().replace(Regex("[^A-Za-z0-9 _-]"), "_").take(40).ifBlank { DEFAULT_PROFILE }
+    /**
+     * File names are user input: keep them to letters, digits and a few separators. Every name is normalised ONCE here,
+     * so the active name, the listed names and the file always agree ("Jürgen" is "J_rgen" everywhere, item 56).
+     */
+    fun safeName(profile: String) = profile.trim().replace(Regex("[^A-Za-z0-9 _-]"), "_").take(40).ifBlank { DEFAULT_PROFILE }
 
     private fun listProfiles(): List<String> =
         folder.listFiles()?.filter { it.name.endsWith(".print") }?.map { it.name.removeSuffix(".print") }?.sorted().orEmpty()
@@ -130,17 +152,46 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
     /** Switches the voice the detectors compare against. */
     @Synchronized
     fun setActiveProfile(profile: String) {
-        if (_active.value == profile) return
-        _active.value = profile
-        prefs.edit().putString(KEY_ACTIVE, profile).apply()
-        _info.value = runCatching { load()?.also { it.zero() }?.info }.getOrNull()
-        Log.i(TAG, "active voice: $profile")
+        val name = safeName(profile)
+        if (_active.value == name) {
+            refreshInfo()
+            return
+        }
+        _active.value = name
+        prefs.edit().putString(KEY_ACTIVE, name).apply()
+        refreshInfo()
+        Log.i(TAG, "active voice: $name")
         changed()
     }
+
+    private fun refreshInfo() {
+        _info.value = runCatching { load()?.also { it.zero() }?.info }.getOrNull()
+    }
+
+    /** Null if the active voice can be used; otherwise why not ("no voice stored", or it cannot be read). */
+    @Synchronized
+    fun problem(): String? {
+        if (!file.exists()) return "no owner voice stored"
+        val print = load() ?: return "the stored voice cannot be read (record it again)"
+        val info = print.info
+        print.zero()
+        return if (cohortMismatch(info)) "the owner threshold was set for a different cohort: set it again" else null
+    }
+
+    /**
+     * True if [info]'s threshold was set against another cohort than the one stored now. Voices from before this was
+     * recorded ([VoiceprintInfo.cohortId] null) are accepted as they are.
+     */
+    fun cohortMismatch(info: VoiceprintInfo): Boolean = info.cohortId != null && info.cohortId != currentCohortId()
+
+    /** Creation time of the stored cohort, or [VoiceprintInfo.NO_COHORT]. */
+    @Synchronized
+    fun currentCohortId(): Long = runCatching { readCohort()?.third }.getOrNull() ?: VoiceprintInfo.NO_COHORT
 
     /** Deletes one stored voice; the active one falls back to whatever is left. */
     @Synchronized
     fun deleteProfile(profile: String): Boolean {
+        @Suppress("NAME_SHADOWING") val profile = safeName(profile)
         val deleted = fileFor(profile).let { !it.exists() || it.delete() }
         if (deleted) {
             _profiles.value = listProfiles()
@@ -188,6 +239,11 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
                 .put("selfSimilarityMean", info.selfSimilarityMean.toDouble())
                 .put("selfSimilarityMin", info.selfSimilarityMin.toDouble())
                 .put("threshold", info.threshold.toDouble())
+                .put("margin", info.margin.toDouble())
+                .apply {
+                    info.cohortId?.let { put("cohortId", it) }
+                    info.suggestedThreshold?.let { put("suggestedThreshold", it.toDouble()) }
+                }
                 .put("template", JSONArray().apply { values.forEach { put(it.toDouble()) } })
             val bytes = cipher.encrypt(json.toString().toByteArray(Charsets.UTF_8), aad())
             val target = file
@@ -220,11 +276,29 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
      * @return null on success, else a message for the screen
      */
     @Synchronized
-    fun setThreshold(threshold: Float): String? {
+    fun setThreshold(threshold: Float): String? = update { it.copy(threshold = threshold.coerceIn(MIN_THRESHOLD, MAX_THRESHOLD)) }
+
+    /** Changes only the unclear band of the stored voice (see [VoiceprintInfo.margin]). */
+    @Synchronized
+    fun setMargin(margin: Float): String? = update { it.copy(margin = margin.coerceIn(0f, MAX_MARGIN)) }
+
+    /** Takes over the threshold the last enrolment suggested. */
+    @Synchronized
+    fun applySuggestedThreshold(): String? = update { info -> info.suggestedThreshold?.let { info.copy(threshold = it) } ?: info }
+
+    /**
+     * Rewrites the stored info with [change], binding the threshold to the cohort stored NOW (a threshold set by hand is
+     * set on the scale the detector uses at this moment). Saves nothing if nothing changed.
+     */
+    private fun update(change: (VoiceprintInfo) -> VoiceprintInfo): String? {
         val print = load() ?: return "no voice stored"
         val values = print.copyValues()
-        val info = print.info.copy(threshold = threshold.coerceIn(MIN_THRESHOLD, MAX_THRESHOLD))
+        val info = change(print.info).copy(cohortId = currentCohortId())
         print.zero()
+        if (info == print.info) {
+            values.fill(0f)
+            return null
+        }
         val error = save(values, info)
         values.fill(0f)
         return error
@@ -279,7 +353,7 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         return deleted
     }
 
-    private fun readCohort(): Pair<FloatArray, Int>? {
+    private fun readCohort(): Triple<FloatArray, Int, Long>? {
         val file = File(File(context.filesDir, "robocontrol/voice"), COHORT_FILE)
         if (!file.exists()) return null
         val json = JSONObject(String(cipher.decrypt(file.readBytes(), cohortAad()), Charsets.UTF_8))
@@ -290,7 +364,7 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
             Log.w(TAG, "stored cohort is empty (all zeros): ignored, record the other voices again")
             return null
         }
-        return mean to json.optInt("pieces")
+        return Triple(mean, json.optInt("pieces"), json.optLong("createdAtMs", 1L))
     }
 
     private fun norm(values: FloatArray): Double = kotlin.math.sqrt(values.sumOf { it.toDouble() * it })
@@ -318,7 +392,10 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         pieces = json.optInt("pieces"),
         selfSimilarityMean = json.optDouble("selfSimilarityMean", 0.0).toFloat(),
         selfSimilarityMin = json.optDouble("selfSimilarityMin", 0.0).toFloat(),
-        threshold = json.optDouble("threshold", 0.0).toFloat()
+        threshold = json.optDouble("threshold", 0.0).toFloat(),
+        margin = json.optDouble("margin", VoiceprintInfo.DEFAULT_MARGIN.toDouble()).toFloat(),
+        cohortId = if (json.has("cohortId")) json.optLong("cohortId") else null,
+        suggestedThreshold = if (json.has("suggestedThreshold")) json.optDouble("suggestedThreshold").toFloat() else null
     )
 
     /** Binds the file to its purpose: a copy dropped into another app's folder cannot be decrypted. */
@@ -337,6 +414,9 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         /** Range the threshold can be set to by hand. Below 0.2 almost any voice passes, above 0.97 not even the owner. */
         const val MIN_THRESHOLD = 0.2f
         const val MAX_THRESHOLD = 0.97f
+
+        /** Widest unclear band that can be set. */
+        const val MAX_MARGIN = 0.4f
 
         /** A cohort mean shorter than this is empty (zeros), not an average of voices. */
         private const val MIN_COHORT_NORM = 1e-3

@@ -37,6 +37,12 @@ class PrivacyGuard(
     private val zoneOverrides = mutableMapOf<String, Override>()
     private val auditLog = mutableListOf<AuditEntry>()
 
+    /** Private zones the robot was inside at the last [violationAt]; entries are audited only when one is added. */
+    private val insideZones = mutableSetOf<String>()
+
+    /** Called for every new audit entry (MapNavigation writes it to the navigation log, so it can be seen). */
+    var onAudit: ((AuditEntry) -> Unit)? = null
+
     fun updateZones(newZones: MapZones) { zones = newZones }
 
     // ---- decisions ------------------------------------------------------
@@ -67,9 +73,14 @@ class PrivacyGuard(
         if (pose.status == PoseStatus.FORBIDDEN) {
             return Violation.SdkForbiddenArea
         }
-        val zone = zones.zonesAt(pose.point, margin).firstOrNull { it.isPrivate && overrideFor(it) == null }
-            ?: return null
-        record(AuditEntry.EnteredPrivateZone(clock(), zone.name, pose.point))
+        val blocked = zones.zonesAt(pose.point, margin).filter { it.isPrivate && overrideFor(it) == null }
+        // Audit only the moment of entering: while the robot stands inside an area this is called every 500 ms, and
+        // one entry per call pushed every grant and revocation out of the log within minutes (review 2026-10-02, item 29).
+        val names = blocked.map { it.name }.toSet()
+        for (name in names - insideZones) record(AuditEntry.EnteredPrivateZone(clock(), name, pose.point))
+        insideZones.retainAll(names)
+        insideZones.addAll(names)
+        val zone = blocked.firstOrNull() ?: return null
         return Violation.PrivateZone(zone)
     }
 
@@ -130,6 +141,11 @@ class PrivacyGuard(
         return o
     }
 
+    /** Ends every per-zone permission, e.g. when the map changes (area names repeat across maps: "Bereich 1"). */
+    fun revokeAllZoneOverrides(revokedBy: String) {
+        zoneOverrides.keys.toList().forEach { key -> zoneOverrides[key]?.zoneName?.let { revokeZoneOverride(it, revokedBy) } }
+    }
+
     fun revokeZoneOverride(zoneName: String, revokedBy: String) {
         val o = zoneOverrides.remove(zoneName.lowercase()) ?: return
         record(AuditEntry.OverrideRevoked(clock(), o.reason, revokedBy, zoneName))
@@ -184,6 +200,7 @@ class PrivacyGuard(
     private fun record(e: AuditEntry) {
         auditLog.add(e)
         if (auditLog.size > MAX_AUDIT_ENTRIES) auditLog.removeAt(0)
+        runCatching { onAudit?.invoke(e) }
     }
 
     companion object {
@@ -229,6 +246,17 @@ data class Override(
 
 sealed interface AuditEntry {
     val timestamp: Long
+
+    /** One line for the screen, the phone and the log: the decision only, no coordinates (they would be a movement trace). */
+    fun describe(): String = when (this) {
+        is Refused -> "refused: target in \"$zoneName\""
+        is EnteredPrivateZone -> "entered \"$zoneName\""
+        is OverrideGranted -> "permission granted${zoneName?.let { " for \"$it\"" } ?: " for all areas"} by $grantedBy ($reason) until " +
+            java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT).format(java.util.Date(expiresAt))
+        is OverrideRevoked -> "permission${zoneName?.let { " for \"$it\"" } ?: ""} revoked by $revokedBy"
+        is OverrideExpired -> "permission${zoneName?.let { " for \"$it\"" } ?: ""} expired"
+        is OverriddenEntry -> "entered \"$zoneName\" with permission ($reason)"
+    }
 
     data class Refused(
         override val timestamp: Long,

@@ -248,7 +248,7 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
             log.i(TAG, "[Android layer] skipped: RECORD_AUDIO not granted")
         } else {
             log.i(TAG, "[Android layer] test recording for ${MIC_RECORD_SECONDS} s NOW: talk or clap")
-            val recording = recordMic(MIC_RECORD_SECONDS)
+            val recording = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { recordMic(MIC_RECORD_SECONDS) }
             if (recording == null) {
                 log.i(TAG, "[Android layer] recording failed: could not open or read the microphone")
             } else {
@@ -293,7 +293,9 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
      */
     private suspend fun checkCamera(enabled: Boolean) {
         log.i(TAG, "Android read-back: getCameraDisabled=${devicePolicy.getCameraDisabled(null)} (device admin active: ${devicePolicy.isAdminActive(admin)})")
-        val blocked: Boolean = when (val shot = camera.capture()) {
+        // The calendar monitor may stream the camera too; a "busy" answer then says nothing about the switch (see below).
+        val shot = camera.capture()
+        val blocked: Boolean = when (shot) {
             is SnapshotResult.Success -> {
                 val pixels = shot.image.pixels
                 val mean = pixels.sumOf { (it.toInt() and 0xFF).toLong() }.toDouble() / pixels.size
@@ -309,6 +311,10 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
                 _lastImage.value = ShownImage(null, "Camera ${onOff(enabled)}: no image (${shot.reason})")
                 if (shot.reason == SnapshotFailure.NotConnected) {
                     log.i(TAG, "INCONCLUSIVE: RobotApi not connected, so the failure says nothing about the camera")
+                    return
+                }
+                if (shot.reason == SnapshotFailure.CameraBusy || shot.reason == SnapshotFailure.Preempted) {
+                    log.i(TAG, "INCONCLUSIVE: another consumer holds the camera stream, so the failure says nothing about the switch")
                     return
                 }
                 true
@@ -333,12 +339,19 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
         // CAMCORDER -37 dBFS, MIC -77 dBFS and VOICE_RECOGNITION/VOICE_COMMUNICATION/UNPROCESSED about -93 dBFS with
         // the same sound; MIC also varied between -35 and -103 dBFS while com.ainirobot.remotecontrolservice keeps
         // recording from MIC permanently.
+        // The conversation monitor records too: take the microphone first (on Android 9 the second recording gets
+        // silence, which would read as "microphone off", review item 31).
+        val lease = com.example.robocontrol.conversation.ConversationMonitor.acquireMicrophone("sensor test")
         val recorder = runCatching {
             AudioRecord(MediaRecorder.AudioSource.CAMCORDER, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, samples.size * 2)
-        }.getOrNull() ?: return null
+        }.getOrNull() ?: run { lease.close(); return null }
         try {
             if (recorder.state != AudioRecord.STATE_INITIALIZED) return null
             recorder.startRecording()
+            if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                log.i(TAG, "the microphone did not start recording (busy?)")
+                return null
+            }
             var read = 0
             while (read < samples.size) {
                 val n = recorder.read(samples, read, samples.size - read)
@@ -356,6 +369,7 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
         } finally {
             runCatching { recorder.stop() }
             recorder.release()
+            lease.close()
         }
     }
 

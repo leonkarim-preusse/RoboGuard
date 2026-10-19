@@ -116,12 +116,17 @@ def main():
     seconds = 60
     serial = "10.131.33.35:5555"
     label = ""
+    start_at = None
     i = 0
     while i < len(args):
         if args[i] == "--serial":
             serial = args[i + 1]; i += 2
         elif args[i] == "--label":
             label = args[i + 1]; i += 2
+        elif args[i] == "--start-at":
+            # Robot epoch seconds: keep the log from this moment instead of clearing it, so an event that triggered the
+            # recording (a drive starting) is in it.
+            start_at = float(args[i + 1]); i += 2
         else:
             seconds = int(args[i]); i += 1
 
@@ -134,7 +139,12 @@ def main():
     robot_now = float(adb(serial, "shell", "date", "+%s.%N").stdout.strip())
     offset = t_host - robot_now
 
-    adb(serial, "logcat", "-c")
+    if start_at is None:
+        adb(serial, "logcat", "-c")
+    print(f"recording {seconds} s from pid {pid} on {serial} …")
+    samples = sample_proc(serial, pid, seconds)
+    # Command lines AFTER the sampling: reading them takes ~30 s on the busy robot, and done first it delayed the start of
+    # the recording that long (2026-10-19: the drive that triggered it was over before the first sample).
     # Full command lines of all processes (the stat names are cut to 15 characters, e.g. both HAL services show "android.hardwar").
     cmd = adb(serial, "shell", "for p in /proc/[0-9]*; do echo \"${p#/proc/} $(tr '\\0' ' ' < $p/cmdline 2>/dev/null | cut -c1-80)\"; done").stdout
     cmdlines = {}
@@ -142,8 +152,6 @@ def main():
         ident, _, c = line.partition(" ")
         if c.strip():
             cmdlines[ident] = c.strip()
-    print(f"recording {seconds} s from pid {pid} on {serial} …")
-    samples = sample_proc(serial, pid, seconds)
     for s_ in samples:  # robot clock → host timeline
         s_["t"] += offset
     threads = to_rows(samples, "threads")
@@ -154,13 +162,16 @@ def main():
             row[4] = cmdlines.get(row[0], row[4])
 
     # Voice tags: one per detection method, plus the monitor that decides whether to ask the room.
-    tags = ["CalendarMonitor", "RoboGuardNav", "OwnerVoice", "PairwiseVoice", "SpeakerChange", "ConversationMonitor"]
+    tags = ["CalendarMonitor", "RoboGuardNav", "OwnerVoice", "PairwiseVoice", "SpeakerChange", "SpeechActivity",
+            "ConversationMonitor"]
     log = adb(serial, "logcat", "-d", "-v", "epoch", "-s", *[t + ":I" for t in tags]).stdout.splitlines()
     timing, nav, voice = [], [], []
     pattern = re.compile(r"\s*(\d+\.\d+)\s.*?(" + "|".join(tags) + r").*?: (.*)$")
     for line in log:
         m = pattern.match(line)
         if not m:
+            continue
+        if start_at is not None and float(m.group(1)) < start_at:
             continue
         entry = {"t": float(m.group(1)) + offset, "text": m.group(3)}
         if m.group(2) == "CalendarMonitor":

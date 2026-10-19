@@ -102,11 +102,18 @@ class Sensors private constructor(private val context: Context) {
      */
     @Synchronized
     fun update(sensors: Map<String, Boolean>) {
+        notifySensors(assignSensors(sensors))
+    }
+
+    /** Sets the state and switches the hardware; returns what changed (listeners are not told yet). */
+    private fun assignSensors(sensors: Map<String, Boolean>): Map<String, Boolean> {
         val previous = _states.value
         _states.value = sensors.toMap()
         switches.apply(sensors)
+        return sensors.filter { (name, enabled) -> previous[name] != enabled }
+    }
 
-        val changed = sensors.filter { (name, enabled) -> previous[name] != enabled }
+    private fun notifySensors(changed: Map<String, Boolean>) {
         if (changed.isEmpty()) return
         Log.i(TAG, "sensor settings changed: $changed")
 
@@ -161,9 +168,16 @@ class Sensors private constructor(private val context: Context) {
      */
     @Synchronized
     fun updateSituational(values: Map<String, Boolean>) {
+        notifySituational(assignSituational(values))
+    }
+
+    private fun assignSituational(values: Map<String, Boolean>): Map<String, Boolean> {
         val previous = _situational.value
         _situational.value = values.toMap()
-        val changed = values.filter { (name, on) -> previous[name] != on }
+        return values.filter { (name, on) -> previous[name] != on }
+    }
+
+    private fun notifySituational(changed: Map<String, Boolean>) {
         if (changed.isEmpty()) return
         Log.i(TAG, "situational settings changed: $changed")
         for ((name, on) in changed) {
@@ -184,15 +198,22 @@ class Sensors private constructor(private val context: Context) {
     }
 
     /** Applies a full settings object, as received by `POST /save`: sensors (with hardware) and situational settings. */
-    fun update(settings: AppSettings) {
-        updateSituational(settings.situationalSettings)
-        update(settings.sensors)
-    }
+    fun update(settings: AppSettings) = applyBoth(settings.sensors, settings.situationalSettings)
 
     /** Re-reads `privacy_settings.json` and applies it, for callers that do not have the settings object. */
-    fun reload() {
-        updateSituational(readSituationalFile())
-        update(readSettingsFile())
+    fun reload() = applyBoth(readSettingsFile(), readSituationalFile())
+
+    /**
+     * Both parts of one save: first BOTH states are set (and the hardware switched), only then are the listeners told.
+     * Telling the situational listeners first made a save with "Discretion Mode on + microphone off" start a detector
+     * on the old sensor state and stop it again a moment later (review 2026-10-02, item 63).
+     */
+    @Synchronized
+    private fun applyBoth(sensors: Map<String, Boolean>, situational: Map<String, Boolean>) {
+        val situationalChanged = assignSituational(situational)
+        val sensorsChanged = assignSensors(sensors)
+        notifySensors(sensorsChanged)
+        notifySituational(situationalChanged)
     }
 
     /**
@@ -223,10 +244,10 @@ class Sensors private constructor(private val context: Context) {
     /** Situational settings from the settings file; empty (= everything off) while the phone has not saved any. */
     private fun readSituationalFile(): Map<String, Boolean> {
         val file = getSettingsFile(context)
-        if (!file.exists()) return emptyMap()
+        if (!file.exists()) return DEFAULT_SITUATIONAL
         return runCatching { json.decodeFromString<AppSettings>(file.readText()).situationalSettings }
             .onFailure { Log.e(TAG, "could not read the situational settings from ${file.name}", it) }
-            .getOrDefault(emptyMap())
+            .getOrDefault(DEFAULT_SITUATIONAL)
     }
 
     companion object {
@@ -237,6 +258,9 @@ class Sensors private constructor(private val context: Context) {
          * Mirrors `RobotServerService.getDefaultSettings()`; keep both in sync.
          */
         val DEFAULT_SENSORS: Map<String, Boolean> = mapOf("Camera" to true, "LIDAR" to true, "Microphone" to true)
+
+        /** Situational features until the phone has saved once: all on (owner, 2026-10-19). */
+        val DEFAULT_SITUATIONAL: Map<String, Boolean> = mapOf("Discretion Mode" to true, "Pixelate Objects" to true)
 
         @Volatile
         private var instance: Sensors? = null

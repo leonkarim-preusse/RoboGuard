@@ -50,6 +50,9 @@ object UiText {
     /** Voice for the spoken sentences, from `meta.speechLanguage`; German if the file does not say. */
     val speechLanguage: String get() = meta["speechLanguage"] ?: "de_DE"
 
+    /** Speaker of the spoken sentences (`meta.speechVoice`, e.g. "en-us-wavenet-c"); null = the robot's own setting. */
+    val speechVoice: String? get() = meta["speechVoice"]?.takeIf { it.isNotBlank() }
+
     /** Re-reads the file (after an app update or for tests). */
     @Synchronized
     fun reload() {

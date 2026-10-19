@@ -27,11 +27,12 @@ class SpeakerEmbedder(context: Context) : AutoCloseable {
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val session: OrtSession
+    private val options: OrtSession.SessionOptions
     private val fbank = Fbank()
 
     init {
         val model = context.assets.open(MODEL_ASSET).use { it.readBytes() }
-        val options = OrtSession.SessionOptions().apply {
+        options = OrtSession.SessionOptions().apply {
             setIntraOpNumThreads(1)
             setInterOpNumThreads(1)
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
@@ -66,6 +67,7 @@ class SpeakerEmbedder(context: Context) : AutoCloseable {
 
     override fun close() {
         session.close()
+        options.close()
     }
 
     companion object {

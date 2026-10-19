@@ -59,6 +59,12 @@ class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
             log.i(TAG, "RECORD_AUDIO not granted, stopping")
             return
         }
+        // The conversation monitor records too; on Android 9 a second recording gets silence, which would read as "this
+        // source delivers nothing" (review 2026-10-02, item 31).
+        com.example.robocontrol.conversation.ConversationMonitor.acquireMicrophone("mic access test").use { runAttempts(secondsPerAttempt) }
+    }
+
+    private fun runAttempts(secondsPerAttempt: Double) {
         listInputDevices()
         logActiveRecordings("before")
 

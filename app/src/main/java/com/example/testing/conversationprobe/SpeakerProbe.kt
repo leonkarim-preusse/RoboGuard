@@ -92,6 +92,12 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
             return
         }
         start("microphone", AndroidMicSource(), _config.value)
+        // Switched off while the test runs: stop, like the product does (item 50).
+        Sensors.get(context).addListener(micListener)
+    }
+
+    private val micListener = com.example.robocontrol.sensorcontrol.SensorChangeListener { name, enabled ->
+        if (name.equals("microphone", ignoreCase = true) && !enabled) scope.launch(Dispatchers.Main) { stop("microphone switched off") }
     }
 
     /** Plays a synthetic scene in real time so the screen can be watched: 12 s one voice, 4 s pause, 24 s two voices alternating. */
@@ -148,10 +154,17 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
     }
 
     fun stop(reason: String) {
-        ConversationMonitor.setProbeUsingMicrophone(false)
-        val d = detector ?: return
+        val d = detector
+        if (d == null) {
+            ConversationMonitor.setProbeUsingMicrophone(false)
+            return
+        }
         detector = null
+        // Our own detector first, THEN hand the microphone back: the other way round the monitor opened it while this
+        // test still held it (review 2026-10-02, item 31).
         d.stop()
+        ConversationMonitor.setProbeUsingMicrophone(false)
+        runCatching { Sensors.get(context).removeListener(micListener) }
         watchJob?.cancel()
         watchJob = null
         if (_source.value != null) log.i(TAG, "stopped ($reason)")

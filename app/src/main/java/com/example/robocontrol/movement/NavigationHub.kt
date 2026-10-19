@@ -71,6 +71,7 @@ object NavigationHub {
     }
 
     /** Called by the phone routes before each command, so the robot screen can show who is steering. */
+    @Synchronized
     fun noteRemoteCommand(client: String) {
         lastRemoteAt = android.os.SystemClock.elapsedRealtime()
         if (_remoteControl.value != client) {
@@ -79,7 +80,8 @@ object NavigationHub {
         }
     }
 
-    /** Clears [remoteControl] once the phone has been quiet for [REMOTE_ACTIVE_MS]; called from the state poll. */
+    /** Clears [remoteControl] once the phone has been quiet for [REMOTE_ACTIVE_MS]; called from the state poll and pollLoop. */
+    @Synchronized
     fun expireRemoteControl() {
         val active = _remoteControl.value ?: return
         if (android.os.SystemClock.elapsedRealtime() - lastRemoteAt > REMOTE_ACTIVE_MS) {
