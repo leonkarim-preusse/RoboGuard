@@ -1934,3 +1934,44 @@ an old template is not comparable with new pieces.
   close). A worker failure (model load, exception) reaches the loop through `embedError` and ends the detector with an error
   snapshot, so the watchdog restarts it. Consequence: after a stop the old model can stay in memory for up to one embedding
   (0.6-3.4 s) next to the new detector's.
+
+## Hidden debug mode by tapping the header (owner request 2026-10-19, robot INSTALLED, phone compiled only, not seen yet)
+
+- Like Android's developer options: tap the header 7 times within 1.5 s gaps; from the 3rd tap a toast counts down
+  ("{taps} more taps to switch on debug mode"), the 7th switches debug mode on. Persisted, shared by all screens of the app.
+  The debug switch is only visible while debug mode is on; switching it off hides it again (owner's wording: "spam clicking is
+  again required"). Texts `debug.toast.steps/on/already_on` in both texts.json files.
+- Robot: `robocontrol/system/DebugMode.kt` (prefs `robocontrol_debug_mode`). Headers: start screen = the bold QR hint line in
+  `roboguard/MainActivity.kt`; map screen = new header row in `MapNavigationActivity`: green Home button (left, back to
+  MainActivity with CLEAR_TOP), STOP in the middle (owner 2026-10-19: no title there, so debug taps only on the start screen), "Drive to …" smaller (48 dp, max 320 dp, one line) on the far
+  right. Speed presets + measured speed moved into debug.
+- Phone (`RoboGuardAndroidEnd`): `DebugMode.kt` (prefs `roboguard_debug_mode`), `HeaderAppName` counts taps (every screen with the
+  blue header), `NavigationScreen`: speed section and the debug switch only in debug mode.
+- MapNavigationActivity is exported=false, so `adb shell am start` cannot open it for a screenshot.
+
+## Calendar popup + the high review items (owner 2026-10-19, robot INSTALLED, not run yet)
+
+- **Calendar popup (owner):** a reference with `calendarPopup: true` in settings.json (`Calendar.jpg`) no longer says "Kalender
+  entdeckt" but opens `vision/CalendarPromptActivity` (dialog, like the conversation prompt) with "Blur calendar", "Save dates"
+  (both do nothing yet, only logged) and "Dismiss", and says `speech.calendar_question` "Kalender entdeckt. Sollen die Termine
+  gespeichert werden?" (owner wrote "Kalendar"/"gepsiechert"; spelled correctly for the voice). While the popup is open nothing is
+  announced. Dismiss (or closing it any other way) = no announcement for `popupCooldownSeconds` = 120 s, **except while the camera
+  view (debug) is open**. Other references (Lego robot) still just say "{object} entdeckt".
+- Review items fixed (only the high ones; owner: #7 ignored, nothing under roboguard/ [RG] touched, medium/low left alone):
+  - **#2** second Drive during a drive: `MapNavigation.driveTo` refuses while `controller.isNavigating` ("press STOP first"), Drive
+    buttons on the robot are off while `MapNavigation.driving`, phone `drive` now answers ok=false with the reason;
+    `NavigationController.start` stops a running drive before starting another (second line of defence).
+  - **#3** 30 s silence reset: Owner/Pairwise detectors also reset when `speechSamples > 0` (not only with a half piece), and reset
+    the Silero hysteresis state.
+  - **#4** repeated announcements: per-reference history + latch in CalendarMonitor (`RefState`, kept across stream restarts); an
+    object is announced once and again only after `rearmAfterGoneSeconds` (10 s) out of view. "Every detection" now defaults to OFF
+    and only works while the camera view is open; the latch and the popup cooldown do not apply there.
+  - **#5** cohort Stop: VoiceEnrolment saves the cohort BEFORE zeroing the pieces and before handing the mic back;
+    `saveCohort` refuses and `readCohort` ignores a near-zero mean (norm < 1e-3).
+  - **#6** `OwnerVoiceprintStore.generation` counts every voice/threshold/profile/cohort change; ConversationMonitor restarts a
+    running OWNER/PAIRWISE detector on it (debounced restart).
+  - **#8** whole-picture references (Lego) run on their own cadence (`wholeFrameIntervalMs`, owner set 100 ms), only under the ORB gate, after
+    the calendar's decision; summary line "whole picture: N searches, avg … ms".
+  - **#9** `Core.setNumThreads(openCvThreads)` (settings.json, default 1) right after OpenCV loads.
+- New settings.json keys (general): `openCvThreads`, `wholeFrameIntervalMs`, `rearmAfterGoneSeconds`, `popupCooldownSeconds`;
+  per image: `calendarPopup`.

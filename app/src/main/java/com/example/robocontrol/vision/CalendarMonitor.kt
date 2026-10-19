@@ -1,6 +1,7 @@
 package com.example.robocontrol.vision
 
 import android.content.Context
+import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
 import com.example.robocontrol.audio.OrionStarTts
@@ -129,10 +130,12 @@ object CalendarMonitor {
 
     private const val KEY_EVERY_DETECTION = "announce_every_detection"
 
-    private val _announceEveryDetection = MutableStateFlow(true)
+    private val _announceEveryDetection = MutableStateFlow(false)
     /**
      * Test mode (owner): speak on every detected pass (only while not already speaking), without "in a row" and cooldown.
-     * Off = [CalendarDetectionSettings.CONSISTENCY_NEEDED] in a row, then [COOLDOWN_MS]. Saved.
+     * Off = [CalendarDetectionSettings.CONSISTENCY_NEEDED] in a row, then [COOLDOWN_MS]. Saved. Only honoured while the camera
+     * view is open: outside it an object that stays in view would be announced after every sentence, and every announcement
+     * blinds the voice detectors (review 2026-10-02, item 4).
      */
     val announceEveryDetection: StateFlow<Boolean> = _announceEveryDetection.asStateFlow()
 
@@ -157,6 +160,53 @@ object CalendarMonitor {
     @Volatile
     private var cooldownUntil = 0L
 
+    /**
+     * Per reference image: its own "in a row" history and whether it has already been announced. Kept at monitor level, so a
+     * stream restart does not make an object that is still in view "new" again.
+     */
+    private class RefState {
+        /** Per check of this reference, in frame order: 0 = nothing, 1 = confirm level, 2 = full detection. */
+        val history = ArrayDeque<Int>()
+        var lastTs = 0L
+        /** elapsedRealtime of the last check that found it (confirm level or better). */
+        var lastFoundAt = 0L
+        /** Announced and not yet out of view for [CalendarDetectionSettings.REARM_AFTER_GONE_MS]. */
+        var announced = false
+    }
+
+    private val refStates = HashMap<String, RefState>()
+
+    /** The calendar popup is on screen: nothing is announced meanwhile. */
+    @Volatile
+    private var popupOpen = false
+
+    /** elapsedRealtime until which nothing is announced after the popup was dismissed (not while the camera view is open). */
+    @Volatile
+    private var popupCooldownUntil = 0L
+
+    /** Whole-picture results of the latest search, so the camera view can still draw them between searches. */
+    @Volatile
+    private var lastWhole: Pair<Long, List<ObjectMatch>> = 0L to emptyList()
+
+    /** What the person chose in the calendar popup. Blur and Save do nothing yet (owner, 2026-10-19). */
+    enum class PopupChoice { BLUR, SAVE_DATES, DISMISS }
+
+    /** Called by [CalendarPromptActivity] once, when it closes. Closing without a choice counts as [PopupChoice.DISMISS]. */
+    fun popupClosed(choice: PopupChoice) {
+        if (!popupOpen) return
+        popupOpen = false
+        val debugging = debugViewers.get() > 0
+        // Owner: Dismiss = no calendar detection for two minutes, but not while trying it out in the camera view.
+        if (choice == PopupChoice.DISMISS && !debugging) {
+            popupCooldownUntil = SystemClock.elapsedRealtime() + CalendarDetectionSettings.POPUP_COOLDOWN_MS
+        }
+        Log.i(TAG, "calendar popup: $choice" + when {
+            choice != PopupChoice.DISMISS -> " (no action yet)"
+            debugging -> " (camera view open: no cooldown)"
+            else -> ", no announcement for ${CalendarDetectionSettings.POPUP_COOLDOWN_MS / 1000} s"
+        })
+    }
+
     /** Last reason logged by [reevaluate], so the same line is not repeated on every settings change. */
     private var lastReason: String? = "not started"
 
@@ -176,7 +226,7 @@ object CalendarMonitor {
         appContext = context.applicationContext
         _minInliers.value = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getInt(KEY_MIN_INLIERS, CalendarDetectionSettings.MIN_INLIERS)
-        _announceEveryDetection.value = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_EVERY_DETECTION, true)
+        _announceEveryDetection.value = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_EVERY_DETECTION, false)
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         Sensors.get(appContext).addListener(sensorListener)
         Sensors.get(appContext).addSituationalListener(situationalListener)
@@ -312,9 +362,6 @@ object CalendarMonitor {
 
     /** Results of the workers, combined in frame order. Guarded by its own lock. */
     private class PassLog {
-        /** Per pass in frame order: 0 = nothing, 1 = confirm-level detection (≥ X − 10 inliers), 2 = full detection (≥ X). */
-        val history = ArrayDeque<Int>()
-        var lastTs = 0L
         // For the 2 s summary.
         var passes = 0; var detected = 0; var msSum = 0L; var colourMsSum = 0L; var regions = 0
         var rejectedFrame = 0; var rejectedWhite = 0; var bestInliers = 0; var outOfOrder = 0
@@ -328,6 +375,8 @@ object CalendarMonitor {
         var delaySum = 0L; var delayMax = 0L; var delayPasses = 0
         /** Reference name → elapsedRealtime of its last full detection, for the "seen"/"gone" lines of the timeline. */
         val lastSeen = HashMap<String, Long>()
+        /** Whole-picture searches in the window: count, time sum, ORB stage times. */
+        var wholeSearches = 0; var wholeMsSum = 0L; val wholeOrb = ORB.Timings()
     }
 
     private suspend fun detectUntilError(
@@ -337,6 +386,7 @@ object CalendarMonitor {
         val orbGate = java.util.concurrent.Semaphore(1)
         val nextStart = AtomicLong(0)
         val startInterval = 1000L / CalendarDetectionSettings.MAX_PASSES_PER_SECOND
+        val nextWholeDue = AtomicLong(0)
         val log = PassLog()
         val jobs = workers.map { (orb, marker) ->
             launch(dispatcher) {
@@ -371,6 +421,27 @@ object CalendarMonitor {
                         continue
                     }
                     onPass(log, pass, f.timestampMs, SystemClock.elapsedRealtime() - t0, debugging)
+                    // References without a pink frame are searched in the whole picture on their own, slower cadence and only
+                    // after the calendar's decision is out. Before, this ran on every pass in both workers at once, outside the
+                    // ORB gate, and every calendar decision waited for it (review 2026-10-02, item 8).
+                    val whole = wholePictureNames(orb)
+                    val due = nextWholeDue.get()
+                    val now = SystemClock.elapsedRealtime()
+                    if (whole.isNotEmpty() && !pass.skipped && now >= due &&
+                        nextWholeDue.compareAndSet(due, now + CalendarDetectionSettings.WHOLE_FRAME_INTERVAL_MS)) {
+                        if (orbGate.tryAcquire()) {
+                            try {
+                                val w0 = SystemClock.elapsedRealtime()
+                                orb.takeTimings()
+                                val extra = runCatching { orb.evaluate(f.gray, whole) }.getOrElse { emptyList() }
+                                onWholePass(log, extra, whole, f.timestampMs, SystemClock.elapsedRealtime() - w0, orb.takeTimings())
+                            } finally {
+                                orbGate.release()
+                            }
+                        } else {
+                            nextWholeDue.set(0) // the other worker runs ORB: let the next free one do the search
+                        }
+                    }
                 }
             }
         }
@@ -409,6 +480,14 @@ object CalendarMonitor {
                     if (log.delayPasses > 0) {
                         Log.i(TAG, "delay frame→decision: avg ${log.delaySum / log.delayPasses} ms, worst ${log.delayMax} ms over ${log.delayPasses} passes")
                     }
+                    if (log.wholeSearches > 0) {
+                        val w = log.wholeSearches
+                        Log.i(TAG, "whole picture: %d searches, avg %d ms = keypoints %.0f + knn match %.0f + homography %.0f ms".format(
+                            w, log.wholeMsSum / w, log.wholeOrb.extractNs / 1e6 / w, log.wholeOrb.knnNs / 1e6 / w,
+                            log.wholeOrb.homographyNs / 1e6 / w))
+                    }
+                    log.wholeSearches = 0; log.wholeMsSum = 0
+                    log.wholeOrb.resizeNs = 0; log.wholeOrb.extractNs = 0; log.wholeOrb.knnNs = 0; log.wholeOrb.ratioNs = 0; log.wholeOrb.homographyNs = 0
                     log.delaySum = 0; log.delayMax = 0; log.delayPasses = 0
                     log.skipped = 0
                     if (log.regionPasses > 0) {
@@ -472,25 +551,22 @@ object CalendarMonitor {
         return settings.minGoodMatches to (full - settings.confirmInlierDrop).coerceAtLeast(ObjectSettings.ORB_MIN_INLIERS)
     }
 
-    /**
-     * One check: references with a pink frame are searched inside the pink areas, references whose settings say
-     * `usePinkMarker: false` are searched in the whole camera picture (slower, so only do that when a picture needs it).
-     */
+    /** References searched inside pink frames (the calendar). */
+    private fun pinkGatedNames(orb: ORB): List<String> =
+        if (!CalendarDetectionSettings.USE_PINK_MARKER) emptyList()
+        else orb.classNames.filter { DetectionSettings.forImage(it).usePinkMarker }
+
+    /** References whose settings say `usePinkMarker: false`: searched in the whole camera picture (slower, own cadence). */
+    private fun wholePictureNames(orb: ORB): List<String> {
+        val gated = pinkGatedNames(orb)
+        return orb.classNames.filter { it !in gated }
+    }
+
+    /** One check of the pink-gated references. The whole-picture ones run separately, see the worker loop. */
     private fun detectionPass(orb: ORB, marker: ColorMarker, frame: CameraFrame, drawDetails: Boolean, orbGate: java.util.concurrent.Semaphore): MarkerPass {
-        val all = orb.classNames
-        val general = CalendarDetectionSettings.USE_PINK_MARKER
-        val gated = all.filter { general && DetectionSettings.forImage(it).usePinkMarker }
-        val whole = all.filter { it !in gated }
-        val pass = if (gated.isEmpty()) {
-            MarkerPass(emptyList(), null, emptyList(), 0, emptyList())
-        } else {
-            markerGatedPass(orb, marker, frame, ::thresholdsFor, withOverlay = drawDetails, orbGate = orbGate, classNames = gated)
-        }
-        if (whole.isEmpty() || pass.skipped) return pass
-        // Whole-picture references: ORB decides with their own thresholds (ORB.match uses each reference's settings).
-        val extra = runCatching { orb.evaluate(frame.gray, whole) }.getOrElse { emptyList() }
-        return MarkerPass(pass.results + extra, pass.marker, pass.regions, pass.keypoints + orb.lastFrameKeypoints,
-            pass.keypointPositions, pass.previewMs, pass.orbTimings, pass.skipped, pass.checks)
+        val gated = pinkGatedNames(orb)
+        if (gated.isEmpty()) return MarkerPass(emptyList(), null, emptyList(), 0, emptyList())
+        return markerGatedPass(orb, marker, frame, ::thresholdsFor, withOverlay = drawDetails, orbGate = orbGate, classNames = gated)
     }
 
     /** Inliers that count as a full detection for [name] (per image, else the value from the camera view). */
@@ -499,19 +575,15 @@ object CalendarMonitor {
         return if (settings.minInliers == DetectionSettings.general.minInliers) _minInliers.value else settings.minInliers
     }
 
+    /** 2 = full detection, 1 = only enough to confirm a previous full detection, 0 = nothing. */
+    private fun levelOf(r: ObjectMatch?): Int = when {
+        r == null || !r.detected -> 0
+        r.inliers >= fullInliersFor(r.className) -> 2
+        else -> 1
+    }
+
     private fun onPass(log: PassLog, pass: MarkerPass, frameTs: Long, ms: Long, debugging: Boolean) {
         val now = SystemClock.elapsedRealtime()
-        val best = pass.results.filter { it.detected }.maxByOrNull { it.inliers }
-        val strongNeeded = best?.let { fullInliersFor(it.className) } ?: _minInliers.value
-        // 2 = full detection (≥ X inliers), 1 = only enough to confirm a previous full detection (≥ X − 10), 0 = nothing.
-        val level = when {
-            best == null -> 0
-            best.inliers >= strongNeeded -> 2
-            else -> 1
-        }
-        var announce = false
-        val recent: Int
-        val window: Int
         if (pass.skipped) {
             // Another worker is running ORB on a newer or same-age frame: not a miss, so it must not enter the history.
             synchronized(log) { log.skipped++ }
@@ -526,15 +598,6 @@ object CalendarMonitor {
         val delayMs = now - frameTs
         synchronized(log) {
             log.delaySum += delayMs; log.delayMax = maxOf(log.delayMax, delayMs); log.delayPasses++
-            // One line when an object starts being seen, one when it has not been seen for SEEN_HOLD_MS (in the 200 ms loop
-            // below), so the graphs can draw a bar for "this object is in view" instead of only the announcements.
-            for (r in pass.results) {
-                if (r.detected && r.inliers >= fullInliersFor(r.className)) {
-                    if (log.lastSeen.put(r.className, now) == null) {
-                        Log.i(TAG, "seen: ${r.className} (inliers ${r.inliers}, delay $delayMs ms)")
-                    }
-                }
-            }
             log.passes++; log.msSum += ms; log.colourMsSum += pass.marker?.millis ?: 0
             log.previewMsSum += pass.previewMs
             pass.marker?.stageMs?.forEachIndexed { i, v -> log.pinkStages[i] += v }
@@ -550,44 +613,104 @@ object CalendarMonitor {
             log.regions += pass.regions.size
             pass.marker?.rejected?.forEach { if (it.rejectReason == "white") log.rejectedWhite++ else log.rejectedFrame++ }
             log.bestInliers = maxOf(log.bestInliers, pass.results.maxOfOrNull { it.inliers } ?: 0)
-            if (level == 2) log.detected++
-            // Workers can finish out of order; an older frame does not count for "in a row".
-            if (frameTs < log.lastTs) {
-                log.outOfOrder++
-            } else {
-                log.lastTs = frameTs
-                log.history.addLast(level)
-                while (log.history.size > CalendarDetectionSettings.CONSISTENCY_WINDOW) log.history.removeFirst()
-            }
-            recent = log.history.count { it > 0 }
-            window = log.history.size
-            // Stepped confirmation (owner): the first pass of the window needs a full detection, the following ones only the
-            // confirm level, all in a row.
-            val confirmed = window >= CalendarDetectionSettings.CONSISTENCY_WINDOW && log.history.first() == 2 &&
-                log.history.count { it > 0 } >= CalendarDetectionSettings.CONSISTENCY_NEEDED
-            if (_announceEveryDetection.value) {
-                if (level == 2 && !isSpeaking(now)) announce = true
-            } else if (confirmed && now >= cooldownUntil) {
-                announce = true
-                cooldownUntil = now + COOLDOWN_MS
-                log.history.clear()
-            }
-            if (announce) {
-                announcements++
-                speakingSince = now
-            }
+            if (pass.results.any { levelOf(it) == 2 }) log.detected++
         }
+        decide(log, pass.results, pass.results.map { it.className }, frameTs, delayMs, pass.regions.size, debugging)
         if (debugging) {
-            _debug.value = DebugSnapshot(pass, ms, recent, window, (cooldownUntil - now).coerceAtLeast(0), announcements, passesPerSecond)
+            // Whole-picture results are drawn as long as they are fresh (they are searched only every few hundred ms).
+            val (wholeAt, whole) = lastWhole
+            val shown = if (whole.isNotEmpty() && now - wholeAt <= 2 * CalendarDetectionSettings.WHOLE_FRAME_INTERVAL_MS) {
+                MarkerPass(pass.results + whole, pass.marker, pass.regions, pass.keypoints, pass.keypointPositions,
+                    pass.previewMs, pass.orbTimings, pass.skipped, pass.checks)
+            } else pass
+            val (recent, window) = synchronized(refStates) {
+                refStates.values.maxByOrNull { st -> st.history.count { it > 0 } }
+                    ?.let { st -> st.history.count { it > 0 } to st.history.size } ?: (0 to 0)
+            }
+            _debug.value = DebugSnapshot(shown, ms, recent, window, (cooldownUntil - now).coerceAtLeast(0), announcements, passesPerSecond)
         }
-        if (announce) {
-            val strongest = pass.results.maxByOrNull { it.inliers }
-            Log.i(TAG, "object detected (${if (_announceEveryDetection.value) "every detection" else "$recent/$window passes"}): " +
-                "${strongest?.className} good ${strongest?.goodMatches}, inliers ${strongest?.inliers}, pink regions ${pass.regions.size}, " +
-                "delay $delayMs ms")
-            val spoken = sentenceFor(strongest?.className)
-            scope?.launch { speak(spoken) }
+    }
+
+    /** A whole-picture search finished (references without a pink frame). */
+    private fun onWholePass(log: PassLog, results: List<ObjectMatch>, searched: List<String>, frameTs: Long, ms: Long, timings: ORB.Timings) {
+        val now = SystemClock.elapsedRealtime()
+        lastWhole = now to results
+        synchronized(log) { log.wholeSearches++; log.wholeMsSum += ms; log.wholeOrb.add(timings) }
+        decide(log, results, searched, frameTs, now - frameTs, 0, debugGate = debugViewers.get() > 0)
+    }
+
+    /**
+     * Per reference: history in frame order, "in a row" rule, and whether to announce. An object is announced once when it
+     * comes into view and again only after it was out of view for [CalendarDetectionSettings.REARM_AFTER_GONE_MS] (review
+     * 2026-10-02, item 4). While the calendar popup is open nothing is announced; after Dismiss nothing for
+     * [CalendarDetectionSettings.POPUP_COOLDOWN_MS]. While the camera view is open neither the "already announced" rule nor
+     * the popup cooldown apply, so it can be tried again and again (owner, 2026-10-19).
+     */
+    private fun decide(
+        log: PassLog, results: List<ObjectMatch>, searched: List<String>, frameTs: Long, delayMs: Long, regions: Int,
+        debugGate: Boolean
+    ) {
+        val now = SystemClock.elapsedRealtime()
+        val everyDetection = debugGate && _announceEveryDetection.value
+        var chosen: ObjectMatch? = null
+        synchronized(refStates) {
+            for (name in searched) {
+                val r = results.firstOrNull { it.className == name }
+                val level = levelOf(r)
+                val st = refStates.getOrPut(name) { RefState() }
+                // Workers can finish out of order; an older frame does not count for "in a row".
+                if (frameTs < st.lastTs) {
+                    synchronized(log) { log.outOfOrder++ }
+                    continue
+                }
+                st.lastTs = frameTs
+                if (level > 0) st.lastFoundAt = now
+                if (st.announced && now - st.lastFoundAt >= CalendarDetectionSettings.REARM_AFTER_GONE_MS) {
+                    st.announced = false
+                    Log.i(TAG, "$name out of view for ${CalendarDetectionSettings.REARM_AFTER_GONE_MS / 1000} s: may be announced again")
+                }
+                st.history.addLast(level)
+                while (st.history.size > CalendarDetectionSettings.CONSISTENCY_WINDOW) st.history.removeFirst()
+                if (level == 2) synchronized(log) {
+                    // One line when an object starts being seen, one when it has not been seen for SEEN_HOLD_MS (in the
+                    // 200 ms loop), so the graphs can draw a bar for "this object is in view".
+                    if (log.lastSeen.put(name, now) == null) Log.i(TAG, "seen: $name (inliers ${r?.inliers}, delay $delayMs ms)")
+                }
+                // Stepped confirmation (owner): the first check of the window needs a full detection, the following ones
+                // only the confirm level, all in a row.
+                val confirmed = st.history.size >= CalendarDetectionSettings.CONSISTENCY_WINDOW && st.history.first() == 2 &&
+                    st.history.count { it > 0 } >= CalendarDetectionSettings.CONSISTENCY_NEEDED
+                val wanted = if (everyDetection) level == 2 && !isSpeaking(now)
+                else confirmed && now >= cooldownUntil && (debugGate || (!st.announced && now >= popupCooldownUntil))
+                if (wanted && !popupOpen && r != null && (chosen == null || r.inliers > chosen!!.inliers)) chosen = r
+            }
+            val pick = chosen ?: return
+            val st = refStates.getValue(pick.className)
+            st.announced = true
+            st.history.clear()
+            if (!everyDetection) cooldownUntil = now + COOLDOWN_MS
+            announcements++
+            speakingSince = now
         }
+        val pick = chosen ?: return
+        val popup = DetectionSettings.forImage(pick.className).calendarPopup
+        Log.i(TAG, "object detected (${if (everyDetection) "every detection" else "in a row"}): " +
+            "${pick.className} good ${pick.goodMatches}, inliers ${pick.inliers}, pink regions $regions, delay $delayMs ms" +
+            if (popup) ", showing the calendar popup" else "")
+        if (popup) showPopup() else scope?.launch { speak(sentenceFor(pick.className)) }
+    }
+
+    /** Calendar: popup with the choices + the question spoken (owner, 2026-10-19). */
+    private fun showPopup() {
+        popupOpen = true
+        runCatching {
+            appContext.startActivity(Intent(appContext, CalendarPromptActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure {
+            Log.e(TAG, "could not show the calendar popup", it)
+            popupOpen = false
+        }
+        // The popup brings RoboGuard to the front, so speech waits for SDK control like the conversation prompt does.
+        scope?.launch { speak(UiText.get("speech.calendar_question"), waitForControlMs = 3_000) }
     }
 
     /** elapsedRealtime when the last announcement started; 0 = not speaking. Cleared when speech ends or fails. */
@@ -598,9 +721,9 @@ object CalendarMonitor {
     private fun isSpeaking(now: Long) = speakingSince != 0L && now - speakingSince < 6_000
 
     /** Speaks if RoboGuard has SDK control; never brings a screen to the front and never throws. */
-    private suspend fun speak(sentence: String) {
+    private suspend fun speak(sentence: String, waitForControlMs: Long = 500) {
         try {
-            if (!SdkControl.awaitControl(appContext, timeoutMs = 500)) {
+            if (!SdkControl.awaitControl(appContext, timeoutMs = waitForControlMs)) {
                 Log.w(TAG, "no SDK control (RoboGuard not in front), not spoken")
                 speakingSince = 0L
                 return

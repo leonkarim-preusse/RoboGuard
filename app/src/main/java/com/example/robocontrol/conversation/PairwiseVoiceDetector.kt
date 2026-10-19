@@ -215,7 +215,9 @@ class PairwiseVoiceDetector(
                     if (preRollFilled < preRollHops) preRollFilled++
                 }
                 // A half-filled piece has to be thrown away too, not only the held ones — see OwnerVoiceDetector.
-                if (!speech && timeMs - lastSpeechAtMs >= settings.resetAfterSilenceMs && (fill > 0 || held.isNotEmpty())) {
+                // speechSamples too, see OwnerVoiceDetector (review 2026-10-02, item 3).
+                if (!speech && timeMs - lastSpeechAtMs >= settings.resetAfterSilenceMs &&
+                    (speechSamples > 0 || fill > 0 || held.isNotEmpty())) {
                     forget()
                     readings = emptyList()
                     wasDifferent = false
@@ -223,6 +225,7 @@ class PairwiseVoiceDetector(
                     speechSamples = 0
                     fill = 0
                     piece.fill(0f)
+                    sileroWasSpeech = false
                     vad.reset()
                     Log.i(TAG, "reset after ${settings.resetAfterSilenceMs} ms of silence")
                 }

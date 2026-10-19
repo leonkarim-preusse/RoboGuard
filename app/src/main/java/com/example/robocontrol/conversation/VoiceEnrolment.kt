@@ -276,17 +276,20 @@ class VoiceEnrolment(private val context: Context) {
             read.fill(0)
             hop.fill(0)
             chunk.fill(0)
-            embeddings.forEach { it.fill(0f) }
-            stored?.zero()
-            cohort?.fill(0f)
             runCatching { vad?.close() }
             runCatching { embedder?.close() }
             runCatching { source.close() }
-            ConversationMonitor.setProbeUsingMicrophone(false)
-            // A cohort run is normally ended by hand when the recording has played: keep what was collected.
+            // A cohort run is normally ended by hand when the recording has played: keep what was collected. This has to
+            // happen BEFORE the pieces are zeroed (otherwise the average of zeros was stored and silently turned the
+            // centring off) and before the microphone is handed back, so the restarted detector loads the new cohort
+            // (review 2026-10-02, item 5).
             if (mode == Mode.COHORT && _state.value.phase == EnrolmentState.Phase.RECORDING && embeddings.size >= MIN_PIECES) {
                 finish(mode, embeddings, speechSamples / 16_000.0)
             }
+            embeddings.forEach { it.fill(0f) }
+            stored?.zero()
+            cohort?.fill(0f)
+            ConversationMonitor.setProbeUsingMicrophone(false)
             thread = null
             preRoll.fill(0)
             Log.i(TAG, "run ended (${_state.value.phase})")

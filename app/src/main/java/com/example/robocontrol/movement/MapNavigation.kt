@@ -161,6 +161,10 @@ class MapNavigation(
     private val _navState = MutableStateFlow("idle")
     val navState: StateFlow<String> = _navState.asStateFlow()
 
+    private val _driving = MutableStateFlow(false)
+    /** A drive is running: the Drive buttons are off meanwhile (a second drive could switch off the privacy check). */
+    val driving: StateFlow<Boolean> = _driving.asStateFlow()
+
     private val _speed = MutableStateFlow(SpeedPreset.SLOW)
     val speed: StateFlow<SpeedPreset> = _speed.asStateFlow()
 
@@ -627,25 +631,37 @@ class MapNavigation(
      * Saved RobotOS places are driven to by coordinates too, so the pre-move check always sees the real target.
      * Events and the result are logged and shown in [navState].
      */
-    fun driveToSelected() {
-        val target = _selected.value ?: return log.i(TAG, "select a point first: tap the map or a list entry")
-        driveTo(target)
+    /** @return null if the drive was started (or refused for a reason already shown), else why it was not started */
+    fun driveToSelected(): String? {
+        val target = _selected.value ?: run {
+            log.i(TAG, "select a point first: tap the map or a list entry")
+            return "select a point first"
+        }
+        return driveTo(target)
     }
 
-    private fun driveTo(target: MapPoint) {
+    private fun driveTo(target: MapPoint): String? {
+        // A second drive over a running one: if RobotOS rejected it, its failure cleared the controller's drive while the
+        // first one went on, and the in-motion privacy check and the position watchdog were off (review 2026-10-02, item 2).
+        if (synchronized(controller) { controller.isNavigating }) {
+            log.i(TAG, "DRIVE REFUSED: a drive is already running; press STOP first")
+            return "a drive is already running; stop it first"
+        }
         if (SystemClock.elapsedRealtime() - lastPoseAt > POSE_TIMEOUT_MS) {
             _navState.value = "refused: robot position unknown"
             log.i(TAG, "DRIVE REFUSED: no current robot position, so private areas could not be enforced")
             speak(positionUnknownSentence)
-            return
+            return null
         }
         if (!_zonesLoaded.value) {
             _navState.value = "waiting for private areas to load"
-            return log.i(TAG, "DRIVE REFUSED: private areas not loaded yet")
+            log.i(TAG, "DRIVE REFUSED: private areas not loaded yet")
+            return null
         }
         _zoneStoreError.value?.let { error ->
             _navState.value = "blocked: private areas unreadable"
-            return log.i(TAG, "DRIVE REFUSED: $error")
+            log.i(TAG, "DRIVE REFUSED: $error")
+            return null
         }
         if (_localized.value == false) {
             log.i(TAG, "warning: the robot reports it is NOT localized; navigation will most likely fail (NotLocalized)")
@@ -702,6 +718,8 @@ class MapNavigation(
                 log.i(TAG, "navigation call threw: $it")
                 _navState.value = "error: $it"
             }
+        _driving.value = controller.isNavigating
+        return null
     }
 
     /** Time of the last position read from RobotOS (elapsedRealtime); 0 = never. */
@@ -828,6 +846,7 @@ class MapNavigation(
             if (controller.isNavigating && SystemClock.elapsedRealtime() - lastPoseAt > POSE_TIMEOUT_MS) {
                 stopForUnknownPosition()
             }
+            _driving.value = controller.isNavigating
             tick++
             // Faster while driving: at 0.25 m/s the robot moves ~4 cm between checks instead of ~12 cm.
             delay(if (controller.isNavigating) POLL_NAVIGATING_MS else POLL_MS)

@@ -336,3 +336,10 @@ run the neural model at all, which gives back 3–19 ms per 32 ms of audio.
   its service and both detectors are stopped, so nothing of it holds the camera stream or the microphone. The app closes and
   can be opened by hand to switch it back on.
 - Earlier applied sensor states (camera disabled by device policy, microphone muted) are left as they were.
+
+## Calendar popup and review fixes (2026-10-19, installed, not yet measured)
+- Calendar recognised → popup "Blur calendar / Save dates / Dismiss" + spoken question "Kalender entdeckt. Sollen die Termine gespeichert werden?"; Dismiss = 2 min quiet (not in the camera debug view). Blur/Save are placeholders.
+- An object is announced once per appearance (again only after 10 s out of view): repeated announcements had blinded the voice detectors (robot muted its mic while speaking).
+- OpenCV limited to 1 thread (its pool used ~0.9 core); whole-picture search (Lego) only every 500 ms instead of every check. Effect on CPU and delay still to be measured with performance/record.py.
+- Voice: cohort saved correctly after Stop; detector restarts when the stored voice/cohort changes; silence reset fixed after robot speech.
+- Navigation: a second drive while driving is refused (it could switch off the in-motion privacy check).

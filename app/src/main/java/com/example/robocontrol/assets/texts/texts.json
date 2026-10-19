@@ -155,6 +155,26 @@
       "text": "{object} entdeckt",
       "note": "Spoken when the robot finds one of the reference images; {object} is that image's file name without the extension (underscores become spaces)."
     },
+    "speech.calendar_question": {
+      "text": "Kalender entdeckt. Sollen die Termine gespeichert werden?",
+      "note": "Spoken when the calendar was recognised and the calendar popup opens"
+    },
+    "calendar_popup.title": {
+      "text": "Calendar detected",
+      "note": "Calendar popup: title"
+    },
+    "calendar_popup.blur": {
+      "text": "Blur calendar",
+      "note": "Calendar popup: button (does nothing yet)"
+    },
+    "calendar_popup.save_dates": {
+      "text": "Save dates",
+      "note": "Calendar popup: button (does nothing yet)"
+    },
+    "calendar_popup.dismiss": {
+      "text": "Dismiss",
+      "note": "Calendar popup: closes it; no calendar announcement for 2 minutes (not while the camera view is open)"
+    },
     "speech.calendar_detected": {
       "text": "Kalender entdeckt",
       "note": "Spoken when the calendar was recognised by the camera"
@@ -267,9 +287,25 @@
       "text": "RoboGuard is disabled. To switch it on again: Navigation and Map, Show debug, Disable RoboGuard.",
       "note": "Start screen while the app is disabled by the debug switch"
     },
+    "debug.toast.steps": {
+      "text": "{taps} more taps to switch on debug mode",
+      "note": "Toast while the header is tapped repeatedly (from the third tap)"
+    },
+    "debug.toast.on": {
+      "text": "Debug mode is on",
+      "note": "Toast after the last tap on the header"
+    },
+    "debug.toast.already_on": {
+      "text": "Debug mode is already on",
+      "note": "Toast when the header is tapped while debug mode is on"
+    },
+    "nav.button.home": {
+      "text": "Home",
+      "note": "Map screen: green button at the top left, back to the start screen"
+    },
     "nav.label.debug": {
-      "text": "Show debug",
-      "note": "Map screen: switch that shows technical lines and the event log"
+      "text": "Debug mode",
+      "note": "Map screen: switch shown only while debug mode is on (tap the header 7 times); switching it off hides the debug parts again"
     },
     "nav.label.privacy_areas": {
       "text": "Privacy areas",

@@ -36,6 +36,9 @@ object CalendarDetectionSettings {
     val CONSISTENCY_NEEDED: Int get() = DetectionSettings.run.consistencyNeeded
     val CONSISTENCY_WINDOW: Int get() = DetectionSettings.run.consistencyWindow
     val COOLDOWN_MS: Long get() = DetectionSettings.run.cooldownSeconds * 1000L
+    val WHOLE_FRAME_INTERVAL_MS: Long get() = DetectionSettings.run.wholeFrameIntervalMs.coerceAtLeast(50).toLong()
+    val REARM_AFTER_GONE_MS: Long get() = DetectionSettings.run.rearmAfterGoneSeconds.coerceAtLeast(0) * 1000L
+    val POPUP_COOLDOWN_MS: Long get() = DetectionSettings.run.popupCooldownSeconds.coerceAtLeast(0) * 1000L
 
     /** Lowest/highest inlier requirement the camera view may set. */
     const val MIN_INLIERS_LOWEST = ObjectSettings.ORB_MIN_INLIERS

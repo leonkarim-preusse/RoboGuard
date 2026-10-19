@@ -196,6 +196,16 @@ class NavigationController(
         listener: NavigationListener,
         launch: (NavigationListener) -> Unit
     ) {
+        // Never start over a running drive: stop it first, so a rejected second start cannot leave RobotOS driving the
+        // first one while this controller believes it is idle (review 2026-10-02, item 2). MapNavigation refuses this case
+        // already; this is the second line.
+        if (isNavigating) {
+            driveId++
+            activeTarget = null
+            activeListener?.onFailed(NavFailure.CancelledByCaller)
+            activeListener = null
+            bridge.stopNavigation()
+        }
         lastAbort = null
         val id = ++driveId
         activeTarget = target

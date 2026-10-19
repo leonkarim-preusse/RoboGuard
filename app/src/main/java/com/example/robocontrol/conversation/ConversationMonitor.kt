@@ -196,6 +196,18 @@ object ConversationMonitor {
         Log.i(TAG, "started")
         reevaluate()
         scope?.let { startHealthCheck(it) }
+        scope?.launch {
+            // A voice stored, deleted or switched, its threshold changed, or the cohort replaced: the running detector loaded
+            // them at its start, so it has to start again to use the new ones (review 2026-10-02, item 6).
+            var seen = OwnerVoiceprintStore.get(appContext).generation.value
+            OwnerVoiceprintStore.get(appContext).generation.collect { g ->
+                if (g == seen) return@collect
+                seen = g
+                if (_method.value == DetectionMethod.OWNER || _method.value == DetectionMethod.PAIRWISE) {
+                    restartDetector("stored voice or cohort changed")
+                }
+            }
+        }
     }
 
     /** Stops everything. Call from RobotServerService.onDestroy. */

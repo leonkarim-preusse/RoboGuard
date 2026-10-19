@@ -12,6 +12,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import com.example.roboguard.ui.theme.RoboGuardTheme
 import com.example.robocontrol.movement.MapNavigationActivity
 import com.example.robocontrol.system.AppDisabled
+import com.example.robocontrol.system.DebugMode
 import com.example.robocontrol.system.DefaultAppSetting
 import com.example.robocontrol.text.UiText
 import kotlinx.coroutines.delay
@@ -101,7 +104,11 @@ class MainActivity : ComponentActivity() {
                                         fontSize = 18.sp,
                                         fontWeight = FontWeight.Bold,
                                         textAlign = TextAlign.Center,
+                                        // Header: tapped 7 times it switches on the hidden debug mode (see DebugMode).
                                         modifier = Modifier.padding(top = 8.dp, bottom = 8.dp).widthIn(max = 400.dp)
+                                            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                                                DebugMode.tapHeader(this@MainActivity)
+                                            }
                                     )
 
                                     // QR Code display area
