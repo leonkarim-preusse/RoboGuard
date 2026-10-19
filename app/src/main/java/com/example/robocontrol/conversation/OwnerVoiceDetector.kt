@@ -286,8 +286,11 @@ class OwnerVoiceDetector(
                 // full when somebody stopped talking waited for MINUTES and was then completed with audio from a
                 // different situation. Measured on the robot 2026-09-28: a piece spanning 322 s read 0.394 and the one
                 // after it 0.214, both from the owner alone.
+                // speechSamples too: after the robot spoke, the half piece was already thrown away and the window entries
+                // expire after 20 s, so without it the reset never ran and the next conversation got no prompt (review
+                // 2026-10-02, item 3). It cannot repeat: speechSamples only grows on speech, which also moves lastSpeechAtMs.
                 if (!speech && timeMs - lastSpeechAtMs >= settings.resetAfterSilenceMs &&
-                    (fill > 0 || ownerTimes.isNotEmpty() || otherTimes.isNotEmpty())) {
+                    (speechSamples > 0 || fill > 0 || ownerTimes.isNotEmpty() || otherTimes.isNotEmpty())) {
                     // Long silence = new conversation.
                     ownerTimes.clear()
                     otherTimes.clear()
@@ -300,6 +303,7 @@ class OwnerVoiceDetector(
                     pieceLevelSum = 0.0
                     pieceLevelFrames = 0
                     pieceStartedMs = -1L
+                    sileroWasSpeech = false
                     vad.reset()
                     Log.i(TAG, "reset after ${settings.resetAfterSilenceMs} ms of silence")
                 }

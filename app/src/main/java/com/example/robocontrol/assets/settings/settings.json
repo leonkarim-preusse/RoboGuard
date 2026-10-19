@@ -41,6 +41,10 @@
       "workers": { "value": 2, "note": "How many checks run in parallel (only one of them runs ORB at a time). Whole camera picture, not per image." },
       "maxPassesPerSecond": { "value": 12, "note": "Upper limit of checks per second, so the robot's own services keep enough CPU. Whole camera picture, not per image." },
       "maxRegions": { "value": 3, "note": "How many pink areas are searched per check (each one costs an ORB run). Whole camera picture." },
+      "openCvThreads": { "value": 1, "note": "Threads OpenCV may use for one operation. 1 = none of its own: its default pool of 7 helper threads kept almost a whole core busy on the robot (review 2026-10-02). Whole camera picture." },
+      "wholeFrameIntervalMs": { "value": 100, "note": "How often images WITHOUT a pink frame (usePinkMarker false) are searched in the whole camera picture, in ms (owner 2026-10-19: 100). One search takes ~90 ms, so 100 ms keeps one ORB run busy almost all the time. Whole camera picture." },
+      "rearmAfterGoneSeconds": { "value": 10, "note": "After an announcement the same object is announced again only once it has been out of view this long. Does not apply while the camera view is open." },
+      "popupCooldownSeconds": { "value": 120, "note": "After the calendar popup was answered, no new calendar popup for this long. Does not apply while the camera view is open." },
       "pink": {
         "_note": "The pink-frame search. These work on the whole camera picture, so \"images\" cannot override them.",
         "marginPx": { "value": 40, "note": "Pink pieces closer than this are treated as one frame (border lines, labels)." },
@@ -60,7 +64,8 @@
     "images": {
       "_note": "One section per reference image in assets/ORB_img; the file name is the section name. Only the values you list are overridden. The example below is switched off by \"enabled\": false — set it to true or add your own section.",
       "Calendar.jpg": {
-        "enabled": { "value": true, "note": "false = this reference image is ignored completely (stays in the folder, is not searched for)." }
+        "enabled": { "value": true, "note": "false = this reference image is ignored completely (stays in the folder, is not searched for)." },
+        "calendarPopup": { "value": true, "note": "true = when this image is announced, the robot asks whether the dates should be saved and opens the popup (Blur calendar / Save dates / Dismiss)." }
       },
       "example_poster_without_pink.jpg": {
         "enabled": { "value": false, "note": "Example, switched off: shows how an image without a pink border would be set up." },

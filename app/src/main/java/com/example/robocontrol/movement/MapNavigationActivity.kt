@@ -13,6 +13,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -69,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.example.robocontrol.system.AppDisabled
+import com.example.robocontrol.system.DebugMode
 import com.example.robocontrol.text.UiText
 import kotlinx.coroutines.launch
 import kotlin.math.cos
@@ -96,6 +99,7 @@ class MapNavigationActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Screen texts come from assets/texts/texts.json (no-op if the service already loaded them).
         UiText.init(applicationContext)
+        DebugMode.init(this)
         // The navigation runs in the service (NavigationHub), so the phone app sees the same state and a drive does not
         // stop when this screen closes. Started here as well in case the service is not up yet.
         // Not while RoboGuard is disabled: then this screen uses its own navigation, which ends with the screen.
@@ -123,6 +127,15 @@ class MapNavigationActivity : ComponentActivity() {
         // The navigation keeps running in the service; only an unshared fallback instance would need shutting down.
         if (NavigationHub.current == null) probe.shutdown()
         super.onDestroy()
+    }
+
+    /** Back to the start screen (RoboGuard's MainActivity); the navigation keeps running in the service. */
+    private fun goHome() {
+        startActivity(
+            Intent().setClassName(this, "com.example.roboguard.MainActivity")
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        )
+        finish()
     }
 
     /**
@@ -177,7 +190,9 @@ class MapNavigationActivity : ComponentActivity() {
                 dismissButton = { TextButton(onClick = { confirmResetLocations = false }) { Text(UiText.get("nav.button.cancel")) } }
             )
         }
-        val canDrive = selected != null && zonesLoaded && zoneStoreError == null
+        val driving by probe.driving.collectAsState()
+        // Off while a drive runs: STOP first (review 2026-10-02, item 2).
+        val canDrive = selected != null && zonesLoaded && zoneStoreError == null && !driving
         var confirmClearAreas by remember { mutableStateOf(false) }
         if (confirmClearAreas) {
             AlertDialog(
@@ -262,8 +277,8 @@ class MapNavigationActivity : ComponentActivity() {
 
         val drawingVertices by probe.drawingVertices.collectAsState()
         var mapFullscreen by remember { mutableStateOf(false) }
-        // Off by default: the event log and technical status lines are for debugging only.
-        var showDebug by rememberSaveable { mutableStateOf(false) }
+        // Hidden debug mode (tap the header 7 times, see DebugMode): status lines, event log, speed and the test screens.
+        val showDebug by DebugMode.enabled.collectAsState()
         // Zoom/pan of the full-screen map; starts at the whole map again whenever a new map is loaded.
         val mapView = remember(rendered) { MapViewState() }
 
@@ -372,25 +387,32 @@ class MapNavigationActivity : ComponentActivity() {
             return
         }
 
-        Row(Modifier.fillMaxSize().padding(12.dp)) {
-            // ---- left: STOP and Drive pinned at the top, everything else scrolls below
+        Column(Modifier.fillMaxSize().padding(12.dp)) {
+        // ---- top row: Home (green) on the left, STOP in the middle, Drive on the far right
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = { goHome() },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50), contentColor = Color.White),
+                modifier = Modifier.height(48.dp)
+            ) { Text(UiText.get("nav.button.home"), fontSize = 16.sp) }
+            Button(
+                onClick = { probe.stop("STOP pressed") },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
+                modifier = Modifier.weight(1f).height(48.dp)
+            ) { Text(UiText.get("nav.button.stop"), fontSize = 20.sp) }
+            Button(
+                enabled = canDrive,
+                onClick = { probe.driveToSelected() },
+                modifier = Modifier.widthIn(max = 320.dp).height(48.dp)
+            ) { Text(selected?.let { UiText.get("nav.button.drive_to", "location" to it.name) } ?: UiText.get("nav.button.drive_to_none"), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        }
+        Row(Modifier.fillMaxWidth().weight(1f)) {
+            // ---- left: status banners pinned at the top, everything else scrolls below
             Column(modifier = Modifier.width(340.dp).fillMaxHeight()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Button(
-                    onClick = { probe.stop("STOP pressed") },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
-                    modifier = Modifier.height(56.dp)
-                ) { Text(UiText.get("nav.button.stop"), fontSize = 20.sp) }
-                Button(
-                    enabled = canDrive,
-                    onClick = { probe.driveToSelected() },
-                    modifier = Modifier.weight(1f).height(56.dp)
-                ) { Text(selected?.let { UiText.get("nav.button.drive_to", "location" to it.name) } ?: UiText.get("nav.button.drive_to_none"), maxLines = 2) }
-            }
             // Always visible (not debug): someone is steering this robot from the phone app. The thesis asks for visible
             // state — a person standing next to the robot should see that the commands come from another room.
             remoteControl?.let { client ->
@@ -416,7 +438,7 @@ class MapNavigationActivity : ComponentActivity() {
                 modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Status lines are debug information; only the speed choice is always shown.
+                // Status lines and the speed choice are debug information.
                 if (showDebug) {
                     Text(UiText.get("nav.label.map", "map" to (mapName ?: UiText.get("nav.label.unknown"))))
                     Text(UiText.get("nav.label.sdk_control", "state" to UiText.get(if (sdkActive) "nav.label.sdk_yes" else "nav.label.sdk_no")))
@@ -426,17 +448,19 @@ class MapNavigationActivity : ComponentActivity() {
                     Text(UiText.get("nav.label.selected", "selection" to (selected?.let { "${it.name} (%.2f, %.2f)".format(it.position.x, it.position.y) } ?: UiText.get("nav.label.selected_none"))))
                 }
 
-                Text(UiText.get("nav.label.speed", "speed" to speed.label + (speed.linear?.let { " – $it m/s" } ?: "")))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    SpeedPreset.entries.forEach { preset ->
-                        if (preset == speed) {
-                            Button(onClick = { probe.setSpeed(preset) }, modifier = Modifier.weight(1f)) { Text(preset.label, fontSize = 13.sp) }
-                        } else {
-                            OutlinedButton(onClick = { probe.setSpeed(preset) }, modifier = Modifier.weight(1f)) { Text(preset.label, fontSize = 13.sp) }
+                if (showDebug) {
+                    Text(UiText.get("nav.label.speed", "speed" to speed.label + (speed.linear?.let { " – $it m/s" } ?: "")))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        SpeedPreset.entries.forEach { preset ->
+                            if (preset == speed) {
+                                Button(onClick = { probe.setSpeed(preset) }, modifier = Modifier.weight(1f)) { Text(preset.label, fontSize = 13.sp) }
+                            } else {
+                                OutlinedButton(onClick = { probe.setSpeed(preset) }, modifier = Modifier.weight(1f)) { Text(preset.label, fontSize = 13.sp) }
+                            }
                         }
                     }
+                    Text(UiText.get("nav.label.measured_speed", "speed" to (measuredSpeed ?: UiText.get("nav.label.unknown"))), fontSize = 13.sp)
                 }
-                if (showDebug) Text(UiText.get("nav.label.measured_speed", "speed" to (measuredSpeed ?: UiText.get("nav.label.unknown"))), fontSize = 13.sp)
 
                 OutlinedButton(onClick = { probe.clearCustomPoints() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.clear_points")) }
 
@@ -511,13 +535,13 @@ class MapNavigationActivity : ComponentActivity() {
                 }
                 OutlinedButton(onClick = { probe.reload() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.reload_map")) }
 
-                // Debug: technical status lines and the event log are hidden unless switched on.
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-                    Switch(checked = showDebug, onCheckedChange = { showDebug = it })
-                    Spacer(Modifier.width(8.dp))
-                    Text(UiText.get("nav.label.debug"))
-                }
+                // Debug mode is switched on by tapping the start screen's header 7 times; this switch only turns it off again.
                 if (showDebug) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                        Switch(checked = true, onCheckedChange = { if (!it) DebugMode.set(this@MapNavigationActivity, false) })
+                        Spacer(Modifier.width(8.dp))
+                        Text(UiText.get("nav.label.debug"))
+                    }
                     Button(onClick = { cameraView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.show_camera")) }
                     Button(onClick = { speakerView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.show_speaker")) }
                     Button(onClick = { voiceView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.teach_voice")) }
@@ -559,6 +583,7 @@ class MapNavigationActivity : ComponentActivity() {
                     }
                 }
             }
+        }
         }
     }
 

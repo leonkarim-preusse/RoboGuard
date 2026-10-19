@@ -95,7 +95,7 @@ private suspend fun handleCommand(request: JSONObject): CommandResult {
         }
         "point" -> position?.let { navigation.handleMapTap(it); CommandResult(true) }
             ?: CommandResult(false, "point needs x/y")
-        "drive" -> { navigation.driveToSelected(); CommandResult(true) }
+        "drive" -> navigation.driveToSelected()?.let { CommandResult(false, it) } ?: CommandResult(true)
         "stop" -> { navigation.stop("stopped from the phone"); CommandResult(true) }
         "speed" -> {
             val preset = SpeedPreset.entries.firstOrNull { it.name.equals(request.optString("preset"), ignoreCase = true) }

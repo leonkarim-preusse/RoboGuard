@@ -98,6 +98,17 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
 
     private val _active = MutableStateFlow(prefs.getString(KEY_ACTIVE, null) ?: DEFAULT_PROFILE)
 
+    private val _generation = MutableStateFlow(0L)
+
+    /**
+     * Counts every change of what the detectors compare against: a voice stored, deleted or switched, its threshold
+     * changed, the cohort replaced or deleted. ConversationMonitor restarts a running OWNER/PAIRWISE detector on it, which
+     * otherwise kept deciding with what it loaded at its start (review 2026-10-02, item 6).
+     */
+    val generation: StateFlow<Long> = _generation.asStateFlow()
+
+    private fun changed() { _generation.value = _generation.value + 1 }
+
     /** Name of the voice the detectors use. */
     val activeProfile: StateFlow<String> = _active.asStateFlow()
 
@@ -124,6 +135,7 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         prefs.edit().putString(KEY_ACTIVE, profile).apply()
         _info.value = runCatching { load()?.also { it.zero() }?.info }.getOrNull()
         Log.i(TAG, "active voice: $profile")
+        changed()
     }
 
     /** Deletes one stored voice; the active one falls back to whatever is left. */
@@ -132,7 +144,12 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         val deleted = fileFor(profile).let { !it.exists() || it.delete() }
         if (deleted) {
             _profiles.value = listProfiles()
-            if (_active.value == profile) setActiveProfile(_profiles.value.firstOrNull() ?: DEFAULT_PROFILE)
+            if (_active.value == profile) {
+                setActiveProfile(_profiles.value.firstOrNull() ?: DEFAULT_PROFILE)
+                // Same name again (the last voice was the default one): setActiveProfile changed nothing, so say it here.
+                _info.value = runCatching { load()?.also { it.zero() }?.info }.getOrNull()
+                changed()
+            }
             Log.i(TAG, "voice \"$profile\" deleted")
         }
         return deleted
@@ -183,6 +200,7 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
             if (!tmp.renameTo(target)) throw java.io.IOException("could not replace ${target.name}")
             _info.value = info
             _profiles.value = listProfiles()
+            changed()
             Log.i(TAG, "voice \"${_active.value}\" stored: ${info.pieces} pieces, %.1f s of speech, threshold %.2f"
                 .format(info.speechSeconds, info.threshold))
             null
@@ -227,6 +245,8 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
 
     @Synchronized
     fun saveCohort(values: FloatArray, pieces: Int): String? = runCatching {
+        // An all-zero (or nearly zero) mean would switch the centring off without anybody noticing (review 2026-10-02, item 5).
+        require(norm(values) >= MIN_COHORT_NORM) { "the recorded average is empty; record the other voices again" }
         val json = JSONObject()
             .put("pieces", pieces)
             .put("createdAtMs", System.currentTimeMillis())
@@ -241,6 +261,7 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         if (!tmp.renameTo(target)) throw java.io.IOException("could not replace ${target.name}")
         _cohort.value = pieces
         Log.i(TAG, "cohort stored: $pieces pieces")
+        changed()
         null
     }.getOrElse {
         Log.e(TAG, "could not store the cohort", it)
@@ -251,7 +272,10 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
     fun deleteCohort(): Boolean {
         val file = File(File(context.filesDir, "robocontrol/voice"), COHORT_FILE)
         val deleted = !file.exists() || file.delete()
-        if (deleted) _cohort.value = null
+        if (deleted) {
+            _cohort.value = null
+            changed()
+        }
         return deleted
     }
 
@@ -260,8 +284,16 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         if (!file.exists()) return null
         val json = JSONObject(String(cipher.decrypt(file.readBytes(), cohortAad()), Charsets.UTF_8))
         val array = json.getJSONArray("mean")
-        return FloatArray(array.length()) { array.getDouble(it).toFloat() } to json.optInt("pieces")
+        val mean = FloatArray(array.length()) { array.getDouble(it).toFloat() }
+        // Written by the bug fixed 2026-10-19 (Stop during a cohort run stored zeros): treat it as no cohort.
+        if (norm(mean) < MIN_COHORT_NORM) {
+            Log.w(TAG, "stored cohort is empty (all zeros): ignored, record the other voices again")
+            return null
+        }
+        return mean to json.optInt("pieces")
     }
+
+    private fun norm(values: FloatArray): Double = kotlin.math.sqrt(values.sumOf { it.toDouble() * it })
 
     private fun cohortAad() = "roboguard-voiceprint:$COHORT_FILE".toByteArray(Charsets.UTF_8)
 
@@ -273,6 +305,7 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
             _info.value = null
             _profiles.value = listProfiles()
             Log.i(TAG, "stored voice \"${_active.value}\" deleted")
+            changed()
         }
         return deleted
     }
@@ -304,6 +337,9 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         /** Range the threshold can be set to by hand. Below 0.2 almost any voice passes, above 0.97 not even the owner. */
         const val MIN_THRESHOLD = 0.2f
         const val MAX_THRESHOLD = 0.97f
+
+        /** A cohort mean shorter than this is empty (zeros), not an average of voices. */
+        private const val MIN_COHORT_NORM = 1e-3
 
         @Volatile
         private var instance: OwnerVoiceprintStore? = null

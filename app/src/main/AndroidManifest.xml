@@ -84,6 +84,13 @@
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar" />
 
+        <!-- robocontrol.vision: popup when the calendar was recognised (blur / save dates / dismiss) -->
+        <activity
+            android:name="com.example.robocontrol.vision.CalendarPromptActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar" />
+
         <!-- robocontrol.movement: popup asking whether the robot may temporarily cross a private area -->
         <activity
             android:name="com.example.robocontrol.movement.PrivacyOverrideActivity"

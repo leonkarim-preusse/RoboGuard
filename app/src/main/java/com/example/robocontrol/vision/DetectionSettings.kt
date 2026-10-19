@@ -11,6 +11,8 @@ import org.json.JSONObject
 data class ObjectSettings(
     /** false = this reference is not searched for at all. */
     val enabled: Boolean = true,
+    /** true = when this reference is announced, the calendar popup opens ("Blur calendar" / "Save dates" / "Dismiss"). */
+    val calendarPopup: Boolean = false,
     /** true = ORB runs only inside pink frames; false = the whole camera picture is searched for this reference. */
     val usePinkMarker: Boolean = true,
     val maxFeatures: Int = 1500,
@@ -113,7 +115,15 @@ data class RunSettings(
     val cooldownSeconds: Int = 3,
     val workers: Int = 2,
     val maxPassesPerSecond: Int = 12,
-    val maxRegions: Int = 3
+    val maxRegions: Int = 3,
+    /** Threads OpenCV may use for one call (1 = none of its own; its default pool kept ~0.9 of a core busy). */
+    val openCvThreads: Int = 1,
+    /** How often references without a pink frame are searched in the whole camera picture (ms). */
+    val wholeFrameIntervalMs: Int = 500,
+    /** An announced object is announced again only after it was out of view for this long. */
+    val rearmAfterGoneSeconds: Int = 10,
+    /** Quiet time after the calendar popup was answered (not while the camera view is open). */
+    val popupCooldownSeconds: Int = 120
 )
 
 /**
@@ -210,6 +220,7 @@ object DetectionSettings {
             val value = unwrap(json, key)
             result = when (key) {
                 "enabled" -> result.copy(enabled = value.asBoolean(result.enabled))
+                "calendarPopup" -> result.copy(calendarPopup = value.asBoolean(result.calendarPopup))
                 "usePinkMarker" -> result.copy(usePinkMarker = value.asBoolean(result.usePinkMarker))
                 "maxFeatures" -> result.copy(maxFeatures = value.asInt(result.maxFeatures))
                 "fastThreshold" -> result.copy(fastThreshold = value.asInt(result.fastThreshold))
@@ -285,6 +296,10 @@ object DetectionSettings {
                 "workers" -> result.copy(workers = value.asInt(result.workers))
                 "maxPassesPerSecond" -> result.copy(maxPassesPerSecond = value.asInt(result.maxPassesPerSecond))
                 "maxRegions" -> result.copy(maxRegions = value.asInt(result.maxRegions))
+                "openCvThreads" -> result.copy(openCvThreads = value.asInt(result.openCvThreads))
+                "wholeFrameIntervalMs" -> result.copy(wholeFrameIntervalMs = value.asInt(result.wholeFrameIntervalMs))
+                "rearmAfterGoneSeconds" -> result.copy(rearmAfterGoneSeconds = value.asInt(result.rearmAfterGoneSeconds))
+                "popupCooldownSeconds" -> result.copy(popupCooldownSeconds = value.asInt(result.popupCooldownSeconds))
                 else -> result
             }
         }
@@ -292,7 +307,8 @@ object DetectionSettings {
     }
 
     private val WHOLE_PICTURE_KEYS = setOf(
-        "consistencyNeeded", "consistencyWindow", "cooldownSeconds", "workers", "maxPassesPerSecond", "maxRegions"
+        "consistencyNeeded", "consistencyWindow", "cooldownSeconds", "workers", "maxPassesPerSecond", "maxRegions",
+        "openCvThreads", "wholeFrameIntervalMs", "rearmAfterGoneSeconds", "popupCooldownSeconds"
     )
 
     /** A value written either as `{ "value": …, "note": "…" }` or plainly. */

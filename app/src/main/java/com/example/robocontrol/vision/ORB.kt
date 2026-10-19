@@ -815,7 +815,12 @@ class ORB(
          */
         @Synchronized
         fun loadOpenCv(): Boolean {
-            if (!openCvLoaded) openCvLoaded = OpenCVLoader.initLocal()
+            if (!openCvLoaded) {
+                openCvLoaded = OpenCVLoader.initLocal()
+                // Before the first parallel OpenCV call: otherwise OpenCV starts a pool of 7 helper threads that spin after
+                // every short operation (measured 0.8-0.95 of a core on the robot, more than the detection itself).
+                if (openCvLoaded) runCatching { org.opencv.core.Core.setNumThreads(DetectionSettings.run.openCvThreads.coerceAtLeast(1)) }
+            }
             return openCvLoaded
         }
     }
