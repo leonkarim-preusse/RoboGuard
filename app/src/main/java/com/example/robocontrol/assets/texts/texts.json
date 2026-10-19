@@ -7,8 +7,9 @@
     "Keys (the names on the left) are used by the code — do not rename them."
   ],
   "meta": {
-    "speechLanguage": "de_DE",
-    "_note": "Voice for every speech.* sentence: \"de_DE\" or \"en_US\". The spoken sentences below are German, so de_DE."
+    "speechLanguage": "en_US",
+    "speechVoice": "",
+    "_note": "speechLanguage: language of every speech.* sentence (\"de_DE\" or \"en_US\"). speechVoice: a fixed speaker name; empty = the speech service's own voice for speechLanguage, read from its voice list (log tag TtsVoices). The language alone does not change the voice."
   },
   "texts": {
     "app.qr.hint": {
@@ -108,55 +109,79 @@
       "note": "Pop-up when saving the settings from the phone failed"
     },
     "speech.settings_updated": {
-      "text": "Einstellungen wurden aktualisiert",
+      "text": "Settings have been updated",
       "note": "Spoken after new settings arrived and the sensors were switched"
     },
     "speech.settings_sensors_failed": {
-      "text": "Einstellungen wurden gespeichert, aber die Sensoren konnten nicht umgeschaltet werden",
+      "text": "Settings have been saved, but the sensors could not be switched",
       "note": "Spoken when the settings were saved but a sensor could not be switched"
     },
     "speech.settings_save_failed": {
-      "text": "Einstellungen konnten nicht gespeichert werden, versuchen Sie es bitte erneut",
+      "text": "Settings could not be saved, please try again",
       "note": "Spoken when the settings from the phone could not be saved at all"
     },
     "speech.position_unknown": {
-      "text": "Ich kann meine Position gerade nicht bestimmen und halte deshalb an.",
+      "text": "I can't determine my position right now, so I'm stopping.",
       "note": "Spoken when a drive stops or is refused because the robot does not know where it is"
     },
     "speech.privacy_stop": {
-      "text": "Dieser Weg führt mich durch einen als privat gekennzeichneten Bereich, darum bleibe ich vorerst stehen. Wenn du mir temporär erlauben möchtest den privaten Bereich zu betreten, dann kannst du das an meinem Bildschirm tun.",
+      "text": "This route takes me through an area marked as private, so I'll stay here for now. If you want to allow me to enter the private area temporarily, you can do that on my screen.",
       "note": "Spoken when the robot stops in front of a private area or refuses to drive into one"
     },
     "speech.privacy_allowed": {
-      "text": "Ich darf {area} für {minutes} betreten und setze meinen Weg fort",
+      "text": "I may enter {area} for {minutes} and will continue",
       "note": "Spoken after the person allowed crossing a private area; {minutes} comes from speech.minutes_one / speech.minutes_many"
     },
+    "speech.privacy_permission_ended": {
+      "text": "My permission for {area} has expired. May I stay a little longer? Otherwise I will leave the area.",
+      "note": "Spoken when a crossing permission ends while the robot stands inside that private area; the popup asks again"
+    },
+    "speech.privacy_extended": {
+      "text": "I may stay in {area} for another {minutes}",
+      "note": "Spoken after the person allowed the robot to stay longer in a private area"
+    },
+    "speech.privacy_leaving": {
+      "text": "I'm leaving {area} now",
+      "note": "Spoken when the robot drives out of a private area after its permission ended"
+    },
+    "speech.lidar_off": {
+      "text": "The lidar sensor is switched off, so I won't drive.",
+      "note": "Spoken when a drive is refused because LIDAR is switched off in the privacy settings"
+    },
+    "nav.point.outside_area": {
+      "text": "outside {area}",
+      "note": "Map screen: name of the point outside a private area the robot drives back to"
+    },
+    "nav.label.audit": {
+      "text": "Privacy decisions",
+      "note": "Map screen (debug): heading above the newest privacy decisions (grants, refusals, entries, expiries)"
+    },
     "speech.privacy_denied": {
-      "text": "Keine Erlaubnis für {area} erteilt, stoppe Navigation",
+      "text": "No permission granted for {area}, stopping navigation",
       "note": "Spoken after the person refused crossing a private area"
     },
     "speech.minutes_one": {
-      "text": "eine Minute",
+      "text": "one minute",
       "note": "Used inside speech.privacy_allowed when exactly one minute was allowed"
     },
     "speech.minutes_many": {
-      "text": "{minutes} Minuten",
+      "text": "{minutes} minutes",
       "note": "Used inside speech.privacy_allowed for two or more minutes"
     },
     "speech.conversation_apology": {
-      "text": "Bitte entschuldigt die Störung, falls ihr möchtet dass ich den Raum verlasse oder mein Mikrofon stummschalte, lasst es mich bitte wissen.",
+      "text": "Sorry for the interruption. If you would like me to leave the room or mute my microphone, please let me know.",
       "note": "Spoken with the pop-up when more than one person has been talking"
     },
     "speech.microphone_muted": {
-      "text": "Das Mikrofon kann über die App wieder eingeschaltet werden",
+      "text": "The microphone can be switched back on in the app",
       "note": "Spoken after the microphone was switched off from the conversation pop-up"
     },
     "speech.object_detected": {
-      "text": "{object} entdeckt",
+      "text": "{object} detected",
       "note": "Spoken when the robot finds one of the reference images; {object} is that image's file name without the extension (underscores become spaces)."
     },
     "speech.calendar_question": {
-      "text": "Kalender entdeckt. Sollen die Termine gespeichert werden?",
+      "text": "Calendar detected. Should the dates be saved?",
       "note": "Spoken when the calendar was recognised and the calendar popup opens"
     },
     "calendar_popup.title": {
@@ -176,7 +201,7 @@
       "note": "Calendar popup: closes it; no calendar announcement for 2 minutes (not while the camera view is open)"
     },
     "speech.calendar_detected": {
-      "text": "Kalender entdeckt",
+      "text": "Calendar detected",
       "note": "Spoken when the calendar was recognised by the camera"
     },
     "nav.button.stop": {
@@ -216,7 +241,7 @@
       "note": "Map screen, full-screen map: back to the whole map"
     },
     "nav.button.clear_points": {
-      "text": "Clear tapped points",
+      "text": "Clear temporary points",
       "note": "Map screen: removes the temporary points tapped on the map (named locations stay)"
     },
     "nav.button.set_private_area": {
@@ -469,7 +494,7 @@
     },
     "speaker_view.reset_cooldown": {
       "text": "Reset detection cooldown",
-      "note": "Speaker debug screen: forgets that the robot already asked and restarts the detector, so the pop-up can come again at once. A running pause is not lifted."
+      "note": "Speaker debug screen: forgets that the robot already asked, lifts a running pause and restarts the detector, so the pop-up can come again at once."
     },
     "speaker_view.method": {
       "text": "How the robot decides:",
@@ -504,8 +529,44 @@
       "note": "Experimental method: similarity under which two pieces count as two different people."
     },
     "speaker_view.pairwise.now": {
-      "text": "Lowest comparison: {lowest} ({held} pieces held)",
-      "note": "Experimental method: the smallest similarity measured between the pieces currently held."
+      "text": "Last comparison (median): {lowest} ({held} pieces held)",
+      "note": "Experimental method: the median similarity of the newest piece to the pieces currently held; below the threshold = two voices."
+    },
+    "speaker_view.owner.margin": {
+      "text": "Unclear band below the threshold: {value} (somebody else only below threshold minus this)",
+      "note": "Speaker screen, owner method: margin stored with the voice"
+    },
+    "speaker_view.split": {
+      "text": "Cut pieces at voice changes",
+      "note": "Speaker screen: switch, pieces are split where the change detector finds another voice"
+    },
+    "speaker_view.split.note": {
+      "text": "A piece then does not mix two voices; costs about 1.6 s of delay. Teach the voice again after switching.",
+      "note": "Speaker screen: explanation of the switch above"
+    },
+    "voice.dialog.delete_cohort.title": {
+      "text": "Delete the recorded other voices?",
+      "note": "Voice screen: confirmation before deleting the cohort"
+    },
+    "voice.dialog.delete_cohort.text": {
+      "text": "Every similarity changes its scale without them, so the owner threshold and the pairwise threshold have to be set again afterwards.",
+      "note": "Voice screen: text of that confirmation"
+    },
+    "voice.threshold.suggested": {
+      "text": "The last recording suggests {value}",
+      "note": "Voice screen: threshold computed by the last enrolment, shown next to the hand-set one"
+    },
+    "voice.button.use_suggested": {
+      "text": "Use it",
+      "note": "Voice screen: take over the suggested threshold"
+    },
+    "voice.margin.title": {
+      "text": "Unclear band: {value}",
+      "note": "Voice screen: how far below the threshold a piece must be to count as somebody else"
+    },
+    "voice.threshold.cohort_mismatch": {
+      "text": "This threshold was set for other recorded voices than the ones stored now. Set it again, or the owner method stays off.",
+      "note": "Voice screen: warning when the cohort changed after the threshold was set"
     },
     "speaker_view.owner.waiting": {
       "text": "Waiting for the first piece of speech…",
@@ -1020,7 +1081,7 @@
       "note": "Speaker debug view: the KL2 distance between the two latest speech windows"
     },
     "speaker_view.legend": {
-      "text": "Timeline: blue = loudness, orange = Silero probability, green background = counted as speech (white = cut out by Silero), red line = voice change, grey = rejected candidate, purple = conversation reset, green = 'more than one' reached",
+      "text": "Timeline, top bands: orange = Silero says speech, blue = louder than the level floor, grey = the robot itself speaking. Below: green background = counted as speech, blue line = loudness with the floor dashed, orange line = Silero probability with its start (dashed) and end (dotted) threshold. Marks: red = voice change, grey = rejected candidate, purple = conversation reset, green = 'more than one' reached",
       "note": "Speaker debug view: explains the timeline colours"
     },
     "speaker_view.timeline_title": {

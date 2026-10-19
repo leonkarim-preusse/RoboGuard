@@ -90,6 +90,7 @@ class MovementProbe(
     private val log: ProbeLog,
     private val scope: CoroutineScope
 ) {
+    private val appContext = context.applicationContext
     private val bridge = OrionStarBridge(context)
     private val pointStore = SavedPointStore(context)
 
@@ -437,6 +438,12 @@ class MovementProbe(
      */
     fun driveToSelected() {
         val target = _selected.value ?: return log.i(TAG, "select a point first: tap the map or a list entry")
+        // LIDAR off in the privacy settings: no obstacle detection and no localization, so no drive (review 2026-10-02, item 22).
+        val lidarOff = runCatching {
+            com.example.robocontrol.sensorcontrol.Sensors.get(appContext).getSensors().entries
+                .firstOrNull { it.key.equals("lidar", ignoreCase = true) }?.value == false
+        }.getOrDefault(false)
+        if (lidarOff) return log.i(TAG, "DRIVE REFUSED: LIDAR is switched off in the privacy settings")
         if (_localized.value == false) {
             log.i(TAG, "warning: the robot reports it is NOT localized; navigation will most likely fail (NotLocalized)")
         }

@@ -28,6 +28,7 @@ class SileroVad(context: Context, val sampleRate: Int = 16_000) : AutoCloseable 
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val session: OrtSession
+    private val options: OrtSession.SessionOptions
     private val h = FloatArray(STATE_SIZE)
     private val c = FloatArray(STATE_SIZE)
     private val input = FloatArray(chunkSize)
@@ -35,7 +36,7 @@ class SileroVad(context: Context, val sampleRate: Int = 16_000) : AutoCloseable 
     init {
         require(sampleRate == 16_000) { "only 16 kHz is set up" }
         val model = context.assets.open(MODEL_ASSET).use { it.readBytes() }
-        val options = OrtSession.SessionOptions().apply {
+        options = OrtSession.SessionOptions().apply {
             setIntraOpNumThreads(1)
             setInterOpNumThreads(1)
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
@@ -76,6 +77,7 @@ class SileroVad(context: Context, val sampleRate: Int = 16_000) : AutoCloseable 
         reset()
         input.fill(0f)
         session.close()
+        options.close()
     }
 
     private fun copyState(value: Any, target: FloatArray) {

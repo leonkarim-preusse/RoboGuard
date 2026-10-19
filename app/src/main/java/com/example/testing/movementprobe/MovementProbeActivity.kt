@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
@@ -586,25 +587,23 @@ class MovementProbeActivity : ComponentActivity() {
             places.forEach { marker(it, Color(0xFF1565C0)) }
             custom.forEach { marker(it, if (it.persistent) Color(0xFF6A1B9A) else Color(0xFFEF6C00)) }
 
-            // Private areas: filled polygon, plus an outer ring where PrivacyGuard's margin already stops the robot.
+            // Private areas: filled polygon, plus the band where PrivacyGuard's margin already stops the robot (outline stroked
+            // with twice the margin, cut to the outside = exactly the enforced region; same as MapNavigationActivity).
             privateZones.forEach { zone ->
                 val path = Path().apply {
+                    fillType = androidx.compose.ui.graphics.PathFillType.EvenOdd
                     zone.polygon.forEachIndexed { i, p ->
                         val s = t.toScreen(p)
                         if (i == 0) moveTo(s.x, s.y) else lineTo(s.x, s.y)
                     }
                     close()
                 }
+                val marginPx = (privacyMargin / rendered.map.resolution * t.scale).toFloat()
+                clipPath(path, clipOp = androidx.compose.ui.graphics.ClipOp.Difference) {
+                    drawPath(path, Color(0x33D50000), style = Stroke(width = 2 * marginPx, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                }
                 drawPath(path, Color(0x55D50000))
                 drawPath(path, Color(0xFFD50000), style = Stroke(width = 3f))
-                val centre = zone.centroid()
-                val outerRadiusM = zone.polygon.maxOf { it.distanceTo(centre) } + privacyMargin
-                drawCircle(
-                    Color(0xFFD50000),
-                    radius = (outerRadiusM / rendered.map.resolution * t.scale).toFloat(),
-                    center = t.toScreen(centre),
-                    style = Stroke(width = 2f)
-                )
             }
 
             // The private area being drawn: filled once it has 3 corners, closing edge dashed, corners as dots.

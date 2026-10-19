@@ -121,7 +121,9 @@ class OrionStarTts(private val context: Context) {
      * language in `assets/texts/texts.json` also switches the voice.
      */
     fun speakConfigured(text: String, listener: TtsListener? = null): Boolean =
-        speak(text, if (com.example.robocontrol.text.UiText.speechLanguage.startsWith("en")) TtsLanguage.ENGLISH else TtsLanguage.GERMAN, listener)
+        speak(text, if (com.example.robocontrol.text.UiText.speechLanguage.startsWith("en")) TtsLanguage.ENGLISH else TtsLanguage.GERMAN,
+            listener, voice = com.example.robocontrol.text.UiText.speechVoice
+                ?: TtsVoices.voiceFor(context, com.example.robocontrol.text.UiText.speechLanguage))
 
     fun speakGerman(text: String, listener: TtsListener? = null): Boolean =
         speak(text, TtsLanguage.GERMAN, listener)
@@ -132,7 +134,7 @@ class OrionStarTts(private val context: Context) {
      * @return true if the text was handed to the speech service. False means it was rejected
      *         before that, and [listener] has already received [TtsListener.onFailed].
      */
-    fun speak(text: String, language: TtsLanguage, listener: TtsListener? = null): Boolean {
+    fun speak(text: String, language: TtsLanguage, listener: TtsListener? = null, voice: String? = null): Boolean {
         val invalid = validate(text)
         if (invalid != null) {
             listener?.onFailed(invalid)
@@ -140,6 +142,10 @@ class OrionStarTts(private val context: Context) {
         }
 
         val params = hashMapOf(TTSParams.SPEECHLANGUAGE to language.sdk.codeName)
+        // The language alone does not change the voice: the speech service keeps the robot-wide speaker (a German WaveNet
+        // voice here, "de-de-wavenet-c") and only told it the text is English (robot log 2026-10-19). The speaker is set per
+        // sentence as well, so the robot-wide setting stays untouched.
+        if (!voice.isNullOrBlank()) params[TTSParams.SPEAKERROLE] = voice
         val entity = TTSEntity(text).apply { ttsParams = params }
 
         return runCatching { skillApi.playText(entity, textListener(listener)) }

@@ -261,7 +261,8 @@ object CalendarMonitor {
             .firstOrNull { it.key.equals("camera", ignoreCase = true) }?.value != false
         // Owner, 2026-09-21: object detection is a feature of Pixelate Objects. Off (or never sent by the phone) means
         // the robot does not look for objects — WITHOUT switching the camera itself off; that stays the sensor setting.
-        val pixelate = Sensors.get(appContext).isSituationalEnabled(PIXELATE_OBJECTS) == true
+        // On unless the phone switched it off (owner 2026-10-19: features are on by default).
+        val pixelate = Sensors.get(appContext).isSituationalEnabled(PIXELATE_OBJECTS) != false
         val reason = when {
             !pixelate -> "Pixelate Objects is off in the privacy settings"
             !cameraAllowed -> "camera switched off in the privacy settings"

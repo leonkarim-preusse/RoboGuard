@@ -43,6 +43,7 @@ private val CHANGE_MARK = Color(0xFFD32F2F)
 private val REJECTED_MARK = Color(0xFFBDBDBD)
 private val RESET_MARK = Color(0xFF7B1FA2)
 private val MULTIPLE_MARK = Color(0xFF2E7D32)
+private val ROBOT_FILL = Color(0xFF9E9E9E)
 
 /**
  * Debug screen of the conversation detection ([ConversationMonitor]): what the microphone hears, what Silero makes of it, and
@@ -59,10 +60,8 @@ private val MULTIPLE_MARK = Color(0xFF2E7D32)
  */
 @Composable
 fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit = {}) {
-    DisposableEffect(Unit) {
-        ConversationMonitor.addDebugViewer()
-        onDispose { ConversationMonitor.removeDebugViewer() }
-    }
+    // Registered only while the screen is visible (item 25): in the background the test announcement must stop.
+    WhileVisible(onStart = { ConversationMonitor.addDebugViewer() }, onStop = { ConversationMonitor.removeDebugViewer() })
     val status by ConversationMonitor.status.collectAsState()
     val snapshot by ConversationMonitor.snapshot.collectAsState()
     val method by ConversationMonitor.method.collectAsState()
@@ -189,6 +188,12 @@ fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit =
                         modifier = Modifier.padding(start = 8.dp))
                 }
                 Text(UiText.get("speaker_view.continuous.note"), fontSize = 11.sp, color = Color.Gray)
+                val split by ConversationMonitor.splitAtChanges.collectAsState()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = split, onCheckedChange = { ConversationMonitor.setSplitAtChanges(it) })
+                    Text(UiText.get("speaker_view.split"), fontSize = 12.sp, modifier = Modifier.padding(start = 8.dp))
+                }
+                Text(UiText.get("speaker_view.split.note"), fontSize = 11.sp, color = Color.Gray)
             }
 
             // One stray piece should not decide anything: a verdict that changes has to be repeated.
@@ -317,6 +322,21 @@ fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit =
                         ) { Text("%+.2f".format(step), fontSize = 12.sp) }
                     }
                 }
+                // The unclear band below the threshold, stored with the voice like the threshold (item 10).
+                Text(
+                    if (stored == null) "" else UiText.get("speaker_view.owner.margin", "value" to "%.2f".format(stored!!.margin)),
+                    fontSize = 13.sp
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-0.02f, -0.01f, +0.01f, +0.02f).forEach { step ->
+                        OutlinedButton(
+                            enabled = stored != null,
+                            onClick = { stored?.let { ConversationMonitor.setOwnerMargin(it.margin + step) } },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            modifier = Modifier.height(34.dp)
+                        ) { Text("%+.2f".format(step), fontSize = 12.sp) }
+                    }
+                }
                 Text(
                     UiText.get("speaker_view.owner.counts", "owner" to snapshot.ownerPieces, "other" to snapshot.otherPieces),
                     fontSize = 13.sp
@@ -386,7 +406,12 @@ fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit =
     }
 }
 
-/** Draws the last seconds of audio: level, Silero probability, the speech gate as background, and the events as marks. */
+/**
+ * Draws the last seconds of audio. Three thin bands at the top, one per 10 ms frame: orange = Silero said speech (with its
+ * hysteresis), blue = louder than the level floor, grey = the robot itself was speaking. Below: green background where the
+ * frame finally counted as speech, the level (blue line, −90…0 dBFS) with the floor as a dashed line, and Silero's probability
+ * (orange line) with its start and end thresholds.
+ */
 @Composable
 private fun Timeline(snapshot: ConversationSnapshot, modifier: Modifier) {
     Canvas(modifier) {
@@ -396,25 +421,48 @@ private fun Timeline(snapshot: ConversationSnapshot, modifier: Modifier) {
         val last = frames.last().timeMs
         val span = (last - first).coerceAtLeast(1L).toDouble()
         fun x(timeMs: Long) = ((timeMs - first) / span * size.width).toFloat()
-        // Level −90…0 dBFS in the upper 60 %, Silero 0…1 in the lower 40 %.
-        val levelBottom = size.height * 0.6f
-        fun levelY(db: Double) = (levelBottom - ((db.coerceIn(-90.0, 0.0) + 90.0) / 90.0 * levelBottom)).toFloat()
+        // Bands on top, then the level in the next 50 %, Silero 0…1 in the rest.
+        val bandHeight = size.height * 0.05f
+        val bandsBottom = bandHeight * 3 + 6f
+        val levelBottom = bandsBottom + (size.height - bandsBottom) * 0.55f
+        fun levelY(db: Double) = (levelBottom - ((db.coerceIn(-90.0, 0.0) + 90.0) / 90.0 * (levelBottom - bandsBottom))).toFloat()
         fun probabilityY(p: Double) = (size.height - p.coerceIn(0.0, 1.0) * (size.height - levelBottom)).toFloat()
 
-        // Green background wherever the gate counted speech (so the white gaps are what Silero cut out).
-        var runStart: Long? = null
-        for (frame in frames) {
-            if (frame.speech && runStart == null) runStart = frame.timeMs
-            if (!frame.speech && runStart != null) {
-                drawRect(SPEECH_FILL, Offset(x(runStart), 0f), Size(x(frame.timeMs) - x(runStart), size.height))
-                runStart = null
+        /** Fills every run of frames where [on] holds, between [top] and [bottom]. */
+        fun runs(color: Color, top: Float, bottom: Float, on: (AudioFrame) -> Boolean) {
+            var start: Long? = null
+            for (frame in frames) {
+                if (on(frame) && start == null) start = frame.timeMs
+                if (!on(frame) && start != null) {
+                    drawRect(color, Offset(x(start), top), Size(x(frame.timeMs) - x(start), bottom - top))
+                    start = null
+                }
             }
+            start?.let { drawRect(color, Offset(x(it), top), Size(size.width - x(it), bottom - top)) }
         }
-        runStart?.let { drawRect(SPEECH_FILL, Offset(x(it), 0f), Size(size.width - x(it), size.height)) }
+
+        // What finally counted as speech, as background below the bands.
+        runs(SPEECH_FILL, bandsBottom, size.height) { it.speech }
+        runs(PROBABILITY_LINE, 0f, bandHeight) { it.silero }
+        runs(LEVEL_LINE, bandHeight + 3f, bandHeight * 2 + 3f) { it.loud }
+        runs(ROBOT_FILL, bandHeight * 2 + 6f, bandHeight * 3 + 6f) { it.robot }
 
         drawLine(THRESHOLD_LINE, Offset(0f, levelBottom), Offset(size.width, levelBottom), strokeWidth = 1f)
-        val thresholdY = probabilityY(ChangeDetectorConfig().sileroThreshold)
-        drawLine(THRESHOLD_LINE, Offset(0f, thresholdY), Offset(size.width, thresholdY), strokeWidth = 1f)
+        snapshot.levelFloorDb?.let { floor ->
+            val y = levelY(floor)
+            drawLine(LEVEL_LINE, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.5f,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 8f)))
+        }
+        snapshot.sileroThreshold?.let { t ->
+            val y = probabilityY(t)
+            drawLine(PROBABILITY_LINE, Offset(0f, y), Offset(size.width, y), strokeWidth = 1.5f,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 8f)))
+        }
+        snapshot.sileroRelease?.let { r ->
+            val y = probabilityY(r)
+            drawLine(THRESHOLD_LINE, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f,
+                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(4f, 6f)))
+        }
 
         val levelPoints = frames.map { Offset(x(it.timeMs), levelY(it.levelDb)) }
         drawPoints(levelPoints, androidx.compose.ui.graphics.PointMode.Polygon, LEVEL_LINE, strokeWidth = 2f)

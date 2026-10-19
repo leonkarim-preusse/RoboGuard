@@ -78,7 +78,7 @@
         "enabled": { "value": true, "note": "false = this reference image is ignored completely (stays in the folder, is not searched for)." },
         "usePinkMarker": { "value": false, "note": "This picture has no pink frame, so it is searched in the whole camera picture." },
         "pyramidLevels": { "value": 8, "note": "Without a pink frame the robot cannot know how big the object appears, so it has to look at more sizes: 4 levels cover about 1.7x, 8 cover about 3.6x." },
-        "fastThreshold": { "value": 15, "note": "How strong a corner must be to count (OpenCV default 20). Higher = only strong corners, so weak background corners use up less of the keypoint budget of the whole picture." },
+        "fastThreshold": { "value": 10, "note": "How strong a corner must be to count (OpenCV default 20). Higher = only strong corners, so weak background corners use up less of the keypoint budget of the whole picture." },
         "minInliers": { "value": 8, "note": "Without the pink frame as a second check, demand more matching points." },
         "maxFeatures": { "value": 2000, "note": "A poster with lots of texture can use more keypoints." }
       }

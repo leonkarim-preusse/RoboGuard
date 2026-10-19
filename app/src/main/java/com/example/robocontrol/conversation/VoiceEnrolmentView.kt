@@ -30,6 +30,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,22 +76,46 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
     var recordAs by remember(activeProfile) { mutableStateOf(activeProfile) }
     var confirmDelete by remember { mutableStateOf(false) }
     var missingPermission by remember { mutableStateOf(false) }
-    // Remembered across the permission dialog, which interrupts the press.
-    var pendingProfile by remember { mutableStateOf(OwnerVoiceprintStore.DEFAULT_PROFILE) }
+    var confirmDeleteCohort by remember { mutableStateOf(false) }
+    // The button that was pressed, remembered across the permission dialog. It used to always start an ENROL run, so
+    // "Record other voices" or "Try the voice" recorded and saved an owner voice after granting the permission (item 57).
+    var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    // Store writes (decrypt, encrypt, fsync) off the UI thread (item 6).
+    val io = rememberCoroutineScope()
+    fun inBackground(block: () -> Unit) { io.launch(Dispatchers.IO) { block() } }
     // Derived from the published state, NOT from VoiceEnrolment.running: that is a plain property, so Compose never
     // redraws when the recording thread ends — the screen kept showing "Stop" and never offered "Try the voice".
     val running = state.phase == EnrolmentState.Phase.RECORDING || state.phase == EnrolmentState.Phase.TESTING
 
-    // Recording must stop when the screen goes away, or the microphone would stay taken.
-    DisposableEffect(Unit) { onDispose { enrolment.stop() } }
+    // Recording must end when the screen is no longer visible (Home, another app), not only when it is closed — and then
+    // it keeps nothing, not even a half cohort (item 25).
+    WhileVisible(onStart = {}, onStop = { enrolment.cancel() })
 
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         missingPermission = !granted
-        if (granted) enrolment.startEnrolment(pendingProfile)
+        if (granted) pendingAction?.invoke()
+        pendingAction = null
     }
     fun withMicrophone(action: () -> Unit) {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) action()
-        else askPermission.launch(Manifest.permission.RECORD_AUDIO)
+        else {
+            pendingAction = action
+            askPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    if (confirmDeleteCohort) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteCohort = false },
+            title = { Text(UiText.get("voice.dialog.delete_cohort.title")) },
+            text = { Text(UiText.get("voice.dialog.delete_cohort.text")) },
+            confirmButton = {
+                TextButton(onClick = { inBackground { store.deleteCohort() }; confirmDeleteCohort = false }) {
+                    Text(UiText.get("voice.button.delete"), color = Color(0xFFD32F2F))
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteCohort = false }) { Text(UiText.get("voice.button.cancel")) } }
+        )
     }
 
     if (confirmDelete) {
@@ -97,7 +124,7 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
             title = { Text(UiText.get("voice.dialog.delete.title")) },
             text = { Text(UiText.get("voice.dialog.delete.text")) },
             confirmButton = {
-                TextButton(onClick = { store.delete(); confirmDelete = false }) {
+                TextButton(onClick = { inBackground { store.delete() }; confirmDelete = false }) {
                     Text(UiText.get("voice.button.delete"), color = Color(0xFFD32F2F))
                 }
             },
@@ -133,12 +160,12 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                     modifier = Modifier.fillMaxWidth()
                 )
                 Button(
-                    onClick = { pendingProfile = recordAs; withMicrophone { enrolment.startEnrolment(recordAs) } },
+                    onClick = { val name = recordAs; withMicrophone { enrolment.startEnrolment(name) } },
                     enabled = recordAs.isNotBlank(),
                     modifier = Modifier.fillMaxWidth().height(48.dp)
                 ) {
                     Text(UiText.get(
-                        if (profiles.contains(recordAs.trim())) "voice.button.record_again" else "voice.button.record"
+                        if (profiles.contains(store.safeName(recordAs))) "voice.button.record_again" else "voice.button.record"
                     ))
                 }
                 if (stored != null) {
@@ -162,7 +189,7 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                     modifier = Modifier.fillMaxWidth()
                 ) { Text(UiText.get("voice.button.cohort"), fontSize = 13.sp) }
                 if (cohortPieces != null) {
-                    OutlinedButton(onClick = { store.deleteCohort() }, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = { confirmDeleteCohort = true }, modifier = Modifier.fillMaxWidth()) {
                         Text(UiText.get("voice.button.cohort_delete"), fontSize = 13.sp, color = Color(0xFFD32F2F))
                     }
                 }
@@ -189,13 +216,13 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                         )
                         if (profile != activeProfile) {
                             OutlinedButton(
-                                onClick = { store.setActiveProfile(profile) },
+                                onClick = { inBackground { store.setActiveProfile(profile) } },
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                                 modifier = Modifier.height(34.dp)
                             ) { Text(UiText.get("voice.button.use"), fontSize = 12.sp) }
                         }
                         OutlinedButton(
-                            onClick = { store.deleteProfile(profile) },
+                            onClick = { inBackground { store.deleteProfile(profile) } },
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                             modifier = Modifier.height(34.dp)
                         ) { Text(UiText.get("voice.button.delete"), fontSize = 12.sp, color = Color(0xFFD32F2F)) }
@@ -236,13 +263,41 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf(-0.05f, -0.01f, +0.01f, +0.05f).forEach { step ->
                         OutlinedButton(
-                            onClick = { store.setThreshold(info.threshold + step) },
+                            onClick = { inBackground { store.setThreshold(info.threshold + step) } },
                             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                             modifier = Modifier.height(36.dp)
                         ) { Text(if (step > 0) "+%.2f".format(step) else "%.2f".format(step), fontSize = 13.sp) }
                     }
                 }
                 Text(UiText.get("voice.threshold.hint"), fontSize = 12.sp, color = Color(0xFF555555))
+                // What the last recording computed, offered next to the hand-set value instead of replacing it (item 12).
+                info.suggestedThreshold?.let { suggested ->
+                    if (kotlin.math.abs(suggested - info.threshold) >= 0.005f) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(UiText.get("voice.threshold.suggested", "value" to "%.2f".format(suggested)), fontSize = 13.sp,
+                                modifier = Modifier.weight(1f))
+                            OutlinedButton(onClick = { inBackground { store.applySuggestedThreshold() } },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), modifier = Modifier.height(34.dp)) {
+                                Text(UiText.get("voice.button.use_suggested"), fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+                // The unclear band: a piece must be this far below the threshold to count as somebody else (item 10).
+                Text(UiText.get("voice.margin.title", "value" to "%.2f".format(info.margin)), fontSize = 14.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(-0.02f, -0.01f, +0.01f, +0.02f).forEach { step ->
+                        OutlinedButton(
+                            onClick = { inBackground { store.setMargin(info.margin + step) } },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) { Text(if (step > 0) "+%.2f".format(step) else "%.2f".format(step), fontSize = 13.sp) }
+                    }
+                }
+                // A threshold only means something on the scale of the cohort it was set with (item 11).
+                if (store.cohortMismatch(info)) {
+                    Text(UiText.get("voice.threshold.cohort_mismatch"), fontSize = 13.sp, color = Color(0xFFD32F2F))
+                }
             }
 
             // ---- what is happening now

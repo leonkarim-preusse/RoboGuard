@@ -57,6 +57,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -121,6 +122,16 @@ class MapNavigationActivity : ComponentActivity() {
      */
     override fun onStop() {
         super.onStop()
+    }
+
+    /** Counts "show the map again" requests (a popup's "Leave room" while a debug view is open). */
+    private val backToMap = androidx.compose.runtime.mutableIntStateOf(0)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Reached again through CLEAR_TOP|SINGLE_TOP (e.g. "Leave room"): show the map, not a debug view that may still
+        // be open on this instance (review 2026-10-02, item 25).
+        backToMap.intValue++
     }
 
     override fun onDestroy() {
@@ -237,10 +248,10 @@ class MapNavigationActivity : ComponentActivity() {
         }
         // A drive stopped at a private area asks on the screen: open the popup once per question.
         LaunchedEffect(Unit) {
-            var shownId = -1L
+            // The shown id lives in PrivacyOverridePrompt, so a recreated activity does not open a second popup.
             PrivacyOverridePrompt.pending.collect { request ->
-                if (request != null && request.id != shownId) {
-                    shownId = request.id
+                if (request != null && request.id != PrivacyOverridePrompt.shownId) {
+                    PrivacyOverridePrompt.shownId = request.id
                     startActivity(Intent(this@MapNavigationActivity, PrivacyOverrideActivity::class.java))
                 }
             }
@@ -286,9 +297,18 @@ class MapNavigationActivity : ComponentActivity() {
         var cameraView by rememberSaveable { mutableStateOf(false) }
         var speakerView by rememberSaveable { mutableStateOf(false) }
         var voiceView by rememberSaveable { mutableStateOf(false) }
+        // STOP is only active while the robot moves: a drive, or turning away after a privacy stop (owner, 2026-10-19).
+        val drivingNow by probe.driving.collectAsState()
+        val turningNow by probe.turning.collectAsState()
+        val moving = drivingNow || turningNow
+        val backRequests = backToMap.intValue
+        LaunchedEffect(backRequests) {
+            if (backRequests > 0) { cameraView = false; speakerView = false; voiceView = false }
+        }
         if (voiceView) {
             com.example.robocontrol.conversation.VoiceEnrolmentScreen(onBack = { voiceView = false }) {
                 Button(
+                    enabled = moving,
                     onClick = { probe.stop("STOP pressed") },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth().height(56.dp)
@@ -299,6 +319,7 @@ class MapNavigationActivity : ComponentActivity() {
         if (speakerView) {
             com.example.robocontrol.conversation.SpeakerDebugScreen(onBack = { speakerView = false }) {
                 Button(
+                    enabled = moving,
                     onClick = { probe.stop("STOP pressed") },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth().height(56.dp)
@@ -310,6 +331,7 @@ class MapNavigationActivity : ComponentActivity() {
         if (cameraView) {
             com.example.robocontrol.vision.CalendarCameraScreen(onBack = { cameraView = false }) {
                 Button(
+                    enabled = moving,
                     onClick = { probe.stop("STOP pressed") },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth().height(56.dp)
@@ -328,6 +350,7 @@ class MapNavigationActivity : ComponentActivity() {
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Button(
+                        enabled = moving,
                         onClick = { probe.stop("STOP pressed") },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
                         modifier = Modifier.height(FULLSCREEN_BUTTON_HEIGHT), contentPadding = FULLSCREEN_BUTTON_PADDING
@@ -400,6 +423,7 @@ class MapNavigationActivity : ComponentActivity() {
                 modifier = Modifier.height(48.dp)
             ) { Text(UiText.get("nav.button.home"), fontSize = 16.sp) }
             Button(
+                enabled = moving,
                 onClick = { probe.stop("STOP pressed") },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
                 modifier = Modifier.weight(1f).height(48.dp)
@@ -462,7 +486,6 @@ class MapNavigationActivity : ComponentActivity() {
                     Text(UiText.get("nav.label.measured_speed", "speed" to (measuredSpeed ?: UiText.get("nav.label.unknown"))), fontSize = 13.sp)
                 }
 
-                OutlinedButton(onClick = { probe.clearCustomPoints() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.clear_points")) }
 
                 Text(UiText.get("nav.label.privacy_areas"), fontWeight = FontWeight.Bold)
                 if (privateZones.isEmpty()) Text(UiText.get("nav.label.no_areas"), fontSize = 13.sp)
@@ -501,7 +524,7 @@ class MapNavigationActivity : ComponentActivity() {
                         onClick = { nameAreaFor = AreaKind.CIRCLE },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828), contentColor = Color.White),
                         modifier = Modifier.weight(1f)
-                    ) { Text(UiText.get("nav.button.set_private_area"), fontSize = 11.sp) }
+                    ) { Text(UiText.get("nav.button.set_private_area"), fontSize = 9.sp, maxLines = 1, softWrap = false) }
                     OutlinedButton(
                         enabled = privateZones.isNotEmpty() || zoneStoreError != null,
                         onClick = { confirmClearAreas = true },
@@ -534,6 +557,8 @@ class MapNavigationActivity : ComponentActivity() {
                     Text(UiText.get(if (canSavePosition) "nav.button.save_position" else "nav.button.save_position_blocked"))
                 }
                 OutlinedButton(onClick = { probe.reload() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.reload_map")) }
+                // At the bottom (owner, 2026-10-19).
+                OutlinedButton(onClick = { probe.clearCustomPoints() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.clear_points")) }
 
                 // Debug mode is switched on by tapping the start screen's header 7 times; this switch only turns it off again.
                 if (showDebug) {
@@ -546,6 +571,13 @@ class MapNavigationActivity : ComponentActivity() {
                     Button(onClick = { speakerView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.show_speaker")) }
                     Button(onClick = { voiceView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.teach_voice")) }
                     OutlinedButton(onClick = { log.clearScreen() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.clear_log")) }
+
+                    // Every grant, refusal, entry and expiry: an override nobody can inspect is what the thesis objects to.
+                    val audit by probe.audit.collectAsState()
+                    if (audit.isNotEmpty()) {
+                        Text(UiText.get("nav.label.audit"), fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                        audit.takeLast(8).asReversed().forEach { Text(it, fontSize = 12.sp) }
+                    }
 
                     // Switches the whole app off: no autostart, no service, no camera stream, no microphone.
                     var appDisabled by remember { mutableStateOf(AppDisabled.isDisabled(this@MapNavigationActivity)) }
@@ -669,7 +701,7 @@ class MapNavigationActivity : ComponentActivity() {
 
     @Composable
     private fun PointButton(point: MapPoint, isSelected: Boolean) {
-        val label = "${point.name}  (%.2f, %.2f)".format(point.position.x, point.position.y)
+        val label = point.name
         if (isSelected) {
             Button(onClick = { probe.select(point) }, modifier = Modifier.fillMaxWidth()) { Text(label) }
         } else {
@@ -778,9 +810,13 @@ class MapNavigationActivity : ComponentActivity() {
             places.forEach { marker(it, Color(0xFF1565C0)) }
             custom.forEach { marker(it, if (it.persistent) Color(0xFF6A1B9A) else Color(0xFFEF6C00)) }
 
-            // Private areas: filled polygon, plus an outer ring where PrivacyGuard's margin already stops the robot.
+            // Private areas: filled polygon, plus the band where PrivacyGuard's margin already stops the robot. The band is the
+            // outline stroked with twice the margin and cut to the outside, i.e. exactly the enforced region (the earlier
+            // circle around the corners was metres too big for long drawn areas, review 2026-10-02, item 60). Even-odd
+            // filling matches the ray-casting containment test for self-crossing outlines.
             privateZones.forEach { zone ->
                 val path = Path().apply {
+                    fillType = PathFillType.EvenOdd
                     zone.polygon.forEachIndexed { i, p ->
                         val s = t.toScreen(p)
                         if (i == 0) moveTo(s.x, s.y) else lineTo(s.x, s.y)
@@ -789,14 +825,6 @@ class MapNavigationActivity : ComponentActivity() {
                 }
                 drawPath(path, Color(0x55D50000))
                 drawPath(path, Color(0xFFD50000), style = Stroke(width = 3f))
-                val centre = zone.centroid()
-                val outerRadiusM = zone.polygon.maxOf { it.distanceTo(centre) } + privacyMargin
-                drawCircle(
-                    Color(0xFFD50000),
-                    radius = (outerRadiusM / rendered.map.resolution * t.scale).toFloat(),
-                    center = t.toScreen(centre),
-                    style = Stroke(width = 2f)
-                )
             }
 
             // The private area being drawn: filled once it has 3 corners, closing edge dashed, corners as dots.

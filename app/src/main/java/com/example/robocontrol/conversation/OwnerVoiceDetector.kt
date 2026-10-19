@@ -28,18 +28,6 @@ import kotlin.math.sqrt
  * decision window keeps nothing but two counters and a handful of similarity NUMBERS — no vectors. Everything is zeroed
  * when the detector stops or after [ConversationSettings.resetAfterSilenceMs] of silence.
  */
-/** One finished piece on its way to the embedding thread. The samples are zeroed as soon as they have been used. */
-private class PieceToEmbed(val samples: FloatArray, val timeMs: Long, val levelDb: Double, val spanMs: Long)
-
-/** What comes back: numbers only, never a vector. */
-private class PieceResult(
-    val similarity: Float,
-    val timeMs: Long,
-    val levelDb: Double,
-    val spanMs: Long,
-    val embedNs: Long
-)
-
 class OwnerVoiceDetector(
     private val context: Context,
     private val source: PcmSource = AndroidMicSource(),
@@ -52,6 +40,11 @@ class OwnerVoiceDetector(
     @Volatile
     private var thread: Thread? = null
 
+    @Volatile
+    override var debugTimeline: Boolean = false
+    private val debug = DebugTimeline()
+    private var lastStateForDebug = ConversationState.NO_SPEECH
+
     @Synchronized
     override fun start() {
         if (thread != null) return
@@ -62,13 +55,14 @@ class OwnerVoiceDetector(
     }
 
     @Synchronized
-    override fun stop() {
+    override fun stop(): Boolean {
         val t = thread
         thread = null
         t?.interrupt()
         // Wait for the thread to close the microphone. The next detector opens it immediately afterwards, and two
         // AudioRecords on the same device give silence on Android 9 rather than an error.
         runCatching { t?.join(STOP_TIMEOUT_MS) }
+        return t == null || !t.isAlive
     }
 
     private fun run() {
@@ -78,41 +72,33 @@ class OwnerVoiceDetector(
             _snapshot.value = ConversationSnapshot(
                 method = DetectionMethod.OWNER,
                 running = false,
-                error = "no voice stored: teach the robot the owner's voice first"
+                error = store.problem() ?: "no voice stored: teach the robot the owner's voice first"
             )
             thread = null
             return
         }
+        val threshold = template.info.threshold
+        // The unclear band belongs to the voice (item 10); the setting is only the fallback for very old files.
+        val margin = template.info.margin
         // Average of other voices through this microphone; subtracted from both sides when comparing (see Voiceprint).
         val cohort = store.loadCohort()
         var vad: SileroVad? = null
-        val piece = FloatArray((settings.pieceSeconds * 16_000).toInt())
-        var fill = 0
-        val read = ShortArray(HOP)
-        val hop = ShortArray(HOP)
+        val read = ShortArray(SPEECH_HOP)
+        val hop = ShortArray(SPEECH_HOP)
         val chunk = ShortArray(512)
         var chunkFill = 0
         var probability = 0.0
         val speaking = RobotSpeaking(context)
         var wasRobotTalking = false
-        var sileroWasSpeech = false
-        // Continuous pieces: a ring of the newest hops, so the start of an utterance can be taken with its first
-        // milliseconds instead of after them, plus the moment of the last gated frame for bridging short pauses.
-        val preRollHops = ((settings.speechPadMs / 10).toInt()).coerceAtLeast(1)
-        val preRoll = ShortArray(preRollHops * HOP)
-        var preRollAt = 0
-        var preRollFilled = 0
-        var wasAppending = false
-        var lastGateMs = Long.MIN_VALUE / 2
+        val gate = SpeechGateState(settings)
+        val pieces = PieceAssembler(settings, source.sampleRate)
         // Load counters for the performance recording (numbers only, see AudioLoad).
         val load = AudioLoad(TAG, "owner comparison, threshold %.2f, margin %.2f, %d pieces for somebody else, ".format(
-            template.info.threshold, settings.margin, settings.piecesForOther) +
-            "window %d s, %s, confirm twice %b, pieces %s, gate %s, silero %.2f (hysteresis %.2f), floor %.0f dBFS".format(
+            threshold, margin, settings.piecesForOther) +
+            "window %d s, %s, confirm twice %b, pieces %s, gate %s, silero %.2f (release %.2f), floor %.0f dBFS".format(
                 settings.windowMs / 1000, if (cohort != null) "cohort centred" else "no cohort",
-                settings.confirmTwice,
-                if (settings.continuousPieces) "continuous (+%d ms pad, %d ms gaps kept)".format(
-                    settings.speechPadMs, settings.bridgeGapMs) else "gated frames only",
-                settings.gateMode, settings.speechThreshold, settings.speechHysteresis, settings.minLevelDb))
+                settings.confirmTwice, settings.assemblyText(),
+                settings.gateMode, settings.speechThreshold, settings.sileroRelease, settings.minLevelDb))
 
         // Decision window: times only, no vectors.
         val ownerTimes = ArrayDeque<Long>()
@@ -123,174 +109,91 @@ class OwnerVoiceDetector(
         var confirmedVerdict = UNCLEAR
         var pendingVerdict = UNCLEAR
         var pendingTimeMs = 0L
-        // Per piece: level of its speech frames, and when it started, for the log line.
-        var pieceLevelSum = 0.0
-        var pieceLevelFrames = 0
-        var pieceStartedMs = -1L
         var speechSamples = 0L
         var samples = 0L
         var lastSpeechAtMs = Long.MIN_VALUE / 2
+        // When the last verdict came back: it arrives up to a few seconds after its speech, and must not be hidden by
+        // "nobody is talking" just because the turn ended meanwhile (item 52).
+        var lastResultAtMs = Long.MIN_VALUE / 2
         var lastPublish = -1_000L
-
-        // Handover to the embedding thread: one piece at a time (a piece judged seconds late is worthless) and the
-        // results come back as plain numbers.
-        val toEmbed = java.util.concurrent.ArrayBlockingQueue<PieceToEmbed>(1)
-        val results = java.util.concurrent.ConcurrentLinkedQueue<PieceResult>()
-        var embedThread: Thread? = null
-        // Set by the embedding thread when it cannot go on (model did not load, unexpected error); the loop below ends then.
-        val embedError = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        var worker: EmbeddingWorker<Float>? = null
+        val silence = SilenceWindow(settings.resetAfterSilenceMs, settings.resetMaxSpeechShare)
 
         try {
-            vad = SileroVad(context)
+            // The microphone first: if it cannot be opened, no model has been loaded for nothing (item 35).
             val openError = source.open()
             if (openError != null) {
                 _snapshot.value = _snapshot.value.copy(running = false, error = openError)
                 return
             }
+            if (settings.gateMode != SpeechGateMode.LEVEL_ONLY) vad = SileroVad(context)
             // Audio that is not read in time is gone for good, unlike a camera frame: this loop outranks the detection
             // workers (which run at THREAD_PRIORITY_URGENT_DISPLAY, -8).
             runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
             // One line the graphs can read the threshold lines from (performance/graphs.py).
             Log.i(TAG, "gate: %s, silero %.2f (hysteresis %.2f), level floor %.0f dBFS".format(
                 settings.gateMode, settings.speechThreshold, settings.speechHysteresis, settings.minLevelDb))
-            // The embedding thread OWNS the speaker model: it loads it, and it alone closes it, after its last run has
-            // returned. Closing the session from this thread while a run is still inside native code frees the model
-            // under it and takes the whole process down (a run takes 0.6-3.4 s, far longer than any wait here).
-            embedThread = Thread({
-                var worker: SpeakerEmbedder? = null
-                try {
-                    worker = SpeakerEmbedder(context)
-                    while (!Thread.currentThread().isInterrupted) {
-                        val next = toEmbed.take()
-                        val started = System.nanoTime()
-                        val embedding = runCatching { worker.embed(next.samples, next.samples.size) }.getOrNull()
-                        next.samples.fill(0f)
-                        if (embedding != null) {
-                            val similarity = template.similarityTo(embedding, cohort)
-                            embedding.fill(0f)
-                            results.add(PieceResult(similarity, next.timeMs, next.levelDb, next.spanMs,
-                                System.nanoTime() - started))
-                        }
-                    }
-                } catch (_: InterruptedException) {
-                    // stop() while waiting for a piece: a normal end
-                } catch (e: Exception) {
-                    Log.e(TAG, "embedding stopped", e)
-                    embedError.set("speaker model: " + (e.message ?: e.toString()))
-                } finally {
-                    runCatching { worker?.close() }
-                    while (true) (toEmbed.poll() ?: break).samples.fill(0f)
-                    template.zero()
-                    cohort?.fill(0f)
-                }
-            }, "OwnerVoiceEmbed").apply { isDaemon = true; start() }
+            // The embedding thread owns the model and erases the template when it ends (see EmbeddingWorker).
+            worker = EmbeddingWorker(context, "OwnerVoiceEmbed", capacity = 1,
+                compute = { embedding, _ -> template.similarityTo(embedding, cohort) },
+                onEnd = { template.zero(); cohort?.fill(0f) })
             Log.i(TAG, "listening for the owner's voice (threshold %.2f, margin %.2f, %s)".format(
-                template.info.threshold, settings.margin,
+                threshold, margin,
                 if (cohort != null) "centred on ${cohort.size} values of other voices" else "no cohort recorded"))
 
             while (!Thread.currentThread().isInterrupted) {
-                var filled = 0
-                while (filled < HOP) {
-                    val n = source.read(read, HOP - filled)
-                    if (n < 0) return
-                    read.copyInto(hop, filled, 0, n)
-                    filled += n
+                if (!readHop(source, read, hop)) {
+                    _snapshot.value = _snapshot.value.copy(running = false, error = "microphone stopped delivering audio")
+                    return
                 }
-                samples += HOP
+                samples += SPEECH_HOP
                 val timeMs = samples * 1000 / source.sampleRate
 
                 var i = 0
-                while (i < HOP) {
-                    val take = minOf(HOP - i, chunk.size - chunkFill)
+                while (i < SPEECH_HOP) {
+                    val take = minOf(SPEECH_HOP - i, chunk.size - chunkFill)
                     hop.copyInto(chunk, chunkFill, i, i + take)
                     chunkFill += take
                     i += take
                     if (chunkFill == chunk.size) {
-                        if (settings.gateMode != SpeechGateMode.LEVEL_ONLY) {
+                        vad?.let { v ->
                             val vadStart = System.nanoTime()
-                            probability = vad.probability(chunk).toDouble()
+                            probability = v.probability(chunk).toDouble()
                             load.vad(System.nanoTime() - vadStart)
                         }
                         chunkFill = 0
                     }
                 }
-                var sum = 0.0
-                for (k in 0 until HOP) {
-                    val v = hop[k] / 32768f
-                    sum += v * v
-                }
-                val levelDb = 20 * log10(max(sqrt(sum / HOP), 1e-9))
+                val levelDb = hopLevelDb(hop)
                 // The robot's own voice comes back through its microphone and is not the owner's, so it would read as
-                // another speaker: while it plays anything, nothing counts as speech and a half-collected piece is thrown
-                // away rather than finished with the robot's voice in it.
-                val robotTalking = speaking.active()
-                if (robotTalking) {
-                    if (!wasRobotTalking) Log.i(TAG, "robot is speaking: ignoring the microphone until it stops")
-                    if (fill > 0) {
-                        fill = 0
-                        piece.fill(0f)
-                    }
-                } else if (wasRobotTalking) {
-                    Log.i(TAG, "robot stopped speaking: listening again")
+                // another speaker: while it plays anything, nothing counts as speech (see PieceAssembler).
+                val robotTalking = speaking.active(timeMs)
+                if (robotTalking != wasRobotTalking) {
+                    Log.i(TAG, if (robotTalking) "robot is speaking: ignoring the microphone until it stops"
+                    else "robot stopped speaking: listening again")
+                    wasRobotTalking = robotTalking
                 }
-                wasRobotTalking = robotTalking
-                // The two halves of the gate are kept apart: which of them is doing the work can then be counted, and
-                // either one can be switched off from the speaker screen.
-                // Hysteresis: while speech is running the bar is lower, so a probability sitting on the threshold does
-                // not flip the gate every chunk.
-                val sileroLimit = if (sileroWasSpeech) settings.speechThreshold - settings.speechHysteresis
-                else settings.speechThreshold
-                val sileroSaysSpeech = probability >= sileroLimit
-                sileroWasSpeech = sileroSaysSpeech
-                val loudEnough = levelDb > settings.minLevelDb
-                val gate = when (settings.gateMode) {
-                    SpeechGateMode.SILERO_AND_LEVEL -> sileroSaysSpeech && loudEnough
-                    SpeechGateMode.SILERO_ONLY -> sileroSaysSpeech
-                    SpeechGateMode.LEVEL_ONLY -> loudEnough
-                }
-                val speech = !robotTalking && gate
-                load.frame(speech, sileroSaysSpeech, loudEnough, levelDb, probability)
+                val gated = gate.decide(probability, levelDb)
+                val speech = !robotTalking && gated
+                load.frame(speech, gate.silero, gate.loud, levelDb, probability)
+                debug.frame(debugTimeline, AudioFrame(timeMs, levelDb, if (vad != null) probability else null, speech,
+                    gate.silero, gate.loud, robotTalking))
 
                 if (speech) {
                     lastSpeechAtMs = timeMs
-                    speechSamples += HOP
-                    lastGateMs = timeMs
-                    // Only the frames that carry speech, so the number says how loud the PERSON was, not how quiet the
-                    // pauses were: the closest thing to a distance for each single reading.
-                    pieceLevelSum += levelDb
-                    pieceLevelFrames++
-                    if (pieceStartedMs < 0) pieceStartedMs = timeMs
+                    speechSamples += SPEECH_HOP
                 }
-                // Which frames end up IN the piece (see ConversationSettings.continuousPieces).
-                val appending = if (settings.continuousPieces) {
-                    !robotTalking && (speech || timeMs - lastGateMs <= settings.bridgeGapMs)
-                } else speech
-                if (appending) {
-                    if (!wasAppending) {
-                        // Start of an utterance: take the padding that is already in the ring, oldest first.
-                        for (n in 0 until preRollFilled) {
-                            val start = ((preRollAt - preRollFilled + n + preRollHops) % preRollHops) * HOP
-                            for (k in 0 until HOP) if (fill < piece.size) piece[fill++] = preRoll[start + k] / 32768f
-                        }
-                    }
-                    for (k in 0 until HOP) if (fill < piece.size) piece[fill++] = hop[k] / 32768f
+                for (piece in pieces.onHop(hop, timeMs, levelDb, gated, robotTalking)) {
+                    // One at a time: a piece judged seconds late says nothing about the room now.
+                    if (!worker.offer(piece)) Log.w(TAG, "embedding still busy: piece dropped")
                 }
-                wasAppending = appending
-                if (settings.continuousPieces) {
-                    hop.copyInto(preRoll, preRollAt * HOP)
-                    preRollAt = (preRollAt + 1) % preRollHops
-                    if (preRollFilled < preRollHops) preRollFilled++
-                }
-                // The half-filled piece counts too, not only the decision window: the window empties itself after
-                // windowMs, so with the old condition the reset could never fire afterwards, and a piece that was half
-                // full when somebody stopped talking waited for MINUTES and was then completed with audio from a
-                // different situation. Measured on the robot 2026-09-28: a piece spanning 322 s read 0.394 and the one
-                // after it 0.214, both from the owner alone.
-                // speechSamples too: after the robot spoke, the half piece was already thrown away and the window entries
-                // expire after 20 s, so without it the reset never ran and the next conversation got no prompt (review
-                // 2026-10-02, item 3). It cannot repeat: speechSamples only grows on speech, which also moves lastSpeechAtMs.
-                if (!speech && timeMs - lastSpeechAtMs >= settings.resetAfterSilenceMs &&
-                    (speechSamples > 0 || fill > 0 || ownerTimes.isNotEmpty() || otherTimes.isNotEmpty())) {
+
+                // speechSamples too: after the robot spoke the half piece is already gone and the window entries expire
+                // after 20 s, so without it the reset never ran and the next conversation got no prompt (item 3). It
+                // cannot repeat: speechSamples only grows on speech, which also moves lastSpeechAtMs.
+                // Silence = at most 10 % speech over the window (owner, 2026-10-19), not a single frame.
+                if (silence.add(speech) && (speechSamples > 0 || ownerTimes.isNotEmpty() || otherTimes.isNotEmpty())) {
+                    silence.clear()
                     // Long silence = new conversation.
                     ownerTimes.clear()
                     otherTimes.clear()
@@ -298,92 +201,62 @@ class OwnerVoiceDetector(
                     confirmedVerdict = UNCLEAR
                     pendingVerdict = UNCLEAR
                     speechSamples = 0
-                    fill = 0
-                    piece.fill(0f)
-                    pieceLevelSum = 0.0
-                    pieceLevelFrames = 0
-                    pieceStartedMs = -1L
-                    sileroWasSpeech = false
-                    vad.reset()
+                    pieces.clear()
+                    gate.reset()
+                    vad?.reset()
                     Log.i(TAG, "reset after ${settings.resetAfterSilenceMs} ms of silence")
-                }
-
-                // A full piece is handed to the embedding thread and the loop goes straight back to the microphone.
-                // The embedding needs 0.7 s on an idle robot and up to 3.4 s under load; doing it here meant the
-                // microphone was not read for that long, and the audio beyond the buffer was lost — right in the middle
-                // of the next words (measured 2026-09-28: audio/clock 0.76-0.87 while the owner was speaking normally).
-                if (fill >= piece.size) {
-                    val ready = PieceToEmbed(
-                        samples = piece.copyOf(),
-                        timeMs = timeMs,
-                        levelDb = if (pieceLevelFrames > 0) pieceLevelSum / pieceLevelFrames else Double.NEGATIVE_INFINITY,
-                        spanMs = if (pieceStartedMs >= 0) timeMs - pieceStartedMs else 0L
-                    )
-                    fill = 0
-                    piece.fill(0f)
-                    pieceLevelSum = 0.0
-                    pieceLevelFrames = 0
-                    pieceStartedMs = -1L
-                    if (!toEmbed.offer(ready)) {
-                        // The thread is still busy with the piece before this one: dropping it is better than queueing,
-                        // because a piece judged seconds late says nothing about the room now.
-                        ready.samples.fill(0f)
-                        Log.w(TAG, "embedding still busy: piece dropped")
-                    }
+                    debug.event(debugTimeline, ConversationEvent(timeMs, ConversationEventKind.RESET))
                 }
 
                 // Results come back on the next turn through the loop, so all the decision state stays on this thread.
-                embedError.get()?.let { throw IllegalStateException(it) }
+                worker.error?.let { throw IllegalStateException(it) }
                 while (true) {
-                    val done = results.poll() ?: break
+                    val done = worker.poll() ?: break
                     load.piece(done.embedNs)
-                    val similarity = done.similarity
-                    val pieceLevel = done.levelDb
-                    val pieceSpanMs = done.spanMs
-                    run {
-                        val isOwner = similarity >= template.info.threshold
-                        val isOther = similarity < template.info.threshold - settings.margin
-                        readings = (listOf(similarity) + readings).take(READINGS_KEPT)
-                        val verdict = if (isOwner) OWNER else if (isOther) OTHER else UNCLEAR
-                        var note = ""
-                        // Without the filter every clear piece counts at once. With it, only a verdict that CHANGES has
-                        // to be said twice; when it is confirmed, the held piece is entered with its own time, so nothing
-                        // is lost, it is only delayed.
-                        when {
-                            !settings.confirmTwice -> {
-                                if (verdict == OWNER) ownerTimes.addLast(done.timeMs)
-                                else if (verdict == OTHER) otherTimes.addLast(done.timeMs)
-                                if (verdict != UNCLEAR) confirmedVerdict = verdict
-                            }
-                            // The two pieces that confirm each other have to be the two pieces that FOLLOWED each other.
-                            // An unclear piece in between is not a confirmation, so it breaks the chain (owner, 2026-09-28).
-                            verdict == UNCLEAR -> {
-                                if (pendingVerdict != UNCLEAR) note = " (dropped, the next piece was unclear)"
-                                pendingVerdict = UNCLEAR
-                            }
-                            // A verdict that simply continues needs no second piece — only a CHANGE does.
-                            verdict == confirmedVerdict -> {
-                                if (verdict == OWNER) ownerTimes.addLast(done.timeMs) else otherTimes.addLast(done.timeMs)
-                                pendingVerdict = UNCLEAR
-                            }
-                            verdict == pendingVerdict -> {
-                                if (verdict == OWNER) { ownerTimes.addLast(pendingTimeMs); ownerTimes.addLast(done.timeMs) }
-                                else { otherTimes.addLast(pendingTimeMs); otherTimes.addLast(done.timeMs) }
-                                confirmedVerdict = verdict
-                                pendingVerdict = UNCLEAR
-                                note = " (confirmed by the piece right before it)"
-                            }
-                            else -> {
-                                if (pendingVerdict != UNCLEAR) note = " (dropped, not repeated)"
-                                pendingVerdict = verdict
-                                pendingTimeMs = done.timeMs
-                                if (note.isEmpty()) note = " (waiting for the very next piece)"
-                            }
+                    lastResultAtMs = timeMs
+                    val similarity = done.value
+                    val isOwner = similarity >= threshold
+                    val isOther = similarity < threshold - margin
+                    readings = (listOf(similarity) + readings).take(READINGS_KEPT)
+                    val verdict = if (isOwner) OWNER else if (isOther) OTHER else UNCLEAR
+                    var note = ""
+                    // Without the filter every clear piece counts at once. With it, only a verdict that CHANGES has to be
+                    // said twice; when it is confirmed, the held piece is entered with its own time, so nothing is lost,
+                    // it is only delayed.
+                    when {
+                        !settings.confirmTwice -> {
+                            if (verdict == OWNER) ownerTimes.addLast(done.piece.timeMs)
+                            else if (verdict == OTHER) otherTimes.addLast(done.piece.timeMs)
+                            if (verdict != UNCLEAR) confirmedVerdict = verdict
                         }
-                        Log.i(TAG, "piece: similarity %.3f -> %s%s · speech level %.0f dB over %.1f s".format(
-                            similarity, if (isOwner) "owner" else if (isOther) "somebody else" else "unclear", note,
-                            pieceLevel, pieceSpanMs / 1000.0))
+                        // The two pieces that confirm each other have to be the two pieces that FOLLOWED each other. An
+                        // unclear piece in between is not a confirmation, so it breaks the chain (owner, 2026-09-28).
+                        verdict == UNCLEAR -> {
+                            if (pendingVerdict != UNCLEAR) note = " (dropped, the next piece was unclear)"
+                            pendingVerdict = UNCLEAR
+                        }
+                        // A verdict that simply continues needs no second piece — only a CHANGE does.
+                        verdict == confirmedVerdict -> {
+                            if (verdict == OWNER) ownerTimes.addLast(done.piece.timeMs) else otherTimes.addLast(done.piece.timeMs)
+                            pendingVerdict = UNCLEAR
+                        }
+                        verdict == pendingVerdict -> {
+                            if (verdict == OWNER) { ownerTimes.addLast(pendingTimeMs); ownerTimes.addLast(done.piece.timeMs) }
+                            else { otherTimes.addLast(pendingTimeMs); otherTimes.addLast(done.piece.timeMs) }
+                            confirmedVerdict = verdict
+                            pendingVerdict = UNCLEAR
+                            note = " (confirmed by the piece right before it)"
+                        }
+                        else -> {
+                            if (pendingVerdict != UNCLEAR) note = " (dropped, not repeated)"
+                            pendingVerdict = verdict
+                            pendingTimeMs = done.piece.timeMs
+                            if (note.isEmpty()) note = " (waiting for the very next piece)"
+                        }
                     }
+                    Log.i(TAG, "piece: similarity %.3f -> %s%s · speech level %.0f dB over %.1f s (%s)".format(
+                        similarity, if (isOwner) "owner" else if (isOther) "somebody else" else "unclear", note,
+                        done.piece.levelDb, done.piece.spanMs / 1000.0, done.piece.reason))
                 }
                 while (ownerTimes.isNotEmpty() && timeMs - ownerTimes.first() > settings.windowMs) ownerTimes.removeFirst()
                 while (otherTimes.isNotEmpty() && timeMs - otherTimes.first() > settings.windowMs) otherTimes.removeFirst()
@@ -392,16 +265,26 @@ class OwnerVoiceDetector(
 
                 if (timeMs - lastPublish >= PUBLISH_MS) {
                     lastPublish = timeMs
-                    val speechRecently = timeMs - lastSpeechAtMs <= settings.speechHoldMs
+                    val speechRecently = timeMs - maxOf(lastSpeechAtMs, lastResultAtMs) <= settings.speechHoldMs
                     val others = otherTimes.size >= settings.piecesForOther
                     val multiple = others && (settings.anyOtherIsConversation || ownerTimes.isNotEmpty())
+                    val state = when {
+                        !speechRecently -> ConversationState.NO_SPEECH
+                        multiple -> ConversationState.MULTIPLE_SPEAKERS
+                        readings.isEmpty() -> ConversationState.LISTENING
+                        else -> ConversationState.ONE_SPEAKER
+                    }
+                    if (state == ConversationState.MULTIPLE_SPEAKERS && lastStateForDebug != state) {
+                        debug.event(debugTimeline, ConversationEvent(timeMs, ConversationEventKind.MULTIPLE))
+                    }
+                    lastStateForDebug = state
                     _snapshot.value = ConversationSnapshot(
-                        state = when {
-                            !speechRecently -> ConversationState.NO_SPEECH
-                            multiple -> ConversationState.MULTIPLE_SPEAKERS
-                            speechSamples < piece.size.toLong() -> ConversationState.LISTENING
-                            else -> ConversationState.ONE_SPEAKER
-                        },
+                        state = state,
+                        timeline = debug.frames(debugTimeline),
+                        events = debug.events(debugTimeline),
+                        sileroThreshold = if (vad != null) settings.speechThreshold else null,
+                        sileroRelease = if (vad != null) settings.sileroRelease else null,
+                        levelFloorDb = if (settings.gateMode != SpeechGateMode.SILERO_ONLY) settings.minLevelDb else null,
                         running = true,
                         levelDb = levelDb,
                         speechNow = speech,
@@ -410,7 +293,8 @@ class OwnerVoiceDetector(
                         speechSeconds = speechSamples / 16_000.0,
                         method = DetectionMethod.OWNER,
                         ownerSimilarity = readings.firstOrNull(),
-                        ownerThreshold = template.info.threshold,
+                        ownerThreshold = threshold,
+                        ownerMargin = margin,
                         ownerReadings = readings,
                         ownerPieces = ownerTimes.size,
                         otherPieces = otherTimes.size,
@@ -425,14 +309,10 @@ class OwnerVoiceDetector(
             _snapshot.value = _snapshot.value.copy(error = e.message ?: e.toString())
         } finally {
             // The microphone first, so the next detector can open it at once. The embedding thread is only told to stop:
-            // it finishes the run it is in, then closes the model and erases the voiceprint itself (see above).
+            // it finishes the run it is in, then closes the model and erases the voiceprint itself.
             runCatching { source.close() }
-            val embedding = embedThread
-            if (embedding != null) embedding.interrupt() else { template.zero(); cohort?.fill(0f) }
-            while (true) (toEmbed.poll() ?: break).samples.fill(0f)
-            results.clear()
-            preRoll.fill(0)
-            piece.fill(0f)
+            if (worker != null) worker.stop() else { template.zero(); cohort?.fill(0f) }
+            pieces.clear()
             read.fill(0)
             hop.fill(0)
             chunk.fill(0)
@@ -487,12 +367,15 @@ data class ConversationSettings(
     val speechHysteresis: Double = 0.15,
     val minLevelDb: Double = -65.0,
     val gateMode: SpeechGateMode = SpeechGateMode.SILERO_AND_LEVEL,
-    val margin: Float = 0.02f,
+    /** Only for voices stored before the band was kept per voice ([VoiceprintInfo.margin] decides now). */
+    val margin: Float = VoiceprintInfo.DEFAULT_MARGIN,
     val piecesForOther: Int = 2,
     val anyOtherIsConversation: Boolean = false,
     val windowMs: Long = 20_000,
     val speechHoldMs: Long = 1_500,
     val resetAfterSilenceMs: Long = 30_000,
+    /** "Silence" for that reset may still contain this share of speech (see [SilenceWindow]). */
+    val resetMaxSpeechShare: Double = 0.10,
     /**
      * Pairwise method: two pieces whose similarity is below this are treated as two different voices. Needs measuring on
      * the robot like every other number here — the screen shows the live comparisons and lets it be adjusted.
@@ -502,11 +385,12 @@ data class ConversationSettings(
     val piecesKept: Int = 6,
     /**
      * Activity method: how long the window is that the share of speech is measured over, and how much of it has to carry
-     * speech before the robot calls it a conversation. 10 s and 0.8 are the owner's starting values; both are meant to be
-     * measured on the robot, because how much a single speaker pauses depends on the person and on the room.
+     * speech before the robot calls it a conversation. Owner's values: first 10 s and 0.8, since 2026-10-19 8 s and 0.5.
+     * Both are meant to be measured on the robot, because how much a single speaker pauses depends on the person and on
+     * the room.
      */
-    val activityWindowMs: Long = 10_000,
-    val activityShare: Float = 0.8f,
+    val activityWindowMs: Long = 8_000,
+    val activityShare: Float = 0.5f,
     /**
      * Activity method: how long a gap still counts as speech (the "hangover" of a voice-activity detector; Silero's own
      * utilities call it `min_silence_duration_ms`). Without it the share measures the gaps BETWEEN WORDS, which every
@@ -538,5 +422,28 @@ data class ConversationSettings(
      */
     val continuousPieces: Boolean = false,
     val speechPadMs: Long = 30,
-    val bridgeGapMs: Long = 200
-)
+    val bridgeGapMs: Long = 200,
+    /**
+     * A pause longer than this ends the piece being collected: handed off if it holds [minPieceSeconds], else dropped.
+     * Without it one piece joined fragments up to 30 s apart (review 2026-10-02, item 13). The price: people who talk in
+     * very short bursts produce fewer pieces.
+     */
+    val maxPieceGapMs: Long = 2_000,
+    val minPieceSeconds: Double = 1.5,
+    /**
+     * Cut pieces at the voice changes a change detector finds in the same audio, so a piece does not mix two voices
+     * (item 46). Costs about 1.6 s of extra delay per piece (the change detector reports a boundary that late).
+     */
+    val splitAtChanges: Boolean = true
+) {
+    /**
+     * Where Silero speech ends again: the threshold minus the hysteresis, but never below half the threshold. With a
+     * hysteresis as large as the threshold the bar was 0 or below and the gate never switched off again (item 78).
+     */
+    val sileroRelease: Double get() = maxOf(speechThreshold - speechHysteresis, speechThreshold / 2)
+
+    /** How pieces are cut, for log lines. */
+    fun assemblyText(): String =
+        (if (continuousPieces) "continuous (+%d ms pad, %d ms gaps kept)".format(speechPadMs, bridgeGapMs) else "gated frames only") +
+            ", pause > %d ms ends a piece".format(maxPieceGapMs) + if (splitAtChanges) ", split at voice changes" else ""
+}

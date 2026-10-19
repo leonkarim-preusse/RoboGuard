@@ -59,6 +59,13 @@ class AndroidMicSource(
             r.release()
             return "startRecording failed: $e"
         }
+        // On Android 9 a refused start does not throw: the record simply is not recording, and every read returns 0
+        // (review 2026-10-02, item 35).
+        if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            runCatching { r.stop() }
+            r.release()
+            return "the microphone did not start recording (busy?)"
+        }
         record = r
         return null
     }
@@ -66,6 +73,7 @@ class AndroidMicSource(
     override fun read(buffer: ShortArray, count: Int): Int {
         val r = record ?: return -1
         val n = r.read(buffer, 0, count)
+        if (n == 0 && r.recordingState != AudioRecord.RECORDSTATE_RECORDING) return -1
         return if (n < 0) -1 else n
     }
 

@@ -58,7 +58,7 @@ suspend fun navigationCommand(body: String, client: String): Pair<HttpStatusCode
     val request = runCatching { JSONObject(body) }.getOrNull()
         ?: return HttpStatusCode.BadRequest to errorJson("body is not JSON")
     NavigationHub.noteRemoteCommand(client)
-    val result = handleCommand(request)
+    val result = handleCommand(request, client)
     val answer = stateJson().put("ok", result.ok).put("message", result.message ?: JSONObject.NULL)
     return (if (result.ok) HttpStatusCode.OK else HttpStatusCode.BadRequest) to answer.toString()
 }
@@ -78,12 +78,17 @@ private class CommandResult(val ok: Boolean, val message: String? = null)
  * Everything that the robot refuses (not localized, name already taken, private areas not loaded) comes back as a message,
  * so the phone can show the same wording the robot shows.
  */
-private suspend fun handleCommand(request: JSONObject): CommandResult {
+private suspend fun handleCommand(request: JSONObject, client: String): CommandResult {
     val navigation = NavigationHub.current
         ?: return CommandResult(false, "the navigation is not running on the robot")
     val action = request.optString("action")
     val name = request.optString("name").takeIf { it.isNotBlank() }
-    val position = if (request.has("x") && request.has("y")) Point2D(request.getDouble("x"), request.getDouble("y")) else null
+    // Coordinates must be real numbers inside the map: org.json turns a quoted "NaN" into a number, and a NaN point broke
+    // every later state answer and the area check (review 2026-10-02, item 77).
+    val position = if (request.has("x") && request.has("y")) {
+        Point2D(request.optDouble("x"), request.optDouble("y")).takeIf { insideMap(navigation, it) }
+            ?: return CommandResult(false, "x/y must be numbers inside the map")
+    } else null
 
     return when (action) {
         "select" -> {
@@ -95,7 +100,15 @@ private suspend fun handleCommand(request: JSONObject): CommandResult {
         }
         "point" -> position?.let { navigation.handleMapTap(it); CommandResult(true) }
             ?: CommandResult(false, "point needs x/y")
-        "drive" -> navigation.driveToSelected()?.let { CommandResult(false, it) } ?: CommandResult(true)
+        "drive" -> {
+            // The phone sends the target it shows; if the robot's selection changed meanwhile (a tap on the robot, another
+            // phone), it must not drive somewhere the phone user never saw (review 2026-10-02, item 59).
+            val selected = navigation.selected.value
+            val differs = selected != null && ((name != null && name != selected.name) ||
+                (position != null && position.distanceTo(selected.position) > 0.05))
+            if (differs) CommandResult(false, "the selected target changed to ${selected!!.name}; check it and press Drive again")
+            else navigation.driveToSelected()?.let { CommandResult(false, it) } ?: CommandResult(true)
+        }
         "stop" -> { navigation.stop("stopped from the phone"); CommandResult(true) }
         "speed" -> {
             val preset = SpeedPreset.entries.firstOrNull { it.name.equals(request.optString("preset"), ignoreCase = true) }
@@ -136,9 +149,12 @@ private suspend fun handleCommand(request: JSONObject): CommandResult {
         "answerPrivacy" -> {
             val id = request.optLong("id", -1)
             // No "minutes" = the answer is "no"; the robot stays outside the area.
-            val minutes = if (request.has("minutes")) request.optInt("minutes") else null
-            if (id < 0) CommandResult(false, "answerPrivacy needs the question id")
-            else { PrivacyOverridePrompt.answer(id, minutes); CommandResult(true) }
+            val minutes = if (request.has("minutes")) request.optInt("minutes", -1) else null
+            when {
+                id < 0 -> CommandResult(false, "answerPrivacy needs the question id")
+                minutes != null && minutes !in 1..MAX_ALLOWED_MINUTES -> CommandResult(false, "minutes must be 1 to $MAX_ALLOWED_MINUTES")
+                else -> { PrivacyOverridePrompt.answer(id, minutes, answeredBy = "phone \"$client\""); CommandResult(true) }
+            }
         }
         "reload" -> { navigation.reload(); CommandResult(true) }
         "resetLocations" -> { navigation.resetSavedLocations(); CommandResult(true) }
@@ -162,6 +178,8 @@ private fun stateJson(): JSONObject {
         put("localized", navigation.localized.value ?: JSONObject.NULL)
         put("sdkControl", navigation.sdkActive.value)
         put("navState", navigation.navState.value)
+        // Driving or turning: the phone's STOP is only active then, like the robot's own.
+        put("moving", navigation.driving.value || navigation.turning.value)
         put("speed", navigation.speed.value.name)
         put("speedLabel", navigation.speed.value.label)
         put("measuredSpeed", navigation.measuredSpeed.value ?: JSONObject.NULL)
@@ -198,11 +216,26 @@ private fun stateJson(): JSONObject {
             JSONObject().put("id", it.id).put("area", it.zoneName)
         } ?: JSONObject.NULL)
         put("log", JSONArray().apply { NavigationHub.log.lines.value.takeLast(LOG_LINES).forEach { put(it) } })
+        // The newest privacy decisions (grants, refusals, entries, expiries): an override must be inspectable.
+        put("audit", JSONArray().apply { navigation.audit.value.forEach { put(it) } })
     }
 }
 
 /** How many of the newest log lines travel with each state answer. */
 private const val LOG_LINES = 40
+
+/** Longest crossing permission (PrivacyGuard.MAX_OVERRIDE_MILLIS). */
+private const val MAX_ALLOWED_MINUTES = 60
+
+/** Finite and, once a map is shown, inside its rendered section. */
+private fun insideMap(navigation: MapNavigation, p: Point2D): Boolean {
+    if (!p.x.isFinite() || !p.y.isFinite()) return false
+    val rendered = navigation.rendered.value ?: return true
+    val map = rendered.map
+    val b = rendered.bounds
+    return p.x >= map.originX + b.minCol * map.resolution && p.x <= map.originX + (b.maxCol + 1) * map.resolution &&
+        p.y >= map.originY + b.minRow * map.resolution && p.y <= map.originY + (b.maxRow + 1) * map.resolution
+}
 
 private fun pointJson(point: MapPoint) = JSONObject()
     .put("name", point.name)

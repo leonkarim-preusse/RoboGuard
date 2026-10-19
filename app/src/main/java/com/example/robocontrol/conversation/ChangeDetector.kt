@@ -82,8 +82,40 @@ data class ChangeDetectorConfig(
     /** Speech within this time counts as "someone is talking now". */
     val speechHoldMs: Long = 1_500,
     /** After this much silence the conversation is over: buffered speech and counted changes are dropped. */
-    val resetAfterSilenceMs: Long = 30_000
+    val resetAfterSilenceMs: Long = 30_000,
+    /** "Silence" may still contain this share of speech frames (see [SilenceWindow]). */
+    val resetMaxSpeechShare: Double = 0.10
 )
+
+/**
+ * Has it been quiet over the last [windowMs]? Quiet = at most [maxSpeechShare] of the 10 ms frames carried speech: owner,
+ * 2026-10-19, "if 10 % of the 30 second window was detected as speech it should still count as 30 seconds silence" — a cough,
+ * a single word or a television across the room must not keep an old conversation alive. Before, ONE speech frame restarted
+ * the 30 s.
+ *
+ * Needs a full window since the last [clear], so after one reset the next needs another full window. Booleans only.
+ */
+class SilenceWindow(windowMs: Long, private val maxSpeechShare: Double, frameMs: Long = 10) {
+    private val frames = BooleanArray((windowMs / frameMs).toInt().coerceAtLeast(1))
+    private var at = 0
+    private var filled = 0
+    private var speech = 0
+
+    /** Adds one frame; true if the window is full and quiet. */
+    fun add(isSpeech: Boolean): Boolean {
+        if (filled == frames.size && frames[at]) speech--
+        frames[at] = isSpeech
+        if (isSpeech) speech++
+        at = (at + 1) % frames.size
+        if (filled < frames.size) filled++
+        return filled == frames.size && speech <= maxSpeechShare * frames.size
+    }
+
+    fun clear() {
+        frames.fill(false)
+        at = 0; filled = 0; speech = 0
+    }
+}
 
 /** One candidate boundary: accepted as a change if [deltaBic] > 0. Numbers only, nothing that describes a voice. */
 data class ChangeCandidate(
@@ -142,6 +174,7 @@ class ChangeDetector(val dim: Int, private val config: ChangeDetectorConfig = Ch
     var noiseFloorDb = -70.0
         private set
     private var lastChangeFrame = Long.MIN_VALUE / 2
+    private val silence = SilenceWindow(config.resetAfterSilenceMs, config.resetMaxSpeechShare)
 
     // The last three KL2 evaluations (value + boundary frame), to find local maxima.
     private val evalKl2 = DoubleArray(3)
@@ -157,6 +190,14 @@ class ChangeDetector(val dim: Int, private val config: ChangeDetectorConfig = Ch
     var lastLevelDb = Double.NEGATIVE_INFINITY
         private set
     var lastFrameWasSpeech = false
+        private set
+
+    /** The two halves of the gate for the last frame, and the level it had to beat (for the debug timeline). */
+    var lastSilero = false
+        private set
+    var lastLoud = false
+        private set
+    var lastLevelFloorDb = Double.NEGATIVE_INFINITY
         private set
 
     /**
@@ -181,20 +222,25 @@ class ChangeDetector(val dim: Int, private val config: ChangeDetectorConfig = Ch
             // Silero decides; hysteresis keeps a word from flickering between speech and silence. The absolute minimum
             // level still applies, so near-silent frames never count.
             val threshold = if (lastFrameWasSpeech) config.sileroThreshold - config.sileroHysteresis else config.sileroThreshold
-            speechProbability >= threshold && level > config.speechMinDb - 10
+            lastSilero = speechProbability >= threshold
+            lastLoud = level > config.speechMinDb - 10
+            lastLevelFloorDb = config.speechMinDb - 10
+            lastSilero && lastLoud
         } else {
             // Speech = loud AND part of a loud stretch, so isolated bangs and clicks do not enter the windows.
-            loud && loudCount >= config.speechRunMin
+            lastSilero = false
+            lastLoud = loud && loudCount >= config.speechRunMin
+            lastLevelFloorDb = max(noiseFloorDb + config.speechMarginDb, config.speechMinDb)
+            lastLoud
         }
         lastFrameWasSpeech = speech
-        if (!speech) {
-            // Long silence = new conversation: forget the old speech so it is not compared with whoever talks next.
-            if (speechFrames > 0 && timeMs - lastSpeechAtMs >= config.resetAfterSilenceMs) {
-                resetSpeech()
-                conversationResets++
-            }
-            return null
+        // Long (mostly) silence = new conversation: forget the old speech so it is not compared with whoever talks next.
+        if (silence.add(speech) && speechFrames > 0) {
+            resetSpeech()
+            conversationResets++
+            silence.clear()
         }
+        if (!speech) return null
         lastSpeechAtMs = timeMs
 
         val slot = (speechFrames % capacity).toInt()
@@ -305,6 +351,7 @@ class ChangeDetector(val dim: Int, private val config: ChangeDetectorConfig = Ch
     /** Zeroes all buffered features and resets the state. */
     fun clear() {
         resetSpeech()
+        silence.clear()
         noiseFloorDb = -70.0
         levelRing.fill(Double.NaN)
         loudRing.fill(false)
