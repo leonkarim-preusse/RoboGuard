@@ -7,25 +7,12 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Writes no-go lines into a RobotOS map the same way RobotOS's own map tool does, so the robot's route planner avoids
- * them. Sequence copied from the map tool's `MapReqProcessor.handleSaveMap` (see CLAUDE.md):
- *  1. write `navi_data/map.pgm` with the line drawn in (pixel value 0)
- *  2. `RobotApi.setMapForbidLineFlag(reqId, mapName, 1, listener)`
- *  3. `RobotApi.setMapUpdateTime(reqId, mapName, <now in seconds>, listener)`
- *
- * Safety:
- *  - Before the first change to a map, the original `map.pgm` and its original no-go flag are copied into RoboGuard's
- *    private storage (`files/robocontrol/map_backups/<map>/`). Later writes never overwrite that copy, so [restore]
- *    always returns to the state before RoboGuard touched the map.
- *  - The new file is parsed from the current file (a malformed file is rejected, never rewritten) and written to a
- *    temporary file first, then renamed over the original.
- *
- * Needs WRITE_EXTERNAL_STORAGE and SDK control (app started from the robot's home launcher).
- * UNVERIFIED on the robot: whether navigation uses the new line immediately or only after a map reload / relocalization.
- *
- * All methods block (file I/O, binder calls); call them off the main thread.
- *
- * @param log receives one line per step, including the SDK's asynchronous answers
+ * Writes no-go lines into a RobotOS map in the same way as the map tool: writes `navi_data/map.pgm` with the line
+ * (pixel value 0), then calls `setMapForbidLineFlag` and `setMapUpdateTime`. The original map image and flag are backed
+ * up once to `files/robocontrol/map_backups/<map>/`, and [restore] puts them back. Blocking; call off the main thread.
+ * @param context used for the backup folder
+ * @param log receives one line per step, including the SDK's answers
+ * @param reqIdSource source of request ids
  */
 class NoGoLineWriter(
     context: Context,
@@ -113,7 +100,10 @@ class NoGoLineWriter(
         log("RobotOS notified: setMapForbidLineFlag → $flagCode, setMapUpdateTime → $timeCode (negative = rejected)")
     }
 
-    /** Logs the SDK's asynchronous answer. Only the 3-argument callbacks: the SDK calls both variants (CLAUDE.md). */
+    /**
+     * Logs the SDK's answer to [call].
+     * @param call name of the SDK call
+     */
     private fun answer(call: String) = object : CommandListener() {
         override fun onResult(result: Int, message: String?, extraData: String?) = log("$call answered: result=$result message=$message")
         override fun onError(errorCode: Int, errorString: String?, extraData: String?) = log("$call error: $errorCode $errorString")

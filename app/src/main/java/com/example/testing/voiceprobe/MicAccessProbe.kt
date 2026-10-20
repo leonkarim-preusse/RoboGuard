@@ -13,42 +13,19 @@ import kotlin.math.log10
 import kotlin.math.sqrt
 
 /**
- * Probe 1: can this app record audio itself, and how many real microphones does it get?
- *
- * Background: the OrionStar SDK has no API that hands out raw audio (checked in the jar),
- * so any detector working on the signal itself has to use Android's own [AudioRecord].
- * RobotOS's speech service is probably recording permanently to listen for the wake word,
- * and Android does not always let two apps record at the same time. Depending on the
- * Android version, the second recorder either fails to start or silently receives zeros.
- *
- * What the probe does:
- *  1. Logs the device, Android version, input devices and currently active recordings.
- *  2. Records one second, mono at 16 kHz, from each of five audio sources, and checks
- *     whether any of them delivers a real signal (not all zeros, not digital silence).
- *  3. With the first source that works, requests 2, 4, 6 and 8 channels at 16 kHz and
- *     48 kHz, and measures whether those channels are actually different microphones.
- *
- * How to read the result:
- *  - "RESULT: no source delivered signal": the mic is held by RobotOS. Change detection on
- *    raw audio is blocked; only the speech-service callbacks and bearings are left.
- *  - A source works, but every channel has `corrToCh0` ≈ 1.000: one microphone copied into
- *    several channels. Change detection works; bearing must come from RobotOS, if at all.
- *  - Channels with clearly lower correlation (`distinct` > 1): a real mic array is exposed,
- *    so the app could estimate sound direction itself.
- *
- * Privacy: audio only lives in a local buffer inside [record] for the duration of one
- * attempt. Only statistics (levels, correlations) are logged. Nothing is saved or sent.
+ * Test that checks whether the app can record audio itself and how many independent microphone channels it gets.
+ * Records short samples from several audio sources and channel configurations and logs only statistics (levels,
+ * correlations); no audio is stored.
+ * @param context used to reach the audio services
+ * @param log log of the test screen
  */
 class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
     /**
-     * Runs the whole probe. Blocking, takes roughly 15–25 s depending on how many
-     * configurations the device accepts. Must be called from a background thread.
-     *
-     * @param secondsPerAttempt how long each configuration records. One second is enough to
-     *        see signal vs. silence, and short enough that people can keep talking throughout.
+     * Runs all attempts. Blocks for about 15–25 s; call it from a background thread.
+     * @param secondsPerAttempt recording length per configuration
      */
     fun run(secondsPerAttempt: Double = 1.0) {
         log.section("Mic access")
@@ -60,7 +37,7 @@ class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
             return
         }
         // The conversation monitor records too; on Android 9 a second recording gets silence, which would read as "this
-        // source delivers nothing" (review 2026-10-02, item 31).
+        // source delivers nothing".
         com.example.robocontrol.conversation.ConversationMonitor.acquireMicrophone("mic access test").use { runAttempts(secondsPerAttempt) }
     }
 
@@ -95,11 +72,7 @@ class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
         log.i(TAG, "done. Note whether the robot still reacted to its wake word during the run.")
     }
 
-    /**
-     * Logs every input device with the channel counts, channel index masks and sample rates
-     * it advertises. A mic array normally shows up here with more than 2 channels or with
-     * index masks. Empty lists mean "any value", not "none".
-     */
+    /** Logs every input device with its supported channel counts, channel index masks and sample rates. */
     private fun listInputDevices() {
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
         log.i(TAG, "${devices.size} input device(s)")
@@ -113,10 +86,8 @@ class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
     }
 
     /**
-     * Logs the recordings Android reports as active. If the speech service's session is listed
-     * "before", that confirms RobotOS holds the mic.
-     * Caveat: before Android 10 the list may include other apps' sessions; from Android 10 on,
-     * normal apps usually only see their own, so an empty list proves nothing there.
+     * Logs the recordings Android reports as active.
+     * @param whenText label for the log ("before", "after")
      */
     private fun logActiveRecordings(whenText: String) {
         val configs = audioManager.activeRecordingConfigurations
@@ -128,18 +99,11 @@ class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
     }
 
     /**
-     * Records one configuration and computes [Stats] for it.
-     *
-     * Every failure mode is logged separately, because they mean different things:
-     *  - "cannot create": the device rejects this format or source outright
-     *  - "not initialized": the format was accepted, but the HAL could not open it
-     *  - "did not start": most likely another app holds the input
-     *  - "read returned <n>": recording started but was cut off (negative n is an error code)
-     *
-     * @param sourceName readable name of [source], for the log only
+     * Records one configuration and computes its [Stats].
+     * @param sourceName name of [source], for the log
      * @param source a `MediaRecorder.AudioSource` constant
      * @param rate sample rate in Hz
-     * @param channels requested channel count; the device may deliver a different one
+     * @param channels requested channel count
      * @param seconds recording length
      * @return statistics, or null if nothing could be recorded
      */
@@ -210,16 +174,10 @@ class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
     }
 
     /**
-     * Summary of one recording. Holds only numbers, no audio.
-     *
-     * Samples are interleaved: frame f, channel c is at index `f * channels + c`.
-     *
-     * @property zeroFraction share of samples that are exactly 0 (1.0 = pure digital silence)
-     * @property rmsDbfs loudness per channel in dB relative to full scale. Speech close to the
-     *           robot is typically -40 to -20; a quiet room -70 to -50; -Infinity = all zeros.
-     * @property correlationToFirst Pearson correlation of each channel with channel 0 (the first
-     *           entry is always 1.0). Separate microphones a few centimetres apart still correlate,
-     *           but clearly below 1.0. Copies of the same channel give ≈ 1.000.
+     * Statistics of one recording; contains no audio.
+     * @property zeroFraction share of samples that are exactly 0
+     * @property rmsDbfs level per channel in dBFS
+     * @property correlationToFirst correlation of each channel with channel 0
      */
     class Stats(
         private val zeroFraction: Double,
@@ -250,10 +208,9 @@ class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
             private const val DUPLICATE_CORRELATION = 0.999
 
             /**
-             * Computes the statistics.
-             *
+             * Computes the statistics of interleaved samples.
              * @param samples interleaved 16-bit PCM
-             * @param count number of valid samples in [samples] (may be less than its size)
+             * @param count number of valid samples
              * @param channels number of interleaved channels
              */
             fun of(samples: ShortArray, count: Int, channels: Int): Stats {
@@ -281,9 +238,10 @@ class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
             }
 
             /**
-             * Pearson correlation between channels [a] and [b] at zero lag.
-             * Returns 0.0 if either channel is constant (e.g. all zeros), since correlation is
-             * undefined there and "not a copy" is the safer reading.
+             * Pearson correlation of channels [a] and [b]; 0 if a channel is constant.
+             * @param s interleaved samples
+             * @param frames number of frames
+             * @param channels number of interleaved channels
              */
             private fun correlation(s: ShortArray, frames: Int, channels: Int, a: Int, b: Int): Double {
                 var meanA = 0.0
@@ -316,14 +274,7 @@ class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
         /** Standard rate for speech processing; also what a change detector would use. */
         const val SPEECH_RATE = 16_000
 
-        /**
-         * Audio sources to try, in order of preference for a speech detector:
-         *  - MIC: plain microphone, least processing
-         *  - VOICE_RECOGNITION: tuned for ASR, often the path a speech service uses
-         *  - CAMCORDER: sometimes the only path exposing several mics
-         *  - VOICE_COMMUNICATION: echo cancellation on; could help ignore the robot's own voice
-         *  - UNPROCESSED: raw signal, if the device supports it
-         */
+        /** Audio sources tried, in order. */
         val SOURCES = listOf(
             "MIC" to MediaRecorder.AudioSource.MIC,
             "VOICE_RECOGNITION" to MediaRecorder.AudioSource.VOICE_RECOGNITION,

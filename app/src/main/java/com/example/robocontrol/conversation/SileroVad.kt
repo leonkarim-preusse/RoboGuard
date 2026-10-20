@@ -8,18 +8,10 @@ import java.nio.FloatBuffer
 import java.nio.LongBuffer
 
 /**
- * Speech / non-speech per audio chunk with the Silero VAD neural network (v4, MIT license, file
- * `robocontrol/assets/silero/silero_vad.onnx` + `silero_vad_LICENSE.txt`, taken from the android-vad 2.0.10 AAR), run with
- * Microsoft ONNX Runtime entirely on the robot. No network.
- *
- * Answers only "is this speech?" (a probability). It does not recognise words or people. Replaces the loudness-only
- * speech gate, which let claps, doors and other loud noise count as speech.
- *
- * Model I/O (read from the android-vad wrapper's bytecode): inputs `input` float[1, N] (samples −1…1), `sr` int64[1],
- * `h` and `c` float[2, 1, 64] (recurrent state); outputs 0 = probability float[1, 1], 1 = `hn`, 2 = `cn`.
- * At 16 kHz, N = 512 (32 ms). The recurrent state carries ~100 ms of context and is zeroed by [reset].
- *
- * Not thread-safe; one instance per audio thread. [close] when done.
+ * Speech probability per 32 ms chunk with the Silero VAD model (v4, `assets/silero/silero_vad.onnx`), run locally with
+ * ONNX Runtime. Keeps a recurrent state across chunks; [reset] clears it. Not thread-safe; call [close] when done.
+ * @param context used to load the model from the assets
+ * @param sampleRate sample rate in Hz
  */
 class SileroVad(context: Context, val sampleRate: Int = 16_000) : AutoCloseable {
 

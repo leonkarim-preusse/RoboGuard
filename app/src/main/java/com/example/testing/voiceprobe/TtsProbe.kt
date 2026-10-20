@@ -23,29 +23,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Hardware test for [OrionStarTts]: does text-to-speech work on the robot, in English and German?
- *
- * Some checks are automatic and log PASS or FAIL. Others can only be judged by listening; those
- * end with "Press ✔ or ✘", and [verdict] writes the answer into the log file, so the result of a
- * session is complete without extra notes.
- *
- * Tests, in the recommended order:
- *  0. [saySentences]: simply let the robot say a few English and German sentences.
- *  1. [listVoices]: are English and German voices installed?
- *  2. [english], [german]: does each language sound right? How long until speech starts and ends?
- *  3. [germanNumericCode]: the same German sentence with SpeechLanguage "7" instead of "de_DE".
- *     Answers the open question of which format the speech service expects (CLAUDE.md, "TTS").
- *  4. [validation]: invalid text is rejected immediately and nothing is spoken (automatic).
- *  5. [interrupt]: [OrionStarTts.stop] cuts speech off and reports Interrupted (automatic).
- *  6. [overlap]: does a second sentence queue, interrupt the first, or get rejected? (documents behaviour)
- *  7. [playStatus]: which `getTtsPlayStatus` values mean "robot is speaking"? A voice detector
- *     needs that to ignore the robot's own voice.
- *
- * Besides [OrionStarTts] itself, a second, raw [SkillApi] connection is kept for the two things
- * OrionStarTts deliberately does not offer: sending the numeric language code, and reading the
- * play status.
- *
- * All suspend functions block for up to [TIMEOUT_MS] and must not run on the main thread.
+ * Test of [OrionStarTts] on the robot: English and German speech, voice list, language codes, validation,
+ * interruption, overlapping sentences and play status. Tests that need listening ask the tester for a verdict
+ * ([verdict]). A second raw [SkillApi] connection is used for the numeric language code and the play status.
+ * Suspend functions block for up to [TIMEOUT_MS]; do not call them on the main thread.
+ * @param context used to connect to the speech service
+ * @param log log of the test screen
  */
 class TtsProbe(private val context: Context, private val log: ProbeLog) {
 
@@ -73,11 +56,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         override fun onRecovery() = log.i(TAG, "RobotOS RECOVERED this app: SDK control granted")
     }
 
-    /**
-     * Connects both [OrionStarTts] and the raw [SkillApi]. Call once when the screen opens.
-     * If "disabled" is logged, the app is not allowed to use the SDK (usually: not in the
-     * foreground) and every test below will fail with NotConnected.
-     */
+    /** Connects [OrionStarTts] and the raw [SkillApi]. */
     fun connect() {
         log.section("Text-to-speech")
         val t0 = now()
@@ -132,11 +111,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         log.i(TAG, "VERDICT $test: ${if (asExpected) "as expected" else "WRONG"}")
     }
 
-    /**
-     * Test 0, the simple smoke test: the robot says a few everyday sentences, English first,
-     * then German, one after another through [OrionStarTts.speakAndWait]. If this works, TTS works
-     * in principle; the numbered tests then check the details.
-     */
+    /** Test 0: speaks a few English and German sentences one after another. */
     suspend fun saySentences() {
         begin("say sentences", "Expect: ${SMOKE_SENTENCES.size} sentences one after another, English then German, each spoken completely.")
         if (!tts.connected.value) return log.i(TAG, "FAIL: not connected")
@@ -182,14 +157,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         expectation = "Expect: a German voice, correct ü/ö/ß. English pronunciation of German words means the language parameter was ignored."
     )
 
-    /**
-     * Test 3: the same German sentence, but with the numeric language code ("7") and bypassing
-     * [OrionStarTts]. Compare with test 2b:
-     *  - only 2b sounds German: OrionStarTts is correct as it is
-     *  - only this one sounds German: OrionStarTts must send `codeValue` instead of `codeName`
-     *  - both sound German: either format works
-     *  - neither: German TTS is probably not installed (see test 1)
-     */
+    /** Test 3: speaks a German sentence with the numeric language code ("7") through the raw [SkillApi]. */
     suspend fun germanNumericCode() {
         val code = LangParamsEnum.DE_DE.codeValue.toString()
         begin("german (numeric $code)", "Same sentence with SpeechLanguage=\"$code\". Compare with the de_DE test.")
@@ -217,11 +185,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         askForVerdict()
     }
 
-    /**
-     * Test 4 (automatic): text [OrionStarTts] must reject before it reaches the speech service.
-     * Each case must return false and report the matching [TtsFailure]. If anything is heard,
-     * the check did not stop it, which is a FAIL even if the log says PASS.
-     */
+    /** Test 4: checks that invalid text is rejected before it reaches the speech service. */
     fun validation() {
         begin("validation", "Expect three PASS lines and NO sound.")
         if (!tts.connected.value) return log.i(TAG, "FAIL: not connected (would mask the real checks)")
@@ -243,11 +207,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         askForVerdict()
     }
 
-    /**
-     * Test 5 (automatic): starts a long sentence, calls [OrionStarTts.stop] after
-     * [INTERRUPT_AFTER_MS], and expects [TtsFailure.Interrupted] within [STOP_TIMEOUT_MS].
-     * Listen too: the voice must actually stop, not just the callback.
-     */
+    /** Test 5: starts a long sentence, stops it after [INTERRUPT_AFTER_MS] and expects [TtsFailure.Interrupted]. */
     suspend fun interrupt() {
         begin("interrupt", "Expect: speech starts, stops after about ${INTERRUPT_AFTER_MS / 1000.0} s, result Interrupted.")
         val t0 = now()
@@ -275,13 +235,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         askForVerdict()
     }
 
-    /**
-     * Test 6: documents what the SDK does with a second sentence while one is playing.
-     * There is no right or wrong here; the log shows the order of events:
-     *  - A Interrupted, then B finished: a new sentence interrupts the current one
-     *  - A finished, then B started:     sentences are queued
-     *  - B failed straight away:         a second sentence is rejected while speaking
-     */
+    /** Test 6: starts a second sentence while one is playing and logs the order of the events. */
     suspend fun overlap() {
         begin("overlap", "Documents behaviour: does sentence B queue, interrupt A, or get rejected?")
         val t0 = now()
@@ -307,11 +261,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         log.i(TAG, "Read the event order above to classify: interrupt, queue or reject.")
     }
 
-    /**
-     * Test 7: samples `getTtsPlayStatus` every [SAMPLE_MS] from before a sentence starts until one
-     * second after it ends. The values that only appear between "started" and "finished" are the
-     * ones meaning "robot is speaking".
-     */
+    /** Test 7: samples `getTtsPlayStatus` every [SAMPLE_MS] before, during and after a sentence. */
     suspend fun playStatus() {
         begin("play status", "Documents which getTtsPlayStatus values mean 'robot is speaking'.")
         if (!rawConnected) return log.i(TAG, "FAIL: raw SkillApi not connected")

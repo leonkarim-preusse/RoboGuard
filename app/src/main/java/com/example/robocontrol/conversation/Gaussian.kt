@@ -3,13 +3,12 @@ package com.example.robocontrol.conversation
 import kotlin.math.ln
 
 /**
- * A full-covariance Gaussian fitted to a block of feature frames, plus the two comparisons change detection needs:
- * the symmetric KL divergence (KL2) and ΔBIC.
- *
- * Only the summary (mean, covariance) is kept, never the frames. Plain Kotlin, no library.
- *
- * References: KL2 as used for speaker change detection by Siegler et al. (1997); ΔBIC by Chen & Gopalakrishnan (1998);
- * the two-pass combination (distance proposes, BIC confirms) by Delacourt & Wellekens (2000), "DISTBIC".
+ * A full-covariance Gaussian fitted to a block of feature frames, with the two comparisons used for change detection:
+ * the symmetric KL divergence (KL2) and ΔBIC. Only mean and covariance are kept.
+ * @property dim dimension of the frames
+ * @property count number of frames the Gaussian was fitted to
+ * @property mean mean vector
+ * @property covariance covariance matrix, row by row
  */
 class Gaussian private constructor(
     val dim: Int,
@@ -53,9 +52,12 @@ class Gaussian private constructor(
         const val REGULARIZATION = 1e-3
 
         /**
-         * Fits a Gaussian to [frameCount] frames of dimension [dim] stored consecutively in [frames] starting at
-         * frame index [firstFrame], where frame i occupies [frames] at ((firstFrame + i) mod capacity) · dim, i.e. a
-         * ring buffer of `frames.size / dim` frames. Returns null if the covariance is not positive definite.
+         * Fits a Gaussian to [frameCount] frames of a ring buffer.
+         * @param frames ring buffer of frames, [dim] values each
+         * @param dim dimension of a frame
+         * @param firstFrame index of the first frame in the ring
+         * @param frameCount number of frames to use
+         * @return the Gaussian, or null if the covariance is not positive definite
          */
         fun fit(frames: DoubleArray, dim: Int, firstFrame: Int, frameCount: Int): Gaussian? {
             require(frameCount > 1)
@@ -120,10 +122,12 @@ class Gaussian private constructor(
         }
 
         /**
-         * ΔBIC for "one Gaussian for both blocks" versus "one per block":
-         * ½·(N·log|Σ| − N₁·log|Σ₁| − N₂·log|Σ₂|) − λ·½·(d + ½·d·(d+1))·log N.
-         * Positive means two separate distributions explain the audio better, i.e. a change between the blocks.
-         * [lambda] trades misses (higher) against false alarms (lower); 1.0 is the theoretical value.
+         * ΔBIC of "one Gaussian for both blocks" against "one Gaussian per block":
+         * ½·(N·log|Σ| − N₁·log|Σ₁| − N₂·log|Σ₂|) − λ·½·(d + ½·d·(d+1))·log N. Positive values indicate a change.
+         * @param whole Gaussian of both blocks together
+         * @param first Gaussian of the first block
+         * @param second Gaussian of the second block
+         * @param lambda penalty weight
          */
         fun deltaBic(whole: Gaussian, first: Gaussian, second: Gaussian, lambda: Double): Double =
             bicGain(whole, first, second) - lambda * bicPenalty(whole.dim, whole.count)

@@ -9,18 +9,9 @@ import com.ainirobot.coreservice.client.Definition
 import com.ainirobot.coreservice.client.robotsetting.RobotSettingApi
 
 /**
- * Makes RoboGuard the robot's default (boot) app via the RobotOS setting `boot_app_package_name`.
- *
- * Why: RobotOS only gives an app SDK control (driving, speech, sensors) when it is launched from the home launcher,
- * and takes it away when the app leaves the foreground. CoreService's `PermissionManager` (read from CoreService.apk,
- * see CLAUDE.md) keeps a white list of apps that get control whenever they come to the foreground, however they got
- * there (recent apps, a popup started by RobotServerService, ...). That list contains the package named in
- * `boot_app_package_name`, and CoreService re-reads the setting as soon as it changes.
- *
- * Side effect: the robot also starts RoboGuard after booting. The value found before the first change is kept in
- * SharedPreferences, so [restorePrevious] can undo it.
- *
- * Every call only writes when the setting differs; everything is logged under [TAG].
+ * Makes RoboGuard the robot's default app via the RobotOS setting `boot_app_package_name`. RobotOS grants SDK control to
+ * the default app whenever it is in the foreground, and starts it after boot. The previous value is saved so that
+ * [restorePrevious] can undo the change.
  */
 object DefaultAppSetting {
 

@@ -7,30 +7,10 @@ import com.ainirobot.coreservice.client.speech.SkillApi
 import com.ainirobot.coreservice.client.speech.SkillCallback
 
 /**
- * Probe 2: what does RobotOS's speech service tell an app, without the app touching the mic?
- *
- * Background: if [MicAccessProbe] shows the microphone is held by RobotOS, these callbacks
- * are the only audio-related signals left. The jar shows their signatures but not their
- * behaviour, so this probe connects to [SkillApi], registers a [SkillCallback] and logs
- * every callback with a timestamp.
- *
- * Questions it answers (see CLAUDE.md, "Voice / people APIs in the jar"):
- *  - Does `onSpeechStreamData` carry audio (long, base64-like strings) or text?
- *  - What does `onVadMuteTime` report, and is it a usable "someone is speaking" signal?
- *  - Does `onVolumeChange` follow the loudness in the room, or only while ASR is active?
- *  - What changes when multiple mode is switched on, and when does the service call
- *    `onGetMultipleModeInfos`?
- *  - Does `getTtsPlayStatus` change while the robot talks? A detector needs that to ignore
- *    the robot's own voice.
- *
- * Suggested session, each step with multiple mode off and then on:
- *  1. one person talks to the robot
- *  2. two people take turns
- *  3. two people talk over each other
- * Then compare which callbacks and payload shapes differ between the steps.
- *
- * Speech payloads can contain transcripts, so they go through [ProbeLog.payload], which
- * keeps content out of the log file.
+ * Test that logs every callback of RobotOS's speech service ([SkillCallback]) with a timestamp, and can switch multiple
+ * mode and read the TTS play status. Speech payloads go through [ProbeLog.payload].
+ * @param context used to connect to the speech service
+ * @param log log of the test screen
  */
 class SpeechServiceProbe(private val context: Context, private val log: ProbeLog) {
 
@@ -43,12 +23,7 @@ class SpeechServiceProbe(private val context: Context, private val log: ProbeLog
     /** For throttling [SkillCallback.onVolumeChange]. */
     private var lastVolumeLogAt = 0L
 
-    /**
-     * Logs every callback the speech service delivers. Binder calls arrive on background
-     * threads; [ProbeLog] is thread-safe, so no hand-off is needed.
-     *
-     * Parameter names are guesses: the jar keeps types but not names for these methods.
-     */
+    /** Logs every callback of the speech service. */
     private val callback = object : SkillCallback() {
 
         /** Partial ASR result while someone is still speaking. May contain speech content. */
@@ -57,7 +32,7 @@ class SpeechServiceProbe(private val context: Context, private val log: ProbeLog
         /** Final ASR result of one utterance. May contain speech content. */
         override fun onQueryAsrResult(result: String?) = log.payload(TAG, "onQueryAsrResult", result)
 
-        /** Unknown: audio or text stream. The logged length and shape tell which. */
+        /** Logs the shape of a speech stream payload. */
         override fun onSpeechStreamData(data: String?) = log.payload(TAG, "onSpeechStreamData", data)
 
         /** Recognition session started (presumably after the wake word). */
@@ -91,9 +66,8 @@ class SpeechServiceProbe(private val context: Context, private val log: ProbeLog
             log.i(TAG, "onError sid=$sid code=$code message=$message")
 
         /**
-         * Called by the service in multiple mode, apparently to ask the app for information.
-         * The expected answer format is unknown. Returning null is the least invasive choice;
-         * the log shows whether and when it is asked, which is what this probe needs.
+         * Logs the request and returns null.
+         * @param index index passed by the speech service
          */
         override fun onGetMultipleModeInfos(index: Int): String? {
             log.i(TAG, "onGetMultipleModeInfos($index) requested, answering null")
@@ -101,14 +75,7 @@ class SpeechServiceProbe(private val context: Context, private val log: ProbeLog
         }
     }
 
-    /**
-     * Connects to the speech service and registers the callback once the connection is up.
-     * Calling it again while started does nothing.
-     *
-     * If "disabled" is logged instead of "connected", the app is not allowed to use the SDK.
-     * Usually that means the probe screen is not in the foreground, or the OrionStar
-     * permission is missing from the manifest.
-     */
+    /** Connects to the speech service and registers the callback; does nothing if already started. */
     fun start() {
         if (skillApi != null) return
         log.section("Speech service")

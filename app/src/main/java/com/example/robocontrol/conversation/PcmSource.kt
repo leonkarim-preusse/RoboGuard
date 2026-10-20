@@ -24,10 +24,9 @@ interface PcmSource {
 }
 
 /**
- * The robot's microphone through plain Android `AudioRecord` (needs RECORD_AUDIO).
- *
- * Source CAMCORDER by default: on the robot (MicAccessProbe, see CLAUDE.md) it was the only source with a clear signal
- * (−37 dBFS, versus MIC unreliable and VOICE_RECOGNITION / UNPROCESSED near silence). Mono 16 kHz.
+ * Microphone input through Android's `AudioRecord`, mono 16-bit PCM. Requires RECORD_AUDIO.
+ * @param sampleRate sample rate in Hz
+ * @param audioSource `MediaRecorder.AudioSource` constant; CAMCORDER by default
  */
 class AndroidMicSource(
     override val sampleRate: Int = 16_000,
@@ -61,7 +60,7 @@ class AndroidMicSource(
             return "startRecording failed: $e"
         }
         // On Android 9 a refused start does not throw: the record simply is not recording, and every read returns 0
-        // (review 2026-10-02, item 35).
+        //.
         if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
             runCatching { r.stop() }
             r.release()
@@ -93,12 +92,12 @@ class AndroidMicSource(
 }
 
 /**
- * Synthetic "voices" for testing without people: a pulse train at the speaker's pitch through three formant resonators,
- * with syllable-like loudness and changing vowels. Speakers differ in pitch and vocal-tract length (all formants scaled),
- * which is roughly what separates real voices too. Not meant to sound like speech; meant to test the pipeline.
- *
- * @param script segments to play in order: speaker index (0 or 1) or null for silence, with a duration
- * @param realtime true = deliver at the speed of real audio (for watching the screen); false = as fast as possible
+ * Synthetic voices for testing without people: a pulse train at the speaker's pitch filtered by three formant
+ * resonators. The two voices differ in pitch and formant scale.
+ * @param script segments to play: speaker index (0 or 1) or null for silence, with a duration
+ * @param realtime true = deliver at the speed of real audio, false = as fast as possible
+ * @param sampleRate sample rate in Hz
+ * @param seed seed of the noise generator
  */
 class SyntheticVoicesSource(
     val script: List<Segment>,

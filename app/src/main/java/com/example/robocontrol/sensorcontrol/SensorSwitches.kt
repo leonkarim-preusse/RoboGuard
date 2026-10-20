@@ -6,6 +6,7 @@ import android.content.Context
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import com.ainirobot.coreservice.client.ApiListener
 import com.ainirobot.coreservice.client.Definition
@@ -15,23 +16,27 @@ import com.ainirobot.coreservice.client.listener.CommandListener
 import com.ainirobot.coreservice.client.speech.SkillApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The latest attempt to switch one sensor through one mechanism.
- *
- * @property sensor settings name, e.g. "Camera"
- * @property method which mechanism was used, e.g. "SDK RobotApi.updateRadarStatus"
- * @property enabled the state that was requested
+ * @property sensor sensor name, e.g. "Camera"
+ * @property method mechanism used, e.g. "SDK RobotApi.updateRadarStatus"
+ * @property enabled requested state
+ * @property outcome how far the switch is known to have worked
  * @property detail return codes, read-back values or the reason for a failure
+ * @property atMs time of the report (elapsedRealtime)
  */
 data class SwitchReport(
     val sensor: String,
     val method: String,
     val enabled: Boolean,
     val outcome: Outcome,
-    val detail: String? = null
+    val detail: String? = null,
+    val atMs: Long = SystemClock.elapsedRealtime()
 ) {
     /** How far a switch is known to have worked. */
     enum class Outcome {
@@ -48,34 +53,38 @@ data class SwitchReport(
         PENDING,
 
         /** No switch exists for this sensor name. */
-        UNSUPPORTED
+        UNSUPPORTED;
+
+        /** True once nothing more is coming for this switch (SENT and PENDING may still change). */
+        val isFinal: Boolean get() = this == CONFIRMED || this == FAILED || this == UNSUPPORTED
     }
 }
 
 /**
- * Switches the robot's sensors on or off, through the OrionStar SDK and through plain Android APIs.
- *
- * | Sensor     | SDK                                              | Android                                   |
- * |------------|--------------------------------------------------|-------------------------------------------|
- * | LIDAR      | `RobotApi.updateRadarStatus` (after stopping navigation) | none (robot hardware, not Android) |
- * | Microphone | `SkillApi.setASREnabled` + `setRecognizable`     | `AudioManager.setMicrophoneMute`          |
- * | Camera     | `RobotApi.stopVision` / `startVision`            | `DevicePolicyManager.setCameraDisabled`   |
- *
- * None of these switches have been run on the robot yet (see CLAUDE.md, "Sensor on/off switches").
- * Every attempt is written to [reports], so what actually worked can be checked on the robot and
- * shown to the user instead of assumed.
- *
- * Known limits:
- *  - LIDAR off: the robot can no longer localize, navigate or avoid obstacles. Navigation is stopped first.
- *  - Microphone via the SDK stops speech recognition; the mic may still capture audio. Muting through
- *    Android may not apply to RobotOS's speech service if it bypasses the Android audio framework.
- *  - Camera via the SDK stops the vision service's detection; it may not release the camera.
- *    Disabling through Android only works once the app is an active device admin:
- *    `adb shell dpm set-active-admin com.example.roboguard/com.example.robocontrol.sensorcontrol.RoboGuardDeviceAdmin`
- *    (allowed for a plain device admin because targetSdk is 28), and may not stop RobotOS if it
- *    reads the camera without the Android camera service.
- *
- * Needs the app in the foreground for the SDK calls (RobotOS serves the SDK to the foreground app only).
+ * Result of applying one save to the hardware, over all its switches (SDK and Android).
+ * @property outcome all, some or none of the switches confirmed
+ * @property notConfirmed one line per switch that was not confirmed
+ */
+data class ApplyResult(val outcome: Outcome, val notConfirmed: List<String>) {
+    enum class Outcome {
+        /** Every switch of the save was read back as requested. */
+        ALL_CONFIRMED,
+
+        /** Some switches confirmed, others did not (typically the SDK refused because RoboGuard had no control). */
+        PARTIAL,
+
+        /** Not a single switch confirmed. */
+        NONE
+    }
+}
+
+/**
+ * Switches the sensors on or off through the OrionStar SDK and through Android:
+ * LIDAR via `RobotApi.updateRadarStatus` (navigation is stopped first); microphone via
+ * `SkillApi.setASREnabled` + `setRecognizable` and `AudioManager.setMicrophoneMute`; camera via
+ * `RobotApi.stopVision` / `startVision` and `DevicePolicyManager.setCameraDisabled` (requires the device admin).
+ * Every attempt is recorded in [reports].
+ * @param context used for the system services and the SDK connections
  */
 internal class SensorSwitches(private val context: Context) {
 
@@ -287,9 +296,10 @@ internal class SensorSwitches(private val context: Context) {
     }
 
     /**
-     * Turns the SDK's asynchronous answer into a CONFIRMED or FAILED report.
-     * Only the 3-argument callbacks are overridden: the SDK calls both variants, so overriding
-     * both would report twice (verified in the jar, see CLAUDE.md).
+     * Turns the SDK's answer into a CONFIRMED or FAILED report.
+     * @param name sensor name
+     * @param method mechanism used
+     * @param enabled requested state
      */
     private fun resultListener(name: String, method: String, enabled: Boolean) = object : CommandListener() {
         override fun onResult(result: Int, message: String?, extraData: String?) {
@@ -302,10 +312,53 @@ internal class SensorSwitches(private val context: Context) {
         }
     }
 
+    /**
+     * Waits until every switch of [sensors] has a final report made after [sinceMs], at most [timeoutMs].
+     * Switches without a final report at the deadline count as not confirmed.
+     * @param sensors sensor name → requested state
+     * @param sinceMs time taken just before [apply] (elapsedRealtime)
+     * @param timeoutMs maximum waiting time
+     * @return the combined result
+     */
+    suspend fun awaitResult(sensors: Map<String, Boolean>, sinceMs: Long, timeoutMs: Long): ApplyResult {
+        // One expected switch per sensor and kind ("SDK" / "Android"), as apply() makes them.
+        val expected = sensors.flatMap { (name, enabled) -> kindsFor(name).map { kind -> Triple(name, enabled, kind) } }
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (true) {
+            val latest = expected.map { (name, enabled, kind) ->
+                _reports.value.values
+                    .filter { it.sensor == name && it.enabled == enabled && it.method.startsWith(kind) && it.atMs >= sinceMs }
+                    .maxByOrNull { it.atMs }
+            }
+            if (latest.all { it != null && it.outcome.isFinal } || SystemClock.elapsedRealtime() >= deadline) {
+                val notConfirmed = expected.zip(latest)
+                    .filter { (_, r) -> r?.outcome != SwitchReport.Outcome.CONFIRMED }
+                    .map { (e, r) ->
+                        "${e.first} ${if (e.second) "ON" else "OFF"} via ${r?.method ?: e.third}: " +
+                            (r?.let { "${it.outcome}${it.detail?.let { d -> " ($d)" } ?: ""}" } ?: "no answer")
+                    }
+                val outcome = when {
+                    notConfirmed.isEmpty() -> ApplyResult.Outcome.ALL_CONFIRMED
+                    notConfirmed.size == expected.size -> ApplyResult.Outcome.NONE
+                    else -> ApplyResult.Outcome.PARTIAL
+                }
+                return ApplyResult(outcome, notConfirmed)
+            }
+            delay(AWAIT_POLL_MS)
+        }
+    }
+
+    /** Which kinds of switch [apply] makes for a sensor: LIDAR only the SDK, microphone and camera both. */
+    private fun kindsFor(name: String): List<String> = when (name.lowercase()) {
+        LIDAR -> listOf(SDK)
+        MICROPHONE, CAMERA -> listOf(SDK, ANDROID)
+        else -> emptyList()
+    }
+
     /** Stores the outcome of one switch in [reports] and logs it. */
     private fun report(sensor: String, method: String, enabled: Boolean, outcome: SwitchReport.Outcome, detail: String?) {
         val entry = SwitchReport(sensor, method, enabled, outcome, detail)
-        _reports.value = _reports.value + ("$sensor | $method" to entry)
+        _reports.update { it + ("$sensor | $method" to entry) }
         val line = "$sensor ${if (enabled) "ON" else "OFF"} via $method: $outcome${detail?.let { " ($it)" } ?: ""}"
         if (outcome == SwitchReport.Outcome.FAILED) Log.w(TAG, line) else Log.i(TAG, line)
     }
@@ -323,5 +376,12 @@ internal class SensorSwitches(private val context: Context) {
 
         /** Delay before the second isRecognizable read-back (the probe waits 3 s before reading reports). */
         const val READBACK_DELAY_MS = 2_000L
+
+        /** How often [awaitResult] looks at the reports. */
+        const val AWAIT_POLL_MS = 100L
+
+        /** How the `method` names of the switch functions start, per kind of switch. */
+        const val SDK = "SDK"
+        const val ANDROID = "Android"
     }
 }

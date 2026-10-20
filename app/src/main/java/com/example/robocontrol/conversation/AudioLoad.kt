@@ -4,16 +4,10 @@ import android.util.Log
 import kotlin.math.max
 
 /**
- * Load counters of the audio path, for the performance recording (`performance/record.py`).
- *
- * Every detector runs the same loop — read 10 ms of microphone, ask the voice-activity gate, and every few seconds turn
- * collected speech into one embedding — but until now nothing said how much of that time the robot actually fed audio
- * into a network, or what a single step costs on this CPU. These counters answer exactly that and nothing else:
- * how large a share of the window counted as speech, how many pieces went into the speaker network, and the average
- * time of one embedding and one voice-activity chunk.
- *
- * Privacy: numbers only. No audio, no similarity, no decision and nothing that could describe a person; the line says
- * how busy the machine was, not who was in the room.
+ * Load counters of the audio path for the performance recording: share of speech, pieces embedded, embedding and VAD
+ * times, and the gate statistics. Logs one line per 2 s window; numbers only.
+ * @param tag Logcat tag of the detector
+ * @param settings settings line repeated in the log
  */
 internal class AudioLoad(private val tag: String, private val settings: String = "") {
 
@@ -39,10 +33,12 @@ internal class AudioLoad(private val tag: String, private val settings: String =
     private var lastSettingsMs = Long.MIN_VALUE / 2
 
     /**
-     * One audio frame (a 10 ms hop): whether the gate counted it as speech, and what each half of the gate said on its
-     * own. The two disagreements are counted separately, because they answer the question the loudness floor exists for:
-     * how often does Silero hear speech that the floor throws away (`silero-only`), and how often is a frame loud enough
-     * while Silero says it is not speech (`level-only`)?
+     * Counts one 10 ms frame.
+     * @param speech whether the gate counted it as speech
+     * @param silero Silero's decision
+     * @param loud whether the level was above the floor
+     * @param levelDb level in dBFS
+     * @param probability Silero probability; −1 if not computed
      */
     fun frame(
         speech: Boolean,

@@ -12,30 +12,17 @@ data class CellBounds(val minCol: Int, val maxCol: Int, val minRow: Int, val max
 }
 
 /**
- * A RobotOS navigation map, read from the robot's storage.
- *
- * RobotOS keeps each map in `/sdcard/robot/map/<mapName>/`. The SDK has no call that returns a map's resolution
- * and origin, but `navi_data/probabilitymap.data` contains both (format decoded on robot ZTT18P1000A0, 2026-09-16):
- *
- * ```
- * int32 little-endian   length of the rest of the file
- * protobuf message:
- *   field 1 (double)    resolution in metres per cell       e.g. 0.05
- *   field 2 (varint)    width in cells                      e.g. 660
- *   field 3 (varint)    height in cells                     e.g. 600
- *   field 4 (double)    origin x in metres (cell 0,0 corner) e.g. -16.0
- *   field 5 (double)    origin y in metres                  e.g. -15.0
- *   field 6 (bytes)     width × height uint16 little-endian cell values
- * ```
- * Cells are stored row by row starting at the **lowest** world y, so row 0 is the bottom of the map.
- * Cell values: 0 = unknown, 1 = free, larger = more likely occupied (up to 32767).
- *
- * Coordinates are the same as the SDK's poses and places (`getCurrentPose`, `getPlaceList`), in metres.
- *
- * Not included: the no-go lines drawn in the map tool. They are only in `navi_data/map.pgm` (pixel value 0),
- * whose scale and origin are not yet known (see CLAUDE.md).
- *
- * @property cells width × height values, row 0 = lowest world y
+ * A RobotOS navigation map read from `/sdcard/robot/map/<mapName>/navi_data/probabilitymap.data`: an int32
+ * little-endian length followed by a protobuf message with resolution (field 1), width (2), height (3), origin x (4),
+ * origin y (5) and the uint16 cell values (6). Row 0 is the lowest y. Cell values: 0 unknown, 1 free, higher = more
+ * likely occupied.
+ * @property mapName name of the map
+ * @property resolution metres per cell
+ * @property width width in cells
+ * @property height height in cells
+ * @property originX x of cell (0, 0) in metres
+ * @property originY y of cell (0, 0) in metres
+ * @property cells width × height values, row 0 = lowest y
  */
 class RobotMapFile(
     val mapName: String,

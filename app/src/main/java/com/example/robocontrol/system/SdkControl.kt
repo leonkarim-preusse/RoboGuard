@@ -6,12 +6,7 @@ import android.util.Log
 import com.ainirobot.coreservice.client.RobotApi
 import kotlinx.coroutines.delay
 
-/**
- * Waiting for RobotOS to give RoboGuard SDK control (speech, driving) after bringing a screen to the front.
- *
- * Found on the robot (see CLAUDE.md): `startActivity` only queues the start, control arrives ~0.3–0.5 s later, and RobotOS
- * calls stopTTS right after the app change. Speaking earlier is refused ("skillType is SUSPEND").
- */
+/** Waits until RobotOS has given RoboGuard SDK control after a screen was brought to the front. */
 object SdkControl {
 
     private const val TAG = "SdkControl"

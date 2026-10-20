@@ -9,12 +9,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 
 /**
- * Runs [onStart] while the screen is visible and [onStop] when it is not, also when the composable itself stays alive.
- *
- * The debug screens used to clean up only when their composable was disposed. Home, another app or another RoboGuard
- * screen only STOP the activity, the composition stays, and the service keeps the microphone delivering — so a voice test
- * ran on in the background and kept the conversation detection off (review 2026-10-02, item 25). ON_STOP rather than
- * ON_PAUSE, so the permission dialog and the dialog-themed popups do not end a run.
+ * Calls [onStart] when the screen becomes visible (ON_START) and [onStop] when it is no longer visible (ON_STOP).
+ * @param onStart called when the screen becomes visible
+ * @param onStop called when the screen is no longer visible
  */
 @Composable
 fun WhileVisible(onStart: () -> Unit, onStop: () -> Unit) {

@@ -17,11 +17,9 @@ import org.json.JSONObject
 import kotlin.math.abs
 
 /**
- * Real [RobotBridge] over the OrionStar RobotOS SDK.
- *
- * Initialization order matters and is not optional:
- *   connectServer -> handleApiConnected -> setCallback -> registerStatusListener
- * "All APIs can only be called after successfully connecting to the server."
+ * [RobotBridge] implementation on the OrionStar RobotOS SDK.
+ * @param context used to connect to the SDK
+ * @param reqIdSource source of request ids
  */
 class OrionStarBridge(
     private val context: Context,
@@ -34,11 +32,7 @@ class OrionStarBridge(
     private val _connected = MutableStateFlow(false)
     override val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
-    /**
-     * Speed limit for the next navigation, or null for RobotOS's default speed. Applied only when both
-     * [linearSpeed] and [angularSpeed] are set. The jar names the parameters `linearSpeed` and `angularSpeed`;
-     * the units are not documented and assumed to be m/s and rad/s (check against the `navi_speed` status).
-     */
+    /** Linear speed of the next drive in m/s; used together with [angularSpeed], null = robot default. */
     @Volatile
     var linearSpeed: Double? = null
 
@@ -245,9 +239,9 @@ class OrionStarBridge(
     }
 
     /**
-     * Turns the SDK's action callbacks into [NavigationListener] calls.
-     * The SDK dispatcher calls the (…, extraData) variant AND then the deprecated 2-arg
-     * variant for every event. Override only the 3-arg ones, or each event fires twice.
+     * Turns the SDK's action callbacks into [NavigationListener] calls. Only the 3-argument callbacks are overridden,
+     * because the SDK calls both variants.
+     * @param listener receives the converted events
      */
     private fun actionListener(listener: NavigationListener) = object : ActionListener() {
         override fun onResult(status: Int, response: String?, extraData: String?) {

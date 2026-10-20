@@ -8,17 +8,10 @@ import android.os.HandlerThread
 import android.os.SystemClock
 
 /**
- * Was the robot itself making a sound when this audio was recorded?
- *
- * Everything the robot says goes out of its speaker and back into its own microphone, where it is speech like any other —
- * and it is not the owner's, so it reads as "somebody else". The robot would then react to itself: an announcement, or
- * even the apology it speaks after a conversation was detected, becomes evidence for the next detection.
- *
- * Playback is recorded by the system's playback callback ([AudioManager.registerAudioPlaybackCallback]) as start and stop
- * times, independent of the audio loop. The question is then asked for the moment the audio was CAPTURED, not the moment
- * it is processed: a sentence that started and ended while a detector was busy used to be missed and its audio, still in
- * the buffer, was taken for a person (review 2026-10-02, item 54). The answer stays true for [tailMs] after the sound
- * stops, because the room keeps ringing for a moment.
+ * Tells whether the robot itself was playing sound when a piece of audio was recorded, so the detectors can ignore it.
+ * Playback start and end times come from [AudioManager.registerAudioPlaybackCallback].
+ * @param context used to reach the audio service
+ * @param tailMs time after the end of playback that still counts as speaking
  */
 class RobotSpeaking(context: Context, private val tailMs: Long = 500) {
 
@@ -33,9 +26,8 @@ class RobotSpeaking(context: Context, private val tailMs: Long = 500) {
     fun active(): Boolean = Playback.activeAt(SystemClock.elapsedRealtime(), tailMs)
 
     /**
-     * Same question for the hop that ends at [audioTimeMs] of the stream (samples read so far, in ms). The capture time is
-     * estimated as stream start + audio time; the stream start is the smallest offset seen, i.e. taken while the loop was
-     * keeping up.
+     * Whether the robot was speaking when the hop ending at [audioTimeMs] was captured.
+     * @param audioTimeMs position in the audio stream, in milliseconds
      */
     fun active(audioTimeMs: Long): Boolean {
         val now = SystemClock.elapsedRealtime()

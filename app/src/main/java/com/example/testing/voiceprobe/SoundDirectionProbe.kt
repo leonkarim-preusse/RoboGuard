@@ -13,47 +13,22 @@ import com.ainirobot.coreservice.client.StatusListener
 import com.ainirobot.coreservice.client.module.ModuleCallbackApi
 
 /**
- * Probe 3: does RobotOS report the direction a voice came from, and for which speech?
- *
- * Background: the planned conversation detector fuses two weak signals, speaker change in
- * the audio and the bearing of the sound source (CLAUDE.md, "Conversation detection").
- * The robot turns toward whoever says the wake word, so its mic array computes a bearing.
- * The question is whether an app can read that bearing.
- *
- * The jar only shows where an angle *might* arrive, so this probe listens on all three:
- *  - [ModuleCallbackApi.onSendRequest]: RobotOS forwards requests such as
- *    `req_speech_wakeup` to the app; the angle may be in `reqParam`
- *  - the `com.ainirobot.intent.speech.WAKEUP` / `...SLEEP` broadcasts: [Definition] has
- *    an `EXTRA_UPLOAD_ANGLE = "angle"` constant that may belong to these
- *  - the `status_speaker` status ([Definition.STATUS_SPEAKER]), meaning unknown
- *
- * `RobotApi.wakeUp(reqId, angle)` is deliberately NOT called: it is a command (turn the
- * robot toward an angle), not a report.
- *
- * Suggested session:
- *  1. Say the wake word from the front, left, right and behind the robot. Check whether a
- *     matching angle is logged, and in which of the three places.
- *  2. Talk without the wake word from different sides. If nothing arrives, bearings exist only
- *     per wake-up, which is too rare to tell speakers apart in a running conversation.
+ * Test that checks whether RobotOS reports the direction of a voice. Listens to forwarded requests
+ * ([ModuleCallbackApi.onSendRequest]), the wake-up and sleep broadcasts and the `status_speaker` status, and logs what
+ * arrives.
+ * @param context used to connect and register the receivers
+ * @param log log of the test screen
  */
 class SoundDirectionProbe(private val context: Context, private val log: ProbeLog) {
 
     private var started = false
 
-    /**
-     * Receives requests and hardware reports from RobotOS.
-     * Registering it makes this app RobotOS's callback target while the probe screen is in the
-     * foreground, so speech requests may reach the probe instead of the normal app behaviour.
-     */
+    /** Receives requests and reports forwarded by RobotOS. */
     private val moduleCallback = object : ModuleCallbackApi() {
 
         /**
-         * A request forwarded by RobotOS, e.g. a wake-up or a recognised voice command.
-         * [reqText] can be a transcript, so both strings go through [ProbeLog.payload].
-         *
-         * @return false = "not handled by this app". The intention is that RobotOS then keeps
-         *         its default behaviour. Unverified: note in the log whether the robot still
-         *         reacts normally while the probe runs.
+         * Logs a request forwarded by RobotOS.
+         * @return false, so that RobotOS keeps its default handling
          */
         override fun onSendRequest(reqId: Int, reqType: String?, reqText: String?, reqParam: String?): Boolean {
             log.i(TAG, "onSendRequest id=$reqId type=$reqType")
@@ -73,16 +48,12 @@ class SoundDirectionProbe(private val context: Context, private val log: ProbeLo
         override fun onRecovery() = log.i(TAG, "onRecovery")
     }
 
-    /** Logs every `status_speaker` update; the payload format is unknown. */
+    /** Logs every `status_speaker` update. */
     private val speakerStatus = object : StatusListener() {
         override fun onStatusUpdate(type: String?, value: String?) = log.payload(TAG, "status $type", value)
     }
 
-    /**
-     * Logs the WAKEUP and SLEEP broadcasts with all their extras. The extra types are unknown,
-     * which is why the untyped (deprecated) `Bundle.get` is used. Wake-up extras are expected
-     * to hold an angle, not speech, so they are logged in full.
-     */
+    /** Logs the wake-up and sleep broadcasts with all their extras. */
     private val wakeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val extras = intent.extras
@@ -92,13 +63,7 @@ class SoundDirectionProbe(private val context: Context, private val log: ProbeLo
         }
     }
 
-    /**
-     * Starts all three listeners. Calling it again while started does nothing.
-     *
-     * Order matters for the SDK part: RobotApi only accepts setCallback and
-     * registerStatusListener after `handleApiConnected` (see CLAUDE.md, init order).
-     * The broadcast receiver needs no connection and is registered immediately.
-     */
+    /** Starts all listeners; does nothing if already started. */
     fun start() {
         if (started) return
         started = true

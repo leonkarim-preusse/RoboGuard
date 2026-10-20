@@ -8,18 +8,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * The one RobotApi connection of this app process. Every robocontrol component connects through here instead of
- * calling `RobotApi.connectServer` itself.
- *
- * Why (found on the robot, 2026-09-17): `RobotApi` is a process-wide singleton. Its pose, localization and
- * "have control?" calls (`getCurrentPose`, `isRobotEstimate`, `isActive`) use an internal module registry that
- * `connectServer`'s service connection sets on connect and sets to null on disconnect. With two `connectServer` calls
- * (DefaultAppSetting in MainActivity, then OrionStarBridge in the Navigation screen) those calls stopped working
- * while `startNavigation` still did: the robot drove without a position, so private areas were not enforced.
- * Likewise, one component calling `disconnectApi()` would cut the connection for all others; so nothing here ever
- * disconnects. The connection lives as long as the process.
- */
+/** The single RobotApi connection of the process. All components connect through it; it is never disconnected. */
 object RobotApiConnection {
 
     private const val TAG = "RobotApiConnection"
@@ -36,9 +25,10 @@ object RobotApiConnection {
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     /**
-     * Makes sure RobotApi is connected and registers [listener] for connection events. If the connection is already up,
-     * [listener]'s `handleApiConnected` runs right away on the caller's thread; otherwise it runs once the (single)
-     * connection comes up. The listener stays registered until [removeListener], and is called again after a reconnect.
+     * Connects RobotApi if needed and registers [listener] for connection events. If already connected,
+     * `handleApiConnected` is called immediately on the caller's thread.
+     * @param context any context
+     * @param listener receives connection events until [removeListener]; may be null
      */
     fun connect(context: Context, listener: ApiListener? = null) {
         val alreadyConnected: Boolean

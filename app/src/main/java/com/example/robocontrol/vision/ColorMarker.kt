@@ -15,11 +15,7 @@ import org.opencv.imgproc.Imgproc
  */
 data class MarkerColor(val hueMin: Int, val hueMax: Int, val saturationMin: Int, val valueMin: Int) {
     companion object {
-        /**
-         * Pink/magenta tape or marker line: hue ~280–350° (after white balance). Measured on the robot view of the calendar's pink border at wall distance
-         * (2026-09-17): hue 300–320°, saturation only ~60–105 (thin line blends with white), value 160–250. Red (the frame on the
-         * whiteboard, 355–20°), skin and blue/purple whiteboard ink (≤ 270°) stay outside.
-         */
+        /** Pink/magenta marker colour (OpenCV hue 140–175, i.e. about 280–350°). */
         val PINK = MarkerColor(hueMin = 140, hueMax = 175, saturationMin = 50, valueMin = 100)
     }
 }
@@ -35,12 +31,11 @@ data class ImageRegion(val x: Int, val y: Int, val width: Int, val height: Int) 
 
 /**
  * One group of marker-coloured pixels.
- *
- * @property search the pink pixels' bounds grown by the margin: where features "close to pink" are searched
- * @property bounds tight bounds of the pink pixels themselves (for a border marker ≈ the object's outline)
- * @property pinkPixels marker-coloured pixels in this group
- * @property sideCoverage share (0–1) of each side of [bounds] that has pink close to it: top, right, bottom, left
- * @property sides sides with at least [ColorMarker.minSideCoverage]; a drawn frame around an object has 4 (3 if one side is hidden)
+ * @property search bounds of the pink pixels grown by the margin; the area ORB searches
+ * @property bounds tight bounds of the pink pixels
+ * @property pinkPixels number of marker-coloured pixels in the group
+ * @property sideCoverage share (0–1) of each side of [bounds] with pink close to it: top, right, bottom, left
+ * @property sides number of sides with at least [ColorMarker.minSideCoverage]
  */
 data class MarkerRegion(
     val search: ImageRegion,
@@ -50,17 +45,19 @@ data class MarkerRegion(
     val sides: Int = 0,
     /** Accepted with one side fewer than required because a frame was accepted at the same place moments ago ([ColorMarker.holdMs]). */
     val held: Boolean = false,
-    /** Share (0–1) of white pixels inside the pink bounds (without the border band); −1 if not measured. */
+    /** Share (0–1) of white pixels inside the pink bounds; −1 if not measured. */
     val whiteShare: Double = -1.0,
     /** Why the region was rejected: "frame" (too few sides) or "white" (too little white inside); null if accepted. */
     val rejectReason: String? = null
 )
 
 /**
- * Result of [ColorMarker.find]. [pinkShare] = marker pixels / all pixels (0–1) before noise removal. [rejected] = groups that were big
- * enough but did not form a frame (only when [ColorMarker.requireFrame]).
- * [overlay] (only if requested): frame-sized ARGB bitmap; [ColorMarker.overlayColor] = pink pixels of accepted regions,
- * [ColorMarker.rejectedColor] = pink pixels that were dropped (specks, too small, no frame), transparent elsewhere.
+ * Result of [ColorMarker.find].
+ * @property regions accepted pink areas
+ * @property pinkShare share of marker-coloured pixels in the frame (0–1)
+ * @property millis duration of the search
+ * @property overlay optional overlay: accepted pink pixels in [ColorMarker.overlayColor], rejected ones in [ColorMarker.rejectedColor]
+ * @property rejected pink groups that were large enough but did not form a frame
  */
 class MarkerResult(
     val regions: List<MarkerRegion>,
@@ -76,16 +73,15 @@ class MarkerResult(
 )
 
 /**
- * Finds areas of a marker colour (e.g. a pink line drawn around a calendar) in a colour frame. Used as a second, cheap identifier
- * next to ORB: features are only searched close to the marker, so texture elsewhere (whiteboard, posters) cannot produce detections.
- *
- * Steps: optional grey-world white balance on bright pixels (the robot camera renders white bluish, which shifts pale pink towards
- * purple) → HSV → colour range mask → morphological closing (joins the pieces of a thin, broken line) → drop specks smaller than
- * [minSpeckPixels] → grow by [marginPx] so nearby pieces join → one region per group with at least [minRegionPixels] marker pixels →
- * optionally only groups whose pink runs along ≥ [minSides] sides of their bounds ([requireFrame]).
- * Colour only, nothing about people; frames are not kept.
- *
- * Not thread-safe; use from one detection thread. [ORB.loadOpenCv] must have succeeded before the first call.
+ * Finds areas of a marker colour (e.g. a pink frame around a calendar) in a camera frame, so that ORB searches only
+ * there. Steps: optional white balance, HSV colour range, morphological closing, removal of small specks, grouping
+ * within [marginPx], and optionally the check that the pink forms a frame ([requireFrame]). Not thread-safe.
+ * @param color colour range of the marker
+ * @param marginPx distance within which pink pieces are grouped, in full-frame pixels
+ * @param minSpeckPixels pink specks smaller than this are dropped
+ * @param minRegionPixels minimum number of pink pixels of a group
+ * @param whiteBalance apply a grey-world white balance first
+ * @param requireFrame keep only groups that run along at least [minSides] sides
  */
 class ColorMarker(
     var color: MarkerColor = MarkerColor.PINK,
@@ -96,20 +92,11 @@ class ColorMarker(
     var requireFrame: Boolean = true,
     var minSides: Int = 3,
     var minSideCoverage: Double = 0.3,
-    /**
-     * Hysteresis against flicker: for this long after a frame was accepted, a region at the same place (bounds overlap ≥ 40 %) is
-     * accepted with one side fewer. Seen on the robot: the calendar's frame alternated between 3 and 2 sides from pass to pass
-     * (overexposure bleaches parts of the line), so detections flickered although nothing moved.
-     */
+    /** For this long after a frame was accepted, a region at the same place is accepted with one side fewer. */
     var holdMs: Long = 1_500,
     /** Share of pink pixels ignored at each end per axis when computing [MarkerRegion.bounds], so single stray pixels do not stretch them. */
     var boundsTrim: Double = 0.02,
-    /**
-     * Colour analysis runs on the frame scaled by this factor (0.5 = 640×360 for 1280×720, 4× fewer pixels). Loses no colour
-     * information: the camera delivers YUV 4:2:0, i.e. one colour sample per 2×2 pixels anyway; only brightness is averaged.
-     * Pixel settings ([marginPx], [minSpeckPixels], [minRegionPixels]) stay in full-frame pixels and are converted; results are
-     * in full-frame coordinates.
-     */
+    /** Scale factor of the frame used for the colour analysis; results are in full-frame coordinates. */
     var analysisScale: Double = 0.5,
     /**
      * Second shape identifier: the inside of the pink bounds must be mostly white (paper). Rejects pink objects, skin edges or
@@ -290,11 +277,6 @@ class ColorMarker(
         }
     }
 
-    /**
-     * For each side of [b] (top, right, bottom, left): the share of positions along that side with a pink pixel of group [g] within a
-     * band of 12 % of the shorter side (at least 3 px) from the edge. A frame line gives ~1 on every visible side; a blob or one
-     * straight edge gives high values on at most two.
-     */
     /** Bounds of group [g] ignoring [boundsTrim] of its pixels at each end of each axis. */
     private fun trimmedBounds(clean: ByteArray, labels: IntArray, g: Int, b: ImageRegion, pixels: Int, width: Int): ImageRegion {
         val cols = IntArray(b.width)
@@ -319,11 +301,9 @@ class ColorMarker(
     private class Shape(val coverage: List<Double>, val whiteShare: Double, val angleDeg: Double)
 
     /**
-     * Side coverage and white share measured in the frame's OWN orientation instead of image axes: the pink pixels' main direction
-     * (principal axes) gives a rotated coordinate system u (along the longer side) / v; extents are the 2–98 % range of the pixels.
-     * A frame seen rotated or tilted (the robot's camera looks slightly up) then still has its lines at the edges of that rectangle.
-     * Coverage per side = share of positions along the side with pink within a band of 12 % of the shorter extent; white share =
-     * white pixels inside the band. Order: top, right, bottom, left in the rotated frame.
+     * Side coverage and white share measured in the orientation of the pink pixels (principal axes), so that rotated or
+     * tilted frames are measured correctly.
+     * @return coverage per side (top, right, bottom, left), white share and angle
      */
     private fun orientedShape(clean: ByteArray, labels: IntArray, g: Int, b: ImageRegion, pixels: Int, width: Int, white: ByteArray?): Shape {
         val xs = IntArray(pixels); val ys = IntArray(pixels)

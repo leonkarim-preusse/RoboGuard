@@ -53,12 +53,8 @@ import com.example.testing.voiceprobe.ProbeLog
 import kotlin.math.max
 
 /**
- * Test screen for speaker change detection ("RG Speaker Test" launcher icon). Not part of RoboGuard's UI.
- * Procedure: README.md, "Testing speaker change detection".
- *
- * Left: controls and ✔/✘ verdicts. Right: the current decision in large letters, live numbers, the KL2 graph and the
- * log. Leaving the screen stops listening. The microphone is not used unless "Start listening" is pressed, and not at
- * all if RoboGuard's privacy settings switch it off.
+ * Test screen for speaker change detection ("RG Speaker Test"): controls and verdicts, the current decision, live values,
+ * the KL2 graph and the log.
  */
 class SpeakerProbeActivity : ComponentActivity() {
 

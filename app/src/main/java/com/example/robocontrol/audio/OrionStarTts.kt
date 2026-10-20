@@ -40,12 +40,7 @@ sealed interface TtsFailure {
     data object Interrupted : TtsFailure
 }
 
-/**
- * Progress of one spoken sentence. All methods are optional.
- *
- * Callbacks arrive on the SDK's dispatcher thread, NOT the main thread. Switch threads
- * before touching UI.
- */
+/** Progress of one spoken sentence. Callbacks run on an SDK thread, not on the main thread. */
 interface TtsListener {
     /** Called when the robot starts to speak the sentence. */
     fun onStarted() {}
@@ -56,29 +51,9 @@ interface TtsListener {
 }
 
 /**
- * Text-to-speech through RobotOS's speech service (OrionStar [SkillApi]).
- *
- * Usage:
- * ```
- * val tts = OrionStarTts(applicationContext)
- * tts.connect()
- * // once tts.connected is true:
- * tts.speakEnglish("Hello, I am RoboGuard.")
- * tts.speakGerman("Hallo, ich bin RoboGuard.")
- * ```
- *
- * The language is set per sentence through the entity's `ttsParams` map, not through
- * `SkillApi.setTTSParams`. That way the robot's global speech settings are never changed.
- *
- * Constraints:
- *  - RobotOS only serves the SDK to the foreground app. From a background service,
- *    [connect] reports disabled and nothing is spoken.
- *  - A new sentence while one is playing: the SDK does not document whether it queues or
- *    interrupts. This class does not queue; await [speakAndWait] if order matters.
- *
- * UNVERIFIED on hardware (see CLAUDE.md, "TTS"):
- *  - whether `SpeechLanguage` expects the code name ("de_DE", used here) or the numeric code ("7")
- *  - whether a German voice is installed on the robot at all; check with [voicesFor]
+ * Text-to-speech through RobotOS's speech service ([SkillApi]). The language and voice are set per sentence, so the
+ * robot's global speech settings are not changed. Speech requires SDK control.
+ * @param context used to connect to the speech service
  */
 class OrionStarTts(private val context: Context) {
 
@@ -133,10 +108,12 @@ class OrionStarTts(private val context: Context) {
         speak(text, TtsLanguage.GERMAN, listener)
 
     /**
-     * Converts [text] to speech in [language].
-     *
-     * @return true if the text was handed to the speech service. False means it was rejected
-     *         before that, and [listener] has already received [TtsListener.onFailed].
+     * Speaks [text].
+     * @param text text to speak
+     * @param language language of the text
+     * @param listener receives progress and the result
+     * @param voice speaker role; null = the robot's default voice
+     * @return true if the text was passed to the speech service; false if it was rejected (the listener was told)
      */
     fun speak(text: String, language: TtsLanguage, listener: TtsListener? = null, voice: String? = null): Boolean {
         val invalid = validate(text)
@@ -158,9 +135,9 @@ class OrionStarTts(private val context: Context) {
     }
 
     /**
-     * Speaks and suspends until the sentence is finished.
-     * Cancelling the coroutine stops the speech.
-     *
+     * Speaks [text] and suspends until it has finished; cancelling the coroutine stops the speech.
+     * @param text text to speak
+     * @param language language of the text
      * @return null when spoken completely, otherwise the reason it was not
      */
     suspend fun speakAndWait(text: String, language: TtsLanguage): TtsFailure? =
@@ -178,9 +155,9 @@ class OrionStarTts(private val context: Context) {
     }
 
     /**
-     * Voices the robot has for [language], as the raw string from the speech service,
-     * or null if not connected or the call failed. The format is undocumented. An empty
-     * or null result for GERMAN suggests German TTS is not installed.
+     * Voices available for [language], as returned by the speech service.
+     * @param language the language
+     * @return the raw answer, or null if not connected or the call failed
      */
     fun voicesFor(language: TtsLanguage): String? {
         if (!_connected.value) return null
@@ -205,7 +182,7 @@ class OrionStarTts(private val context: Context) {
     }
 
     companion object {
-        /** Documented limit for SkillApi.playText. */
+        /** Maximum text length accepted by `SkillApi.playText`. */
         const val MAX_TEXT_LENGTH = 1000
     }
 }

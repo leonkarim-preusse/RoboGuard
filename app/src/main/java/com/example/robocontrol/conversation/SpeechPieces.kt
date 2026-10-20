@@ -23,9 +23,11 @@ import kotlin.math.sqrt
 internal const val SPEECH_HOP = 160
 
 /**
- * Reads one full hop from [source]. Returns false at the end of the stream or when the microphone stops delivering.
- * Checks for interruption on every read, so stop() always ends the loop — a read that returns 0 used to spin for ever
- * (review 2026-10-02, item 35).
+ * Reads one full hop from [source].
+ * @param source audio input
+ * @param read buffer for the raw read
+ * @param hop receives the complete hop
+ * @return false at the end of the stream, on a dead microphone or when the thread was interrupted
  */
 internal fun readHop(source: PcmSource, read: ShortArray, hop: ShortArray): Boolean {
     var filled = 0
@@ -60,9 +62,8 @@ internal fun hopLevelDb(hop: ShortArray): Double {
 }
 
 /**
- * The speech gate of the embedding methods: Silero with hysteresis and the loudness floor, as [ConversationSettings]
- * says. The release bar is bounded ([ConversationSettings.sileroRelease]): with a hysteresis as large as the threshold it
- * used to be 0 or below, and once switched on the Silero half then stayed on until the detector restarted (item 78).
+ * Speech gate of the embedding methods: Silero with hysteresis and the loudness floor, as configured in [settings].
+ * @param settings gate settings
  */
 internal class SpeechGateState(private val settings: ConversationSettings) {
     private var sileroWasSpeech = false
@@ -111,19 +112,11 @@ internal class SpeechPiece(
 )
 
 /**
- * Cuts the gated speech into pieces of [ConversationSettings.pieceSeconds].
- *
- * - Continuous pieces ([ConversationSettings.continuousPieces]): padding from a ring of hops that were NOT appended yet
- *   (it used to re-append hops the bridge already had, item 55), short pauses bridged.
- * - A pause longer than [ConversationSettings.maxPieceGapMs] ends the piece: handed off if it holds at least
- *   [ConversationSettings.minPieceSeconds], otherwise dropped. Before, a half piece waited up to 30 s and was finished
- *   with whatever was said next (measured span 32.2 s, item 13).
- * - While the robot speaks nothing is appended; what was collected before it started is handed off (it is clean speech).
- * - Split at speaker changes ([ConversationSettings.splitAtChanges], item 46): a [ChangeDetector] runs on the same frames.
- *   It reports a change about 1.6 s of speech after its boundary, so a full piece is held back by that much before it is
- *   handed off; if an accepted change falls inside it, the piece is cut there instead of mixing two voices.
- *
- * Audio lives only in [buffer] and the ring, both overwritten in place and zeroed by [clear]. Not thread-safe.
+ * Cuts gated speech into pieces of [ConversationSettings.pieceSeconds]. Supports continuous pieces with pre-roll and
+ * bridged pauses, ends a piece after a long pause, discards audio while the robot speaks and optionally splits pieces
+ * at speaker changes. Audio is kept only in fixed buffers that [clear] zeroes. Not thread-safe.
+ * @param settings assembly settings
+ * @param sampleRate sample rate in Hz
  */
 internal class PieceAssembler(private val settings: ConversationSettings, private val sampleRate: Int = 16_000) {
 
@@ -160,7 +153,7 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
     private val frame = DoubleArray(mfcc?.frameLength ?: 0)
     private val features = DoubleArray(mfcc?.coefficients ?: 0)
 
-    /** Samples collected and not yet handed off (for the enrolment's progress line). */
+    /** Samples collected and not yet handed off. */
     val collectedSamples: Int get() = hops * SPEECH_HOP
 
     /**
@@ -307,15 +300,14 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
 }
 
 /**
- * The thread that turns pieces into embeddings, so the microphone thread never stops reading (an embedding takes
- * 0.6–3.4 s; done inline, it starved the read loop and hid short robot sentences from the speech mask, items 37 and 54).
- *
- * The thread OWNS the speaker model: it loads it and it alone closes it, after its last run has returned. Closing an
- * ONNX session while a run is inside native code frees the model under it and crashes the process (review item 1).
- *
- * [compute] turns an embedding into what the caller needs — a similarity, or a copy of the vector — and runs on this
- * thread; the embedding itself is zeroed right after. [discard] erases a result nobody collected. [onEnd] runs on this
- * thread after the model is closed (erase templates there).
+ * Thread that turns pieces into embeddings, so that the microphone thread keeps reading. The thread loads and closes
+ * the speaker model itself.
+ * @param context used to load the model
+ * @param name thread name
+ * @param capacity number of pieces that may wait
+ * @param compute turns an embedding into the result (runs on this thread; the embedding is zeroed afterwards)
+ * @param discard erases a result that was not collected
+ * @param onEnd runs on this thread after the model was closed
  */
 internal class EmbeddingWorker<R : Any>(
     context: Context,
@@ -343,7 +335,7 @@ internal class EmbeddingWorker<R : Any>(
 
     private val thread = Thread({
         // A defined priority: below the audio thread (-16), above ordinary background work, so the time to a verdict
-        // stays bounded on a busy robot (item 52).
+        // stays bounded on a busy robot.
         runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_FOREGROUND) }
         var embedder: SpeakerEmbedder? = null
         try {

@@ -77,14 +77,8 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * Test screen for [MovementProbe]: the map with the robot, saved places and tapped points, plus driving controls.
- * Not part of RoboGuard's UI.
- *
- * Start it from the robot's home launcher icon "RG Movement Test"; screens started with `adb shell am start` get
- * no SDK control. Procedure: README.md, "Testing movement".
- *
- * Layout: STOP, status and point list on the left (scrollable); map on the right with the log below it.
- * Tapping the map adds a point there. Leaving the screen stops any navigation.
+ * Test screen for [MovementProbe] ("RG Movement Test"): map with the robot, places and points, drive controls, private
+ * areas and the no-go line test. Must be started from the robot's launcher to get SDK control.
  */
 class MovementProbeActivity : ComponentActivity() {
 
@@ -486,13 +480,8 @@ class MovementProbeActivity : ComponentActivity() {
     }
 
     /**
-     * Draws the map scaled to fit, with saved places (blue), tapped points (orange), the selection (red ring) and
-     * the robot (green circle with a heading line).
-     *
-     * Two modes:
-     *  - preview ([viewState] null): shows the whole map; a tap calls [onPreviewTap] (opens full screen)
-     *  - interactive ([viewState] set): tap adds a point, double tap / pinch zooms, two-finger drag pans
-     * Nothing is drawn over the map except the map content itself (plus a small hint in preview mode).
+     * Draws the map with places, points, private areas, the selection and the robot. Without [viewState] it shows the
+     * whole map and a tap calls [onPreviewTap]; with [viewState] taps add points or area corners and pinch or double tap zooms.
      */
     @Composable
     private fun MapCanvas(
@@ -708,7 +697,7 @@ class MovementProbeActivity : ComponentActivity() {
         /** Largest map zoom factor; a double tap at this zoom returns to the whole map. */
         const val MAX_ZOOM = 8f
 
-        /** GreetBot Mini footprint radius (0.41 m wide, see CLAUDE.md). */
+        /** Radius of the robot's footprint in metres. */
         const val ROBOT_RADIUS_M = 0.205
     }
 }

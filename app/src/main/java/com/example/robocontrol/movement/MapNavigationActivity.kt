@@ -80,15 +80,8 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * RoboGuard's "Navigation and Map" screen, opened from MainActivity: the map with the robot, saved places, named
- * locations, tapped points and private areas, plus driving controls. UI for [MapNavigation].
- *
- * Copied from the movement test screen (`movementprobe.MovementProbeActivity`, still available as "RG Movement Test"
- * for dedicated hardware tests), without the no-go line experiment and without a log file.
- *
- * Layout: STOP, status and point lists on the left (scrollable); map preview on the right with the event log below.
- * Tapping the preview opens the full-screen map (tap = point or area corner, double tap / pinch = zoom).
- * Leaving the screen stops any navigation.
+ * The "Navigation and Map" screen: map with the robot, places, saved locations, temporary points and private areas,
+ * drive controls and the debug views. User interface for [MapNavigation].
  */
 class MapNavigationActivity : ComponentActivity() {
 
@@ -124,13 +117,13 @@ class MapNavigationActivity : ComponentActivity() {
         super.onStop()
     }
 
-    /** Counts "show the map again" requests (a popup's "Leave room" while a debug view is open). */
+    /** Counts requests to show the map again (e.g. "Leave room" from a prompt while a debug view is open). */
     private val backToMap = androidx.compose.runtime.mutableIntStateOf(0)
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // Reached again through CLEAR_TOP|SINGLE_TOP (e.g. "Leave room"): show the map, not a debug view that may still
-        // be open on this instance (review 2026-10-02, item 25).
+        // be open on this instance.
         backToMap.intValue++
     }
 
@@ -164,7 +157,7 @@ class MapNavigationActivity : ComponentActivity() {
         when (localized) { true -> "nav.label.yes"; false -> "nav.label.no"; null -> "nav.label.unknown" }
     )
 
-    /** The normal navigation screen: map, drive controls, places, saved locations, private areas and the debug section. */
+    /** The navigation screen: map, drive controls, places, saved locations, private areas and the debug section. */
     @Composable
     private fun NavigationScreen() {
         val lines by log.lines.collectAsState()
@@ -203,7 +196,7 @@ class MapNavigationActivity : ComponentActivity() {
             )
         }
         val driving by probe.driving.collectAsState()
-        // Off while a drive runs: STOP first (review 2026-10-02, item 2).
+        // Off while a drive runs: STOP first.
         val canDrive = selected != null && zonesLoaded && zoneStoreError == null && !driving
         var confirmClearAreas by remember { mutableStateOf(false) }
         if (confirmClearAreas) {
@@ -712,13 +705,17 @@ class MapNavigationActivity : ComponentActivity() {
     }
 
     /**
-     * Draws the map scaled to fit, with saved places (blue), tapped points (orange), the selection (red ring) and
-     * the robot (green circle with a heading line).
-     *
-     * Two modes:
-     *  - preview ([viewState] null): shows the whole map; a tap calls [onPreviewTap] (opens full screen)
-     *  - interactive ([viewState] set): tap adds a point, double tap / pinch zooms, two-finger drag pans
-     * Nothing is drawn over the map except the map content itself (plus a small hint in preview mode).
+     * Draws the map with places, points, private areas, the selection and the robot.
+     * Without [viewState] it shows the whole map and a tap calls [onPreviewTap]; with [viewState] taps add points or area
+     * corners and pinch or double tap zooms.
+     * @param rendered the rendered map; null while loading
+     * @param pose robot position
+     * @param places RobotOS places and saved locations
+     * @param custom temporary points
+     * @param selected selected point
+     * @param privateZones private areas
+     * @param privacyMargin margin around private areas, in metres
+     * @param drawingVertices corners of the area being drawn; null when not drawing
      */
     @Composable
     private fun MapCanvas(
@@ -814,7 +811,7 @@ class MapNavigationActivity : ComponentActivity() {
 
             // Private areas: filled polygon, plus the band where PrivacyGuard's margin already stops the robot. The band is the
             // outline stroked with twice the margin and cut to the outside, i.e. exactly the enforced region (the earlier
-            // circle around the corners was metres too big for long drawn areas, review 2026-10-02, item 60). Even-odd
+            // circle around the corners was metres too big for long drawn areas). Even-odd
             // filling matches the ray-casting containment test for self-crossing outlines.
             privateZones.forEach { zone ->
                 val path = Path().apply {
@@ -913,14 +910,14 @@ class MapNavigationActivity : ComponentActivity() {
     private companion object {
         const val POINT_RADIUS_PX = 12f
 
-        /** Compact buttons in the full-screen bar so all of them fit on the robot's screen. */
+        /** Height of the buttons in the full-screen bar. */
         val FULLSCREEN_BUTTON_HEIGHT = 40.dp
         val FULLSCREEN_BUTTON_PADDING = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
 
         /** Largest map zoom factor; a double tap at this zoom returns to the whole map. */
         const val MAX_ZOOM = 8f
 
-        /** GreetBot Mini footprint radius (0.41 m wide, see CLAUDE.md). */
+        /** Radius of the robot's footprint in metres. */
         const val ROBOT_RADIUS_M = 0.205
     }
 }

@@ -44,26 +44,12 @@ data class ShownImage(val bitmap: Bitmap?, val caption: String)
 private class MicRecording(val samples: ShortArray, val count: Int, val levelDbfs: Double)
 
 /**
- * Hardware test for sensor switching: does `Sensors.update()` really switch LIDAR, microphone and camera
- * on the robot?
- *
- * So the tester can judge with their own ears and eyes, every test recording is played back through the robot's
- * speaker right after it is measured, and every camera snapshot is shown on screen ([lastImage]).
- *
- * Every switch test goes through the real path (`Sensors.update` → `SensorSwitches`) and then checks
- * the result on three levels:
- *  1. the switch reports: did each SDK/Android call succeed (CONFIRMED / SENT / FAILED / PENDING)?
- *  2. read-backs: what the SDK and Android report now (radar status, isMicrophoneMute, getCameraDisabled, ...)
- *  3. the effect: is a test recording silent, does a camera snapshot fail or come back black? For LIDAR
- *     the effect can only be checked by looking at the robot.
- *
- * Automatic effect checks log PASS or FAIL. Everything that needs eyes or ears ends with "Press ✔ or ✘";
- * [verdict] writes the tester's answer into the log file.
- *
- * The test changes only the in-memory state of [Sensors], never `privacy_settings.json`. [restoreSaved]
- * (also called when the screen closes) switches everything back to the saved settings.
- *
- * All suspend functions block for several seconds and must not run on the main thread.
+ * Test of sensor switching on the robot. Each test switches a sensor through `Sensors.update` and then checks the switch
+ * reports, the read-backs and the effect (a test recording, a camera snapshot). Recordings are played back and snapshots
+ * shown so that the tester can judge them; verdicts are written with [verdict]. Only the in-memory state is changed;
+ * [restoreSaved] switches back to the saved settings. Suspend functions block for several seconds.
+ * @param context used for the sensors and the audio and camera access
+ * @param log log of the test screen
  */
 class SensorProbe(private val context: Context, private val log: ProbeLog) {
 
@@ -106,7 +92,7 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
     /** Recognition starts and partial/final results. Only counted; the recognised text is never read or logged. */
     private val speechEvents = AtomicInteger(0)
 
-    /** Volume callbacks with a value above 0, i.e. the speech service measured sound. */
+    /** Volume callbacks with a value above 0. */
     private val loudVolumeEvents = AtomicInteger(0)
 
     private val skillCallback = object : SkillCallback() {
@@ -166,11 +152,7 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
         log.i(TAG, "VERDICT $test: ${if (asExpected) "as expected" else "WRONG"}")
     }
 
-    /**
-     * Shows everything that can be read without switching anything: settings, SDK connection, device admin,
-     * Android read-backs, SDK status queries and the latest switch reports. Run it first, and after each test
-     * if something looks wrong.
-     */
+    /** Logs the current settings, connections, read-backs and switch reports without switching anything. */
     suspend fun status() {
         begin("status", "Current state. Nothing is switched.")
         log.i(TAG, "settings in Sensors: ${sensors.getSensors()}")
@@ -189,10 +171,9 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
     }
 
     /**
-     * Switches one sensor through `Sensors.update`, waits for the SDK's answers, then checks read-backs
-     * and effects for that sensor.
-     *
-     * @param sensor "LIDAR", "Microphone" or "Camera" (case-insensitive; the settings' own spelling is kept)
+     * Switches one sensor through `Sensors.update`, waits for the answers and checks read-backs and effects.
+     * @param sensor "LIDAR", "Microphone" or "Camera"
+     * @param enabled requested state
      */
     suspend fun switchSensor(sensor: String, enabled: Boolean) {
         begin("$sensor ${onOff(enabled)}", expectation(sensor, enabled))
@@ -232,14 +213,9 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
     }
 
     /**
-     * The microphone switch acts on two layers, so they are checked separately:
-     *  1. Android layer (`setMicrophoneMute`): can an ordinary app still record? A 2 s test recording.
-     *     A silent recording while ON is INCONCLUSIVE, not FAIL: it usually just means nobody talked.
-     *  2. RobotOS speech layer (`setASREnabled` / `setRecognizable`): does RobotOS's speech service still hear
-     *     anything? For [SPEECH_WINDOW_MS] the speech service's own callbacks are counted (recognition start,
-     *     partial/final results, volume above 0) while the tester says the wake word and keeps talking.
-     *     Only counts are logged, never recognised text.
-     * A silent Android recording alone does NOT prove the microphone is off for RobotOS; layer 2 does.
+     * Checks the microphone on both layers: a 2 s Android recording and, for [SPEECH_WINDOW_MS], the speech service's
+     * callbacks (counts only).
+     * @param enabled the state that was switched to
      */
     private suspend fun checkMicrophone(enabled: Boolean) {
         log.i(TAG, "Android read-back: isMicrophoneMute=${audioManager.isMicrophoneMute}")
@@ -341,7 +317,7 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
         // the same sound; MIC also varied between -35 and -103 dBFS while com.ainirobot.remotecontrolservice keeps
         // recording from MIC permanently.
         // The conversation monitor records too: take the microphone first (on Android 9 the second recording gets
-        // silence, which would read as "microphone off", review item 31).
+        // silence, which would read as "microphone off").
         val lease = com.example.robocontrol.conversation.ConversationMonitor.acquireMicrophone("sensor test")
         val recorder = runCatching {
             AudioRecord(MediaRecorder.AudioSource.CAMCORDER, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, samples.size * 2)
@@ -421,7 +397,7 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
     private suspend fun sdkQuery(name: String, call: (Int, CommandListener) -> Int) {
         val answer = CompletableDeferred<String>()
         val listener = object : CommandListener() {
-            // 3-argument callbacks only: the SDK calls both variants (CLAUDE.md).
+            // 3-argument callbacks only: the SDK calls both variants.
             override fun onResult(result: Int, message: String?, extraData: String?) {
                 answer.complete("result=$result message=$message")
             }

@@ -9,20 +9,14 @@ import kotlin.math.hypot
 import kotlin.math.max
 
 /**
- * The map tool's map image, `/sdcard/robot/map/<mapName>/navi_data/map.pgm`, which is also where RobotOS keeps the
- * **no-go lines** drawn in the map tool.
- *
- * Format and coordinate conversion were read out of RobotOS's map tool (MapTool.apk: `MapUtils.loadMap`,
- * `pose2PixelByRoverMap`, `saveRoverMapToPgm`) and verified on robot ZTT18P1000A0 (2026-09-16):
- * ```
- * "P5\n<width> <height>\n255\n"
- * width × height bytes, row 0 = TOP of the map (highest world y)
- * 16 extra bytes: double LE resolution (m/px), float LE origin x (m), float LE origin y (m)
- * ```
- * Pixel values: 255 free, 150 unknown, 5 walls/obstacles, **0 no-go line**.
- * Conversion: `px = (x - originX) / resolution`, `py = height - (y - originY) / resolution`.
- *
- * Instances are immutable; [withLine] returns a modified copy.
+ * The map tool's map image `navi_data/map.pgm`, which also contains the no-go lines. Format: "P5\n<width> <height>\n255\n",
+ * width × height bytes (row 0 = highest y), then 16 bytes: resolution (double), origin x and origin y (float), little
+ * endian. Pixel values: 255 free, 150 unknown, 5 obstacle, 0 no-go line. Immutable.
+ * @property width width in pixels
+ * @property height height in pixels
+ * @property resolution metres per pixel
+ * @property originX x of the map origin in metres
+ * @property originY y of the map origin in metres
  */
 class PgmMap(
     val width: Int,
@@ -62,11 +56,13 @@ class PgmMap(
     }
 
     /**
-     * A line that blocks the direct way between [a] and [b]: it crosses the midpoint of a–b at a right angle and extends
-     * in both directions until it meets something that is not free space (wall, existing no-go line, unknown area),
-     * plus [beyondObstacleM] so it overlaps the wall instead of leaving a gap. Each side is capped at [maxHalfLengthM].
-     *
-     * @return the two end points of the line, in world coordinates
+     * A line across the direct way between [a] and [b]: through their midpoint at a right angle, extended in both
+     * directions until it meets non-free space.
+     * @param a first point
+     * @param b second point
+     * @param maxHalfLengthM maximum length of each half in metres
+     * @param beyondObstacleM extension into the obstacle in metres
+     * @return the end points of the line in map coordinates
      */
     fun lineAcross(a: Point2D, b: Point2D, maxHalfLengthM: Double = 8.0, beyondObstacleM: Double = 0.10): Pair<Point2D, Point2D> {
         val dx = b.x - a.x

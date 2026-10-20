@@ -43,48 +43,13 @@ sealed interface SnapshotFailure {
 }
 
 /**
- * Takes single grayscale frames from the robot camera through OrionStar's camera data stream
- * sharing ([SurfaceShareApi]), which gives an app frames without taking the camera away from
- * RobotOS's own vision service.
- *
- * Every [capture] opens the stream, waits for one frame, copies its brightness (Y) plane, and
- * closes the stream again, so nothing keeps running between captures. That fits periodic sampling:
- * ```
- * val camera = CameraSnapshot()
- * scope.launch(Dispatchers.Default) {
- *     while (isActive) {
- *         val result = camera.capture()
- *         if (result is SnapshotResult.Success) orb.detect(result.image)
- *         delay(500)
- *     }
- * }
- * ```
- * The OrionStar docs warn the shared stream has high memory and CPU cost and must be closed when not
- * in use; opening it per capture honours that. The price is start-up time per capture, so check
- * [SnapshotResult.elapsedMs] on the robot: if it approaches the sampling interval, keep the stream open
- * instead.
- *
- * Requirements:
- *  - `RobotApi.getInstance().connectServer(...)` must have connected first. SurfaceShareApi is a
- *    sub-API of RobotApi and only gets its service connection then (verified in the jar); before
- *    that, capture fails with [SnapshotFailure.NotConnected].
- *  - The app must be in the foreground (RobotOS serves the SDK to the foreground app only).
- *
- * Image format follows the OrionStar sample: 640×480, YUV_420_888. Only the Y plane is kept, which is
- * exactly the grayscale image [ORB] needs, so no colour conversion is done. Per the OrionStar FAQ the
- * sensor is mounted rotated by 90°; frames are returned as delivered, not rotated.
- *
- * UNVERIFIED on hardware: stream start-up time, whether the first frames are dark (hence
- * [framesToSkip]), the success return value of requestImageFrame (assumed: non-negative), and whether
- * the vision service delivers exactly [width]×[height].
- *
- * Captures are serialized: concurrent callers wait for each other. Call from a background dispatcher;
- * cleanup briefly blocks while the frame thread shuts down.
- *
- * @param width requested frame width, as in the OrionStar sample
+ * Takes single grayscale frames from the camera through SurfaceShare ([SurfaceShareApi]): each [capture] opens the
+ * stream, keeps the Y plane of one frame and closes the stream again. Requires a connected RobotApi. Captures are
+ * serialised; call from a background dispatcher.
+ * @param width requested frame width
  * @param height requested frame height
- * @param framesToSkip frames discarded before one is kept, to let exposure settle after the stream starts
- * @param timeoutMs maximum wait for a usable frame after requesting the stream
+ * @param framesToSkip frames discarded before one is kept
+ * @param timeoutMs maximum wait for a frame
  */
 class CameraSnapshot(
     private val width: Int = 640,

@@ -38,24 +38,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Test screen for the hardware probes behind the multi-speaker detector.
- * This is not part of RoboGuard's UI and is not reachable from it.
- *
- * Start it on the robot with
- *   adb shell am start -n com.example.roboguard/com.example.testing.voiceprobe.VoiceProbeActivity
- * The full procedure is in README.md, "Testing the voice probes".
- *
- * Buttons:
- *  - 1 Mic access: runs [MicAccessProbe] once (asks for RECORD_AUDIO first if needed)
- *  - 2 Speech service: starts [SpeechServiceProbe]; "Toggle multiple mode" and "TTS status"
- *    act on it
- *  - 3 Sound direction: starts [SoundDirectionProbe]
- *  - Stop listeners: stops probes 2 and 3; also happens automatically when the screen closes
- *  - Clear screen: clears the visible log only; the log file keeps everything
- *
- * The screen must stay in the foreground while probing: RobotOS only serves the SDK to the
- * foreground app. Camera-based APIs are deliberately not probed (see CLAUDE.md, working
- * constraints).
+ * Test screen for the voice probes: microphone access ([MicAccessProbe]), speech service callbacks
+ * ([SpeechServiceProbe]) and sound direction ([SoundDirectionProbe]).
  */
 class VoiceProbeActivity : ComponentActivity() {
 
@@ -139,11 +123,8 @@ class VoiceProbeActivity : ComponentActivity() {
     }
 
     /**
-     * Runs [MicAccessProbe] on the IO dispatcher, because it blocks for up to ~25 s.
-     * lifecycleScope cancels the coroutine if the screen closes; the probe's own
-     * `finally` still releases the recorder.
-     *
-     * @param setRunning updates the button state: true at the start, false when finished
+     * Runs [MicAccessProbe] on the IO dispatcher.
+     * @param setRunning called with true at the start and false at the end
      */
     private fun runMicProbe(setRunning: (Boolean) -> Unit) {
         setRunning(true)

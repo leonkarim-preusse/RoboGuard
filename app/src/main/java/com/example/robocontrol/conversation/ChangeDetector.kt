@@ -2,19 +2,13 @@ package com.example.robocontrol.conversation
 
 import kotlin.math.max
 
-/**
- * Tuning knobs for [ChangeDetector]. Defaults are starting points; tune them on the robot with the Speaker Test screen.
- *
- * Frame = one MFCC vector every 10 ms. Only speech frames count towards windows.
- */
 /** How "more than one speaker" is decided from the change candidates. Both are always computed; this one is shown. */
 enum class DecisionRule {
     /** At least [ChangeDetectorConfig.minChangesForMultiple] accepted changes (ΔBIC > 0) within the decision window. */
     COUNT,
     /**
-     * Evidence accumulator (CUSUM-style leaky integrator): every candidate adds max(0, r − r₀), r = BIC gain / penalty;
-     * evidence halves every [ChangeDetectorConfig.evidenceHalfLifeMs]; ≥ [ChangeDetectorConfig.evidenceThreshold] →
-     * more than one speaker, held for the decision window. Uses near-miss candidates too, e.g. around overlapping speech.
+     * Evidence rule: each candidate adds max(0, r − r₀), with r = BIC gain / penalty; the evidence halves every
+     * [ChangeDetectorConfig.evidenceHalfLifeMs], and reaching [ChangeDetectorConfig.evidenceThreshold] means more than one speaker.
      */
     EVIDENCE
 }
@@ -27,7 +21,7 @@ enum class SpeechGate {
     SILERO
 }
 
-/** All settings of the change detector. Defaults are the values the owner's successful probe run used. */
+/** Settings of [ChangeDetector]. A frame is one MFCC vector per 10 ms; only speech frames count towards the windows. */
 data class ChangeDetectorConfig(
     /** Which speech gate to use. */
     val speechGate: SpeechGate = SpeechGate.SILERO,
@@ -38,19 +32,11 @@ data class ChangeDetectorConfig(
     val windowFrames: Int = 150,
     /** Compare every this many new speech frames (10 = every 0.1 s of speech). */
     val stepFrames: Int = 10,
-    /**
-     * ΔBIC penalty weight λ: higher = fewer false changes, more misses. First robot run (one voice from a video): accepted
-     * false changes had ΔBIC 231–392 at λ = 1, where the penalty is ~257, so λ = 2 would have rejected them. Tune with the
-     * "BIC gain / penalty" numbers in the log.
-     */
+    /** Penalty weight λ of ΔBIC; higher values accept fewer changes. */
     val bicLambda: Double = 2.0,
     /** A KL2 peak is a candidate only if it is at least this many times the running mean of KL2. */
     val kl2Relative: Double = 1.3,
-    /**
-     * Candidates whose boundaries lie within this many speech frames of a group's first boundary count as one group
-     * (overlapping evaluations of the same boundary). 50 = 0.5 s: on the robot duplicates were 0.2–0.5 s apart, real
-     * consecutive changes 1–2 s; a whole window (150) merged real changes and delayed detection by 1.5–3.6 s.
-     */
+    /** Candidates within this many speech frames of a group's first boundary belong to the same group. */
     val groupFrames: Int = 50,
     /** No second change within this many speech frames of the previous one. */
     val minFramesBetweenChanges: Int = 100,
@@ -70,11 +56,7 @@ data class ChangeDetectorConfig(
     val minChangesForMultiple: Int = 2,
     /** Which rule decides the shown state. */
     val decisionRule: DecisionRule = DecisionRule.EVIDENCE,
-    /**
-     * Evidence rule: r₀, the gain/penalty ratio a candidate must exceed to add evidence. The ratio grows with the window
-     * length. Defaults = the settings the owner tested successfully on the robot (2026-09-17, probe-20260917-115530.log):
-     * window 1.5 s, λ 2.0, Silero 0.5, r₀ 1.8, threshold 0.8, half-life 5 s. (1.65 / 0.5 / 10 s triggered at once.)
-     */
+    /** Evidence rule: ratio r₀ that a candidate must exceed to add evidence. */
     val evidenceBaseRatio: Double = 1.8,
     /** Evidence rule: evidence halves every this many ms. */
     val evidenceHalfLifeMs: Long = 5_000,
@@ -89,12 +71,11 @@ data class ChangeDetectorConfig(
 )
 
 /**
- * Has it been quiet over the last [windowMs]? Quiet = at most [maxSpeechShare] of the 10 ms frames carried speech: owner,
- * 2026-10-19, "if 10 % of the 30 second window was detected as speech it should still count as 30 seconds silence" — a cough,
- * a single word or a television across the room must not keep an old conversation alive. Before, ONE speech frame restarted
- * the 30 s.
- *
- * Needs a full window since the last [clear], so after one reset the next needs another full window. Booleans only.
+ * Tracks whether the last [windowMs] were quiet, i.e. at most [maxSpeechShare] of the frames contained speech.
+ * A full window is needed after every [clear].
+ * @param windowMs window length in milliseconds
+ * @param maxSpeechShare highest share of speech frames that still counts as quiet
+ * @param frameMs length of one frame in milliseconds
  */
 class SilenceWindow(windowMs: Long, private val maxSpeechShare: Double, frameMs: Long = 10) {
     private val frames = BooleanArray((windowMs / frameMs).toInt().coerceAtLeast(1))
@@ -144,16 +125,12 @@ data class ChangeCandidate(
 }
 
 /**
- * Speaker change detection on a stream of MFCC frames (DISTBIC pattern):
- *  1. every [ChangeDetectorConfig.stepFrames] speech frames, fit a Gaussian to each of the two latest adjacent windows and
- *     compute their symmetric KL distance (KL2);
- *  2. a local maximum of KL2 that clearly exceeds its running mean is a candidate boundary;
- *  3. the candidate is confirmed as a change if ΔBIC > 0 (two distributions fit better than one).
- *
- * Privacy: frames live only in a fixed ring buffer of `2·window + 2·step` frames (about 3.2 s of speech) that is
- * overwritten in place; [clear] zeroes it. What leaves this class are distances, times and decisions.
- *
- * Pure Kotlin, no Android: can be driven by a synthetic feed. Not thread-safe (one audio thread).
+ * Speaker change detection on a stream of MFCC frames (DISTBIC): every [ChangeDetectorConfig.stepFrames] speech frames
+ * the two latest adjacent windows are modelled as Gaussians and compared with the symmetric KL distance; a clear KL2
+ * peak is a candidate, and it is accepted as a change if ΔBIC > 0. Frames are kept only in a fixed ring buffer that
+ * [clear] zeroes. Not thread-safe.
+ * @param dim number of MFCC coefficients per frame
+ * @param config detection settings
  */
 class ChangeDetector(val dim: Int, private val config: ChangeDetectorConfig = ChangeDetectorConfig()) {
 
@@ -194,7 +171,7 @@ class ChangeDetector(val dim: Int, private val config: ChangeDetectorConfig = Ch
     var lastFrameWasSpeech = false
         private set
 
-    /** The two halves of the gate for the last frame, and the level it had to beat (for the debug timeline). */
+    /** Results of the last frame's gate halves (Silero, level) and the level floor, for the debug timeline. */
     var lastSilero = false
         private set
     var lastLoud = false
@@ -261,11 +238,9 @@ class ChangeDetector(val dim: Int, private val config: ChangeDetectorConfig = Ch
     private var groupAccepted = false
 
     /**
-     * Groups candidates without delaying them: overlapping windows around one boundary compare largely the same audio, so
-     * candidates whose boundary lies within [ChangeDetectorConfig.groupFrames] of the group's first boundary belong to one group. Each candidate
-     * is reported at once, with what the group already contributed ([ChangeCandidate.groupBestRatioBefore],
-     * [ChangeCandidate.groupAlreadyAccepted]), so the decision rules count each group once: the evidence rule adds only
-     * the increase over the group's best ratio so far, the count rule counts a group's first accepted change only.
+     * Assigns a candidate to a group of candidates around the same boundary, so that each group counts only once.
+     * @param raw the new candidate, or null
+     * @return the candidate with its group information, or null
      */
     private fun groupCandidates(raw: Raw?): ChangeCandidate? {
         raw ?: return null
@@ -284,7 +259,7 @@ class ChangeDetector(val dim: Int, private val config: ChangeDetectorConfig = Ch
         return reported
     }
 
-    /** Compares the two latest windows; returns a candidate at a qualifying KL2 peak (not yet grouped), else null. */
+    /** Compares the two latest windows. @return a candidate at a qualifying KL2 peak, otherwise null */
     private fun evaluate(): Raw? {
         val w = config.windowFrames
         if (speechFrames < 2 * w || speechFrames % config.stepFrames != 0L) return null

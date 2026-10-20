@@ -5,34 +5,30 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
-/**
- * Picks the direction the robot should turn to (on the spot) after it was stopped at a private area.
- *
- * Owner's rule: face a direction whose line of sight stays at least [DEFAULT_REQUIRED_FREE_M] clear of every private
- * area; if no direction manages that, face the one that stays clear the longest. Turning on the spot instead of
- * driving backwards avoids moving blind, because the SDK has no obstacle avoidance for backward motion.
- *
- * Pure geometry, no SDK: testable with [FakeRobotBridge].
- */
+/** Chooses the direction the robot turns to on the spot after a stop at a private area. */
 object EscapeHeading {
 
     const val DEFAULT_REQUIRED_FREE_M = 1.0
 
     /**
-     * @property heading target heading in radians (map frame, same convention as [RobotPose.theta])
-     * @property freeDistance how far the line of sight runs before entering a private area (capped at the look range)
-     * @property turn signed rotation from the current heading, radians in (-π, π]; positive = counter-clockwise
-     * @property meetsRequirement true if [freeDistance] reached the required free distance
+     * Result of [choose].
+     * @property heading target heading in radians
+     * @property freeDistance distance the line of sight stays outside private areas
+     * @property turn signed rotation from the current heading in radians; positive = counter-clockwise
+     * @property meetsRequirement true if [freeDistance] reached the required distance
      */
     data class Choice(val heading: Double, val freeDistance: Double, val turn: Double, val meetsRequirement: Boolean)
 
     /**
-     * Candidates every [stepDeg] degrees. Among the directions that are clear for [requiredFree], the one that ends
-     * furthest from all private areas wins (so the robot points *away*, not along the edge). If none is clear enough,
-     * the one with the longest free distance wins. Returns null if there are no private zones.
-     *
-     * The line of sight is checked against the zone polygons without the safety margin: after a stop the robot is
-     * standing inside the margin, so every direction would count as blocked otherwise.
+     * Tests directions every [stepDeg] degrees. Among the directions clear for [requiredFree] the one ending furthest from
+     * all private areas wins; otherwise the one with the longest free distance. Zones are tested without margin.
+     * @param pose current pose
+     * @param zones private zones
+     * @param requiredFree required free distance in metres
+     * @param lookRange maximum distance checked in metres
+     * @param stepDeg angle between tested directions
+     * @param sampleM step along the line of sight in metres
+     * @return the chosen direction, or null without zones
      */
     fun choose(
         pose: RobotPose,

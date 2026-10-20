@@ -8,20 +8,9 @@ import java.nio.FloatBuffer
 import kotlin.math.sqrt
 
 /**
- * Turns a piece of speech into a **voice embedding**: a fixed-length vector in which two recordings of the same voice
- * lie close together and two different voices lie far apart. The robot uses it for one question only — is this the
- * owner, who taught the robot their voice, or somebody else ([OwnerVoiceprint]).
- *
- * Model: CAM++ from 3D-Speaker (Apache-2.0 toolkit, trained on VoxCeleb — research use), file
- * `robocontrol/assets/speaker/campplus_en_voxceleb.onnx`, 512 dimensions, run with ONNX Runtime on the robot. Nothing
- * is sent anywhere and no audio is kept: [embed] reads the samples, produces the vector, and the caller is expected to
- * zero both.
- *
- * Be clear about what this vector is: it IS a voice fingerprint, and a stored one is biometric data. Only the owner's
- * template is ever written to disk (encrypted, deletable); every other embedding lives in a reused array that is
- * overwritten immediately, and is never logged — only the resulting similarity, as a single number.
- *
- * Not thread-safe; one instance per audio thread. [close] when done.
+ * Computes speaker embeddings with the CAM++ model (`assets/speaker/campplus_en_voxceleb.onnx`, 512 dimensions) via
+ * ONNX Runtime. Callers zero the input samples and the returned vector after use. Not thread-safe; call [close] when done.
+ * @param context used to load the model from the assets
  */
 class SpeakerEmbedder(context: Context) : AutoCloseable {
 
@@ -92,8 +81,10 @@ class SpeakerEmbedder(context: Context) : AutoCloseable {
         }
 
         /**
-         * Cosine similarity of two normalised embeddings: 1 = identical, 0 = unrelated.
-         * Measured on the PC with this model: same speaker 0.55–0.68, different speakers 0.09–0.24.
+         * Cosine similarity of two L2-normalised embeddings.
+         * @param a first embedding
+         * @param b second embedding
+         * @return similarity, 1 = identical
          */
         fun similarity(a: FloatArray, b: FloatArray): Float {
             if (a.size != b.size) return 0f

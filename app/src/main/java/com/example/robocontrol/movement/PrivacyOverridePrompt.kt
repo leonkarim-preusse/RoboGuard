@@ -6,23 +6,29 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Hands the question "may the robot temporarily cross this private area?" from [MapNavigation] to the popup
- * [PrivacyOverrideActivity] (or the phone) and the answer back. Both live in the same process; at most one question is open.
- *
- * A question ends in exactly one [Outcome]: answered yes or no, replaced by a newer question, cancelled (STOP, a new drive,
- * the screen closing) or expired after [MAX_AGE_MS]. Only yes and no are answers of a person; for the others the robot
- * neither speaks nor moves, so a question left open for a long time can no longer restart an old drive or turn the robot
- * (review 2026-10-02, item 21).
+ * Passes the question "may the robot temporarily cross this private area?" from [MapNavigation] to the popup
+ * [PrivacyOverrideActivity] or the phone, and the answer back. At most one question is open; it ends with exactly one
+ * [Outcome] (allowed, denied, superseded, cancelled or expired after [MAX_AGE_MS]).
  */
 object PrivacyOverridePrompt {
 
     /** How a crossing question ended. */
     enum class Outcome { ALLOWED, DENIED, SUPERSEDED, CANCELLED, EXPIRED }
 
-    /** @property minutes allowed minutes (only for [Outcome.ALLOWED]); [answeredBy] who answered (screen or a phone) */
+    /**
+     * Answer to a crossing question.
+     * @property outcome how the question ended
+     * @property minutes allowed minutes; only for [Outcome.ALLOWED]
+     * @property answeredBy who answered (robot screen or phone name)
+     */
     class Answer(val outcome: Outcome, val minutes: Int? = null, val answeredBy: String? = null)
 
-    /** @property zoneName the private area the robot would have to cross; [createdAt] elapsedRealtime of the question */
+    /**
+     * An open crossing question.
+     * @property id identifier of the question
+     * @property zoneName private area the robot would cross
+     * @property createdAt time the question was asked (elapsedRealtime)
+     */
     class Request internal constructor(
         val id: Long,
         val zoneName: String,

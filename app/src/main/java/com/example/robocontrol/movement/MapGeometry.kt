@@ -3,11 +3,7 @@ package com.example.robocontrol.movement
 import kotlin.math.sqrt
 
 /**
- * Pure geometry and map-domain types. Deliberately free of any Android or
- * OrionStar SDK dependency so this layer compiles and unit-tests on the JVM
- * without the robot and without robotservice.jar.
- *
- * All coordinates are in the RobotOS map frame: metres, x/y, theta in radians.
+ * Geometry and map types without Android or SDK dependencies. Coordinates are in the RobotOS map frame: metres, theta in radians.
  */
 
 /** A point in the map frame, in metres. */
@@ -21,15 +17,8 @@ data class Point2D(val x: Double, val y: Double) {
 }
 
 /**
- * Safety/zone status reported by the RobotOS Pose listener.
- *
- * These codes come from the SDK, not from us:
- *   SAFE = 0, NOT_SAFE = 1, OBSTACLE = 2 (forbidden area), OUTSIDE = 3
- *
- * Note [FORBIDDEN] refers to an area authored in OrionStar's own map tool.
- * It is NOT the same thing as one of our [Zone]s marked [PrivacyLevel.PRIVATE] —
- * ours are enforced in the app, theirs by the robot's navigation stack.
- * Both are honoured; see PrivacyGuard.
+ * Pose status reported by RobotOS. [FORBIDDEN] is an area defined in OrionStar's map tool, not a RoboGuard [Zone].
+ * @property code status code used by the SDK
  */
 enum class PoseStatus(val code: Int) {
     SAFE(0),
@@ -39,7 +28,10 @@ enum class PoseStatus(val code: Int) {
     UNKNOWN(-1);
 
     companion object {
-        /** Maps the SDK's status code to the enum; unknown codes give [UNKNOWN]. */
+        /**
+         * Maps an SDK status code to the enum; unknown codes give [UNKNOWN].
+         * @param code status code from the SDK
+         */
         fun fromCode(code: Int): PoseStatus =
             entries.firstOrNull { it.code == code } ?: UNKNOWN
     }
@@ -55,30 +47,15 @@ data class RobotPose(
     val point: Point2D get() = Point2D(x, y)
 }
 
-/**
- * How the robot may treat an area.
- *
- * [OPEN]    — ordinary space, navigation allowed.
- * [PRIVATE] — opt-out-by-default: navigation into this area is refused, and an
- *             in-progress navigation is aborted if the robot enters it. Only an
- *             explicit, time-boxed override (see PrivacyGuard.grantOverride)
- *             lifts this.
- */
+/** How the robot may treat an area: [OPEN] allows navigation, [PRIVATE] refuses it unless an override is active. */
 enum class PrivacyLevel { OPEN, PRIVATE }
 
 /**
- * A named region of the map — "bathroom", "bedroom", "living room".
- *
- * The OrionStar SDK has no concept of an area: `setLocation` names a single
- * point, and there is no API for virtual walls or forbidden regions. So the
- * area model lives here, in the app, and is enforced by PrivacyGuard against
- * the live pose stream.
- *
- * @param polygon vertices in map coordinates, in order. Treated as closed
- *        (the last vertex joins the first). Minimum 3 vertices.
- * @param entryPoint optional name of an OrionStar location (created with
- *        `setLocation`) that sits inside this zone, used as the navigation
- *        target when asked to go to the zone by name.
+ * A named area of the map.
+ * @property name name of the area
+ * @property polygon corners in map coordinates, in order; the polygon is closed and has at least 3 corners
+ * @property privacy how the area is treated
+ * @property entryPoint optional RobotOS place inside the area, used as navigation target
  */
 data class Zone(
     val name: String,
@@ -96,14 +73,8 @@ data class Zone(
     val isPrivate: Boolean get() = privacy == PrivacyLevel.PRIVATE
 
     /**
-     * Point-in-polygon by ray casting (crossing number).
-     *
-     * Handles concave polygons, which matters: an L-shaped room is common and
-     * a bounding-box test would wrongly capture the corridor outside it.
-     *
-     * Boundary behaviour: a point exactly on an edge is not guaranteed to be
-     * reported consistently — this is inherent to ray casting with floating
-     * point. Callers that care should use [containsWithMargin].
+     * Point-in-polygon test by ray casting; works for concave polygons.
+     * @param p point in map coordinates
      */
     fun contains(p: Point2D): Boolean {
         var inside = false
@@ -123,12 +94,9 @@ data class Zone(
     }
 
     /**
-     * [contains], widened by [margin] metres.
-     *
-     * Use this for privacy enforcement rather than [contains]: the robot has a
-     * 0.41 m footprint and localization drift, so treating the polygon as a
-     * hard line means the robot is already partly inside the bathroom by the
-     * time the test trips. A margin of ~0.5 m stops it at the doorway instead.
+     * Like [contains], with the polygon widened by [margin].
+     * @param p point in map coordinates
+     * @param margin widening in metres
      */
     fun containsWithMargin(p: Point2D, margin: Double): Boolean {
         if (contains(p)) return true
@@ -166,12 +134,9 @@ data class Zone(
 }
 
 /**
- * The set of zones belonging to one RobotOS map.
- *
- * Zones are bound to a map name because OrionStar locations are: the docs are
- * explicit that a location saved with `setLocation` only resolves while the
- * same map is active. Our polygons share that constraint — coordinates from
- * one map are meaningless on another.
+ * The zones of one RobotOS map.
+ * @property mapName name of the map
+ * @property zones zones on that map
  */
 data class MapZones(
     val mapName: String,

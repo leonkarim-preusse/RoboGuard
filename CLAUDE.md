@@ -2089,3 +2089,20 @@ debug-display items (95, 96), hygiene (71, 72, 79, 82).
   Comments only; both apps compile (`:app:compileDebugKotlin`). `roboguard/` untouched.
 - README "Documentation" section extended (robot: points 4–6 = robocontrol packages, test screens, performance scripts; phone: point 4).
 - `performance/*.py`: docstrings for the top-level functions that had none.
+- **Docs reworked (owner 2026-10-20):** KDoc in robocontrol/, testing/, the new phone files and the new parts of
+  RobotServerService now only briefly describe the function/class and its parameters — no history, measurements, known limits,
+  review item numbers or CLAUDE.md references (that information stays in this file and Notes_thesis.md). Inline `//` comments:
+  only the "(review …, item N)" / CLAUDE.md references were removed. Long rationale that used to be in the code lives here.
+
+## Save result reported to the phone (owner 2026-10-20, both apps compiled, NOT installed)
+
+- `/save` no longer answers at once: write file → popup → `waitForSdkControl()` → `Sensors.update` → `Sensors.awaitSwitches`
+  (≤ `SWITCH_RESULT_TIMEOUT_MS` 4 s) → answer. Every switch (SDK and Android) must reach a final report made after the save;
+  SENT/PENDING at the deadline = not confirmed. `ApplyResult` (SensorSwitches.kt): ALL_CONFIRMED → 200 "OK" + speech
+  "Settings have been updated"; PARTIAL → 200 "PARTIAL" + new speech `speech.settings_partial`; NONE → 500 "NOT_APPLIED" +
+  `speech.settings_sensors_failed`. Not-confirmed switches are logged (tag Server). `SwitchReport.atMs` added, reports map
+  updated atomically. `applySettingsWhenInControl`/`applyJob` removed.
+- Phone: `SyncResult.Partial` ("Settings were only updated partially. Try again.") and `SyncResult.NotApplied` ("Settings were
+  not successfully updated.") — any error status from the robot; no connection stays `Failed`. OkHttp readTimeout 20 s.
+- Expected consequence, not yet seen on the robot: Microphone ON after an earlier OFF reports PARTIAL until reboot, because
+  RobotOS speech recognition cannot be re-enabled through the SDK.

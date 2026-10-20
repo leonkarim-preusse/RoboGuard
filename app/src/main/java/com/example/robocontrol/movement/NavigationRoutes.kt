@@ -48,11 +48,10 @@ fun navigationMapPng(): ByteArray? {
 }
 
 /**
- * Runs one command of the phone app ([handleCommand]) and returns the HTTP status plus the answer: the NEW state, with
- * `ok` and the robot's own refusal wording, so the phone shows exactly what the robot shows.
- *
- * [client] is only the name the phone sends; it never decides anything — the request was already verified with the
- * signature check of the existing routes before this is called.
+ * Runs one command from the phone app and returns the HTTP status and the new navigation state with `ok` and the
+ * robot's message.
+ * @param body JSON body of the request
+ * @param client name of the phone that sent it
  */
 suspend fun navigationCommand(body: String, client: String): Pair<HttpStatusCode, String> {
     val request = runCatching { JSONObject(body) }.getOrNull()
@@ -70,15 +69,12 @@ private fun errorJson(message: String) = JSONObject().put("ok", false).put("erro
 private class CommandResult(val ok: Boolean, val message: String? = null)
 
 /**
- * Runs one command from the phone. The actions mirror the buttons of the robot's own screen:
- *
- * `select` (name, or x/y), `point` (tap on the map: adds a point or a corner while drawing), `drive`, `stop`,
- * `speed` (preset SLOW/MEDIUM/DEFAULT), `clearPoints`, `saveLocation` (name), `deleteLocation`, `areaCircle` (name),
- * `drawStart`, `drawUndo`, `drawCancel`, `drawFinish` (name), `deleteArea` (name), `revokeArea` (name),
- * `answerPrivacy` (id, minutes; without minutes = no), `reload`, `resetLocations`, `resetAreas`.
- *
- * Everything that the robot refuses (not localized, name already taken, private areas not loaded) comes back as a message,
- * so the phone can show the same wording the robot shows.
+ * Runs one command from the phone: select, point, drive, stop, speed, clearPoints, saveLocation, deleteLocation,
+ * areaCircle, drawStart, drawUndo, drawCancel, drawFinish, deleteArea, revokeArea, answerPrivacy, reload,
+ * resetLocations, resetAreas.
+ * @param request the parsed command
+ * @param client name of the phone that sent it
+ * @return whether the command was accepted, with the robot's message
  */
 private suspend fun handleCommand(request: JSONObject, client: String): CommandResult {
     val navigation = NavigationHub.current
@@ -86,7 +82,7 @@ private suspend fun handleCommand(request: JSONObject, client: String): CommandR
     val action = request.optString("action")
     val name = request.optString("name").takeIf { it.isNotBlank() }
     // Coordinates must be real numbers inside the map: org.json turns a quoted "NaN" into a number, and a NaN point broke
-    // every later state answer and the area check (review 2026-10-02, item 77).
+    // every later state answer and the area check.
     val position = if (request.has("x") && request.has("y")) {
         Point2D(request.optDouble("x"), request.optDouble("y")).takeIf { insideMap(navigation, it) }
             ?: return CommandResult(false, "x/y must be numbers inside the map")
@@ -104,7 +100,7 @@ private suspend fun handleCommand(request: JSONObject, client: String): CommandR
             ?: CommandResult(false, "point needs x/y")
         "drive" -> {
             // The phone sends the target it shows; if the robot's selection changed meanwhile (a tap on the robot, another
-            // phone), it must not drive somewhere the phone user never saw (review 2026-10-02, item 59).
+            // phone), it must not drive somewhere the phone user never saw.
             val selected = navigation.selected.value
             val differs = selected != null && ((name != null && name != selected.name) ||
                 (position != null && position.distanceTo(selected.position) > 0.05))

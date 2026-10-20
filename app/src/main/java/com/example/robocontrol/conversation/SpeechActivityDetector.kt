@@ -10,23 +10,13 @@ import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * [ConversationDetector] that only counts how much of the last seconds carried speech at all.
- *
- * The idea behind it (owner, 2026-09-28): one person talking leaves gaps — to breathe, to think, to read what is on the
- * screen. A conversation fills those gaps, because somebody answers into them. So a window in which almost everything is
- * speech is evidence of more than one speaker, without ever asking WHO is speaking.
- *
- * It is by far the cheapest of the four methods: no cepstra, no Gaussians, no embeddings, no template. The only state is
- * a ring of booleans over [ConversationSettings.activityWindowMs] and the count of the ones that are true. Nothing that
- * describes a voice is computed, so there is nothing to store, to leak or to delete — the strongest privacy position of
- * the four, and worth stating as such.
- *
- * Its weakness is the mirror image: a television, a radio or one person reading aloud fills the window just as well, and
- * the detector cannot tell them from a conversation. That is a false alarm the robot answers by ASKING, which is exactly
- * what the rest of the design does with every other uncertain signal.
- *
- * While the robot speaks itself the window does not advance at all (see [RobotSpeaking]): its own voice neither counts
- * as speech nor dilutes the share.
+ * [ConversationDetector] that measures the share of speech in a sliding window of
+ * [ConversationSettings.activityWindowMs]; a share of at least [ConversationSettings.activityShare] counts as a
+ * conversation. Gaps shorter than [ConversationSettings.activityMinSilenceMs] count as speech, and the window does not
+ * advance while the robot speaks.
+ * @param context used to load Silero
+ * @param source audio input
+ * @param settings detection settings
  */
 class SpeechActivityDetector(
     private val context: Context,
@@ -104,7 +94,7 @@ class SpeechActivityDetector(
         val silence = SilenceWindow(settings.resetAfterSilenceMs, settings.resetMaxSpeechShare)
 
         try {
-            // The microphone first: if it cannot be opened, no model has been loaded for nothing (item 35).
+            // The microphone first: if it cannot be opened, no model has been loaded for nothing.
             val openError = source.open()
             if (openError != null) {
                 _snapshot.value = _snapshot.value.copy(running = false, error = openError)
@@ -166,7 +156,7 @@ class SpeechActivityDetector(
                 // A gap shorter than the hangover is part of the same utterance: without this the share would measure
                 // the pauses between WORDS, which one speaker has just as much as two.
                 // Armed only by frames the window will use: the robot's own echo used to arm it during the speech
-                // tail and then entered the window as speech once the robot was quiet (item 53).
+                // tail and then entered the window as speech once the robot was quiet.
                 if (robotTalking) speechUntilMs = Long.MIN_VALUE / 2
                 else if (gate) speechUntilMs = timeMs + settings.activityMinSilenceMs
                 val counts = !robotTalking && (gate || timeMs <= speechUntilMs)

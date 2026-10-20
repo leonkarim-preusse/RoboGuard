@@ -37,9 +37,8 @@ import com.example.robocontrol.movement.MapNavigationActivity
 import com.example.robocontrol.text.UiText
 
 /**
- * Popup shown by [ConversationMonitor] when more than one person has been talking: offers to leave the room (opens
- * Navigation and Map), to switch the microphone off, or to pause the conversation detection (default 30 minutes, or a
- * chosen time). Closing it changes nothing.
+ * Popup shown by [ConversationMonitor] when a conversation is detected: leave the room, mute the microphone, pause the
+ * detection for a chosen time, or close.
  */
 class ConversationPromptActivity : ComponentActivity() {
 
@@ -78,7 +77,7 @@ class ConversationPromptActivity : ComponentActivity() {
                     Button(
                         onClick = {
                             // The existing map screen, not a second one on top: a second instance left the first one's
-                            // debug view composed, and the test announcement kept running (item 25).
+                            // debug view composed, and the test announcement kept running.
                             startActivity(Intent(this@ConversationPromptActivity, MapNavigationActivity::class.java)
                                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
                             finish()

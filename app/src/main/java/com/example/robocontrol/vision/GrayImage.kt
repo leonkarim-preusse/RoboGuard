@@ -5,14 +5,10 @@ import org.opencv.core.CvType
 import org.opencv.core.Mat
 
 /**
- * An 8-bit grayscale image: one byte per pixel, row by row, 0 = black, 255 = white.
- *
- * This is the image type shared by [CameraSnapshot] (which produces it from the camera's
- * Y plane) and [ORB] (which consumes it). It deliberately contains no OpenCV or camera types,
- * so frames can be passed around, queued or dropped without worrying about native memory.
- *
- * Pixel (x, y) is at `pixels[y * width + x]`. Bytes are unsigned in meaning; read them with
- * `pixels[i].toInt() and 0xFF`.
+ * An 8-bit grayscale image; pixel (x, y) is `pixels[y * width + x]`, read as `pixels[i].toInt() and 0xFF`.
+ * @property width width in pixels
+ * @property height height in pixels
+ * @property pixels pixel values, row by row
  */
 class GrayImage(val width: Int, val height: Int, val pixels: ByteArray) {
 

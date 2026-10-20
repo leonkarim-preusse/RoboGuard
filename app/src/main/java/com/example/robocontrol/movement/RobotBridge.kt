@@ -3,18 +3,8 @@ package com.example.robocontrol.movement
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * Everything the framework needs from the robot, expressed without naming the
- * OrionStar SDK once.
- *
- * Two reasons this interface exists rather than calling RobotApi directly:
- *
- *  1. robotservice.jar is a local jar available only on the robot's developer
- *     platform. Without this seam, nothing in the project compiles or tests
- *     until that jar is in place.
- *  2. The thesis claims the privacy behaviour is a property of the control
- *     layer, not of OrionStar's hardware. That claim is only demonstrable if
- *     the guard logic can be exercised against a substitutable robot — see
- *     [FakeRobotBridge].
+ * Robot functions needed by the navigation code, independent of the OrionStar SDK. Implemented by [OrionStarBridge]
+ * on the robot and by [FakeRobotBridge] for tests.
  */
 interface RobotBridge {
 
@@ -60,11 +50,7 @@ interface RobotBridge {
     /** Starts a drive to map coordinates. Progress and outcome arrive at [listener]. */
     fun navigateTo(target: Point2D, listener: NavigationListener)
 
-    /**
-     * Stops navigation specifically. Note the SDK's `stopMove` does NOT stop
-     * navigation — only forward/backward/rotation — so implementations must
-     * call `stopNavigation`, not `stopMove`.
-     */
+    /** Stops a running navigation (the SDK's `stopNavigation`; `stopMove` does not stop navigation). */
     fun stopNavigation()
 
     /**

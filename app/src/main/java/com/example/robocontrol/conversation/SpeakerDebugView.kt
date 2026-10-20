@@ -46,21 +46,14 @@ private val MULTIPLE_MARK = Color(0xFF2E7D32)
 private val ROBOT_FILL = Color(0xFF9E9E9E)
 
 /**
- * Debug screen of the conversation detection ([ConversationMonitor]): what the microphone hears, what Silero makes of it, and
- * when the robot counts a speaker change.
- *
- * The timeline shows the last 15 seconds, 10 ms per frame, newest on the right:
- *  - blue line: how loud it is (−90…0 dBFS)
- *  - orange line: Silero's speech probability (0…1), with its threshold as a grey line
- *  - green background: the frames the gate counted as speech — everything white is what Silero cut out
- *  - red mark: counted speaker change · grey mark: candidate rejected · purple: conversation reset · green: "more than one" reached
- *
- * Only numbers are shown, and the timeline is only collected while this screen is open
- * ([ConversationMonitor.addDebugViewer]); no audio is stored anywhere.
+ * Debug screen of the conversation detection: timeline of the last 15 s (level, Silero probability, gate decisions,
+ * robot speech), detection events, live values and the detection settings.
+ * @param onBack called when the screen is closed
+ * @param topControls controls shown at the top, e.g. a STOP button
  */
 @Composable
 fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit = {}) {
-    // Registered only while the screen is visible (item 25): in the background the test announcement must stop.
+    // Registered only while the screen is visible: in the background the test announcement must stop.
     WhileVisible(onStart = { ConversationMonitor.addDebugViewer() }, onStop = { ConversationMonitor.removeDebugViewer() })
     val status by ConversationMonitor.status.collectAsState()
     val snapshot by ConversationMonitor.snapshot.collectAsState()
@@ -322,7 +315,7 @@ fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit =
                         ) { Text("%+.2f".format(step), fontSize = 12.sp) }
                     }
                 }
-                // The unclear band below the threshold, stored with the voice like the threshold (item 10).
+                // The unclear band below the threshold, stored with the voice like the threshold.
                 Text(
                     if (stored == null) "" else UiText.get("speaker_view.owner.margin", "value" to "%.2f".format(stored!!.margin)),
                     fontSize = 13.sp
@@ -407,10 +400,10 @@ fun SpeakerDebugScreen(onBack: () -> Unit, topControls: @Composable () -> Unit =
 }
 
 /**
- * Draws the last seconds of audio. Three thin bands at the top, one per 10 ms frame: orange = Silero said speech (with its
- * hysteresis), blue = louder than the level floor, grey = the robot itself was speaking. Below: green background where the
- * frame finally counted as speech, the level (blue line, −90…0 dBFS) with the floor as a dashed line, and Silero's probability
- * (orange line) with its start and end thresholds.
+ * Draws the audio timeline: bands for Silero, level floor and robot speech, the level and probability curves with their
+ * thresholds, and the events.
+ * @param snapshot detector snapshot with the timeline
+ * @param modifier layout modifier
  */
 @Composable
 private fun Timeline(snapshot: ConversationSnapshot, modifier: Modifier) {
