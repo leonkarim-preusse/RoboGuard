@@ -32,14 +32,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.asCoroutineDispatcher
 
 /**
- * Watches the camera whenever RoboGuard runs (started by RobotServerService) and says [sentence] when a calendar is detected in
- * [CalendarDetectionSettings.CONSISTENCY_NEEDED] of the last [CalendarDetectionSettings.CONSISTENCY_WINDOW] passes, at most once per
- * [COOLDOWN_MS]. Every reference image in assets/ORB_img counts as "calendar". Detection = pink-marker-gated ORB with
- * [CalendarDetectionSettings] (the object test's chosen settings). Runs in the service, so it also works while driving.
- *
- * Watches only while RoboGuard's privacy settings allow the camera and no test screen uses the camera (SurfaceShare allows one
- * consumer per app). Frames are only in memory; logs contain numbers only (Logcat tag CalendarMonitor).
- * Speaking needs SDK control (RoboGuard in the foreground); otherwise the announcement is skipped and logged.
+ * Background object detection. Watches the camera while the camera and Pixelate Objects are enabled and no other
+ * component uses the camera stream, and runs the pink-marker-gated ORB detection ([markerGatedPass]) with the values from
+ * [CalendarDetectionSettings]. A confirmed calendar opens [CalendarPromptActivity]; other objects are announced by speech.
+ * Logs contain numbers only (tag CalendarMonitor).
  */
 object CalendarMonitor {
 
@@ -58,17 +54,15 @@ object CalendarMonitor {
     val sentence: String get() = UiText.get("speech.calendar_detected")
 
     /**
-     * What the robot says when it finds something: the name of the reference image that matched, so several objects can be
-     * told apart by ear. The name is the file name without its extension ([ORB] keys the references by it); underscores and
-     * hyphens become spaces, because the speech service reads "Lego_robot" letter by letter.
-     * Without a name (should not happen) it falls back to [sentence].
+     * The sentence spoken for a detected object, built from its reference name.
+     * @param className name of the matched reference; null gives the default [sentence]
      */
     fun sentenceFor(className: String?): String {
         val name = className?.replace('_', ' ')?.replace('-', ' ')?.trim()
         return if (name.isNullOrEmpty()) sentence else UiText.get("speech.object_detected", "object" to name)
     }
 
-    /** No new announcement for this long after one (owner: 15 s, then 3 s). */
+    /** Minimum time between two announcements. */
     val COOLDOWN_MS: Long get() = CalendarDetectionSettings.COOLDOWN_MS
 
     private lateinit var appContext: Context
@@ -77,7 +71,16 @@ object CalendarMonitor {
     private var probeUsingCamera = false
     private var tts: OrionStarTts? = null
 
-    /** One detection pass for a debug view (only published while a view is open). */
+    /**
+     * Data of one detection pass for the camera debug view.
+     * @property pass result of the pass
+     * @property passMs duration of the pass
+     * @property recent detected passes among the last [window]
+     * @property window number of passes considered
+     * @property cooldownLeftMs time until the next announcement is allowed
+     * @property announcements announcements since start
+     * @property passesPerSecond current pass rate
+     */
     class DebugSnapshot(
         val pass: MarkerPass,
         val passMs: Long,
@@ -90,7 +93,7 @@ object CalendarMonitor {
     )
 
     private val _state = MutableStateFlow("not started")
-    /** What the monitor is doing ("watching", or why not), for debug views. */
+    /** Current state of the monitor ("watching", or the reason it is not), for debug views. */
     val state: StateFlow<String> = _state.asStateFlow()
 
     private val _debug = MutableStateFlow<DebugSnapshot?>(null)
@@ -111,13 +114,15 @@ object CalendarMonitor {
     @Volatile
     private var announcements = 0
 
-    /** Newest camera frame of the monitor's stream (null when not watching). For live debug previews; never stored. */
+    /** Newest camera frame of the monitor's stream; null when not watching. */
     fun latestFrame(): CameraFrame? = activeCamera?.latest?.get()
 
-    /** A debug view is open: publish [debug] snapshots (with the pink overlay). Pair with [removeDebugViewer]. */
+    /**
+     * Registers an open camera debug view; [debug] snapshots are published while one is open. Pair with [removeDebugViewer].
+     */
     fun addDebugViewer() { debugViewers.incrementAndGet() }
 
-    /** The camera view closed; when no viewer is left the debug data is no longer published. */
+    /** Unregisters a camera debug view; without viewers no debug data is published. */
     fun removeDebugViewer() {
         if (debugViewers.decrementAndGet() <= 0) {
             debugViewers.set(0)
@@ -132,12 +137,7 @@ object CalendarMonitor {
     private const val KEY_EVERY_DETECTION = "announce_every_detection"
 
     private val _announceEveryDetection = MutableStateFlow(false)
-    /**
-     * Test mode (owner): speak on every detected pass (only while not already speaking), without "in a row" and cooldown.
-     * Off = [CalendarDetectionSettings.CONSISTENCY_NEEDED] in a row, then [COOLDOWN_MS]. Saved. Only honoured while the camera
-     * view is open: outside it an object that stays in view would be announced after every sentence, and every announcement
-     * blinds the voice detectors (review 2026-10-02, item 4).
-     */
+    /** Test mode for the camera debug view: announce every detected pass instead of once per object. */
     val announceEveryDetection: StateFlow<Boolean> = _announceEveryDetection.asStateFlow()
 
     /**
@@ -150,7 +150,7 @@ object CalendarMonitor {
     }
 
     private val _minInliers = MutableStateFlow(CalendarDetectionSettings.MIN_INLIERS)
-    /** Inliers a detection needs; changed in the camera debug view, kept across restarts (SharedPreferences). */
+    /** Inliers a detection needs; set in the camera debug view and saved. */
     val minInliers: StateFlow<Int> = _minInliers.asStateFlow()
 
     /** Inliers a reference needs to count as found (clamped to the allowed range). Saved; applies from the next pass. */
@@ -175,7 +175,9 @@ object CalendarMonitor {
         var lastTs = 0L
         /** elapsedRealtime of the last check that found it (confirm level or better). */
         var lastFoundAt = 0L
-        /** Announced and not yet out of view for [CalendarDetectionSettings.REARM_AFTER_GONE_MS]. */
+        /**
+         * True once the object was announced; reset after it was out of view for [CalendarDetectionSettings.REARM_AFTER_GONE_MS].
+         */
         var announced = false
     }
 
@@ -193,7 +195,7 @@ object CalendarMonitor {
     @Volatile
     private var lastWhole: Pair<Long, List<ObjectMatch>> = 0L to emptyList()
 
-    /** What the person chose in the calendar popup. Blur and Save do nothing yet (owner, 2026-10-19). */
+    /** Choices of the calendar popup. */
     enum class PopupChoice { BLUR, SAVE_DATES, DISMISS }
 
     /** Called by [CalendarPromptActivity] once, when it closes. Closing without a choice counts as [PopupChoice.DISMISS]. */
@@ -433,7 +435,7 @@ object CalendarMonitor {
                     onPass(log, pass, f.timestampMs, SystemClock.elapsedRealtime() - t0, debugging)
                     // References without a pink frame are searched in the whole picture on their own, slower cadence and only
                     // after the calendar's decision is out. Before, this ran on every pass in both workers at once, outside the
-                    // ORB gate, and every calendar decision waited for it (review 2026-10-02, item 8).
+                    // ORB gate, and every calendar decision waited for it.
                     val whole = wholePictureNames(orb)
                     val due = nextWholeDue.get()
                     val now = SystemClock.elapsedRealtime()
@@ -551,9 +553,9 @@ object CalendarMonitor {
     )
 
     /**
-     * Good matches and inliers one reference needs, from its settings. The inlier number the camera view sets applies to the
-     * general setting; an image with its own `minInliers` keeps that one. Passes run with the confirm level; [onPass] decides
-     * from the numbers whether a check was a full detection.
+     * Good matches and inliers required for one reference.
+     * @param name name of the reference
+     * @return pair of (good matches, inliers)
      */
     private fun thresholdsFor(name: String): Pair<Int, Int> {
         val settings = DetectionSettings.forImage(name)
@@ -593,8 +595,13 @@ object CalendarMonitor {
     }
 
     /**
-     * Handles one finished pass: history per reference, "seen"/"gone" transitions, confirmation, announcements or the
-     * calendar popup, debug data and the 2 s statistics.
+     * Processes one finished pass: per-reference history, seen/gone transitions, announcements or the calendar popup,
+     * debug data and statistics.
+     * @param log statistics of the current 2 s window
+     * @param pass result of the pass
+     * @param frameTs capture time of the frame
+     * @param ms duration of the pass
+     * @param debugging true while the camera debug view is open
      */
     private fun onPass(log: PassLog, pass: MarkerPass, frameTs: Long, ms: Long, debugging: Boolean) {
         val now = SystemClock.elapsedRealtime()
@@ -654,11 +661,16 @@ object CalendarMonitor {
     }
 
     /**
-     * Per reference: history in frame order, "in a row" rule, and whether to announce. An object is announced once when it
-     * comes into view and again only after it was out of view for [CalendarDetectionSettings.REARM_AFTER_GONE_MS] (review
-     * 2026-10-02, item 4). While the calendar popup is open nothing is announced; after Dismiss nothing for
-     * [CalendarDetectionSettings.POPUP_COOLDOWN_MS]. While the camera view is open neither the "already announced" rule nor
-     * the popup cooldown apply, so it can be tried again and again (owner, 2026-10-19).
+     * Updates the history of each searched reference and decides whether to announce. An object is announced once when it
+     * comes into view and again after it was out of view for [CalendarDetectionSettings.REARM_AFTER_GONE_MS]; no announcement
+     * while the calendar popup is open or during [CalendarDetectionSettings.POPUP_COOLDOWN_MS] after it was dismissed.
+     * @param log statistics of the current 2 s window
+     * @param results result per reference
+     * @param searched references searched in this pass
+     * @param frameTs capture time of the frame
+     * @param delayMs time from capture to decision
+     * @param regions number of pink areas found
+     * @param debugGate true while the camera debug view is open; disables the once-per-object and popup cooldown rules
      */
     private fun decide(
         log: PassLog, results: List<ObjectMatch>, searched: List<String>, frameTs: Long, delayMs: Long, regions: Int,
@@ -714,7 +726,7 @@ object CalendarMonitor {
         if (popup) showPopup() else scope?.launch { speak(sentenceFor(pick.className)) }
     }
 
-    /** Calendar: popup with the choices + the question spoken (owner, 2026-10-19). */
+    /** Opens the calendar popup and speaks the calendar question. */
     private fun showPopup() {
         popupOpen = true
         runCatching {

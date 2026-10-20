@@ -6,15 +6,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.atan2
 
 /**
- * A robot that exists only in memory.
- *
- * Drives in a straight line from its current position toward the target,
- * emitting a pose every [stepMetres]. Motion is advanced by calling [tick] —
- * there is no timer — so tests are deterministic and the UI can step it by hand.
- *
- * This is what makes the privacy guard demonstrable without hardware: you can
- * place a private zone across the path and assert that navigation aborts at the
- * boundary, in a JVM unit test, with no robot and no jar.
+ * A simulated robot in memory for tests: drives in a straight line towards the target, one step per [tick].
+ * @param startAt starting position
+ * @param stepMetres distance moved per tick
+ * @param arrivalRadius distance at which the target counts as reached
  */
 class FakeRobotBridge(
     startAt: Point2D = Point2D(0.0, 0.0),

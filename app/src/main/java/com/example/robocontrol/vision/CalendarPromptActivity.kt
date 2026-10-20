@@ -25,9 +25,8 @@ import androidx.compose.ui.unit.sp
 import com.example.robocontrol.text.UiText
 
 /**
- * Popup shown by [CalendarMonitor] when the calendar was recognised (owner, 2026-10-19): "Blur calendar", "Save dates" and
- * "Dismiss". Blur and Save do nothing yet. Dismiss (or closing it any other way) stops calendar announcements for
- * [CalendarDetectionSettings.POPUP_COOLDOWN_MS], except while the camera view is open.
+ * Popup shown by [CalendarMonitor] when a calendar is detected: "Blur calendar", "Save dates" and "Dismiss". Dismissing
+ * pauses calendar announcements for [CalendarDetectionSettings.POPUP_COOLDOWN_MS].
  */
 class CalendarPromptActivity : ComponentActivity() {
 

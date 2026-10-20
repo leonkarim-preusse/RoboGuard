@@ -112,6 +112,10 @@
       "text": "Settings have been updated",
       "note": "Spoken after new settings arrived and the sensors were switched"
     },
+    "speech.settings_partial": {
+      "text": "The settings were only updated partially. Please try again",
+      "note": "Spoken when some sensor switches were confirmed and others not (usually RobotOS refused the SDK part)"
+    },
     "speech.settings_sensors_failed": {
       "text": "Settings have been saved, but the sensors could not be switched",
       "note": "Spoken when the settings were saved but a sensor could not be switched"

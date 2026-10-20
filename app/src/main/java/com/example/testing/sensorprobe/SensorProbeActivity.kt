@@ -46,19 +46,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Test screen for [SensorProbe], i.e. for switching LIDAR, microphone and camera through
- * `robocontrol.sensorcontrol.Sensors`. Not part of RoboGuard's UI.
- *
- * Start it from the robot's home launcher icon "RG Sensor Test". Screens started with `adb shell am start`
- * get no SDK control from RobotOS. The full procedure is in README.md, "Testing sensor switching".
- *
- * Layout: buttons in a scrollable column on the left, log on the right. The robot's display renders
- * buttons very large, and a row-based layout pushed buttons and the log off-screen, so every control
- * stays reachable by scrolling here.
- *
- * Only one test runs at a time. ✔/✘ and Clear screen stay available while a test runs. Closing the
- * screen switches every sensor back to the saved settings (best effort; pressing "Restore saved settings"
- * first is safer). The screen must stay in the foreground: RobotOS only serves the SDK to the foreground app.
+ * Test screen for [SensorProbe] ("RG Sensor Test"): one button per switch test and the log. Closing the screen switches
+ * the sensors back to the saved settings.
  */
 class SensorProbeActivity : ComponentActivity() {
 

@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 enum class ConversationState {
     /** Nobody has spoken recently. */
     NO_SPEECH,
-    /** Someone is talking, but not yet enough speech (2 windows) to judge. */
+    /** Speech is present, but not yet enough to decide. */
     LISTENING,
     /** Speech without enough voice changes. */
     ONE_SPEAKER,
@@ -19,8 +19,11 @@ enum class ConversationState {
 
 /** What a detector currently reports. Only levels, distances, counts and times; nothing that characterises a voice. */
 /**
- * One 10 ms audio frame for the debug screen: how loud it was, what Silero thought, and whether the gate counted it as speech.
- * Only numbers — no audio is kept or copied out of the detector.
+ * One 10 ms frame of the debug timeline.
+ * @property timeMs time since the detector started
+ * @property levelDb level in dBFS
+ * @property probability Silero speech probability; null without Silero
+ * @property speech whether the gate counted the frame as speech
  */
 data class AudioFrame(
     val timeMs: Long,
@@ -36,9 +39,7 @@ data class AudioFrame(
     val robot: Boolean = false
 )
 
-/**
- * The debug screen's last 15 s: frames and events, collected only while it is open. Numbers only. One audio thread.
- */
+/** Last 15 s of frames and events for the debug screen; collected only while it is enabled. */
 internal class DebugTimeline {
     private val frames = ArrayDeque<AudioFrame>()
     private val events = ArrayDeque<ConversationEvent>()
@@ -70,15 +71,14 @@ internal class DebugTimeline {
     }
 }
 
-/** Something worth marking on the debug timeline. */
+/** Kinds of event marked on the debug timeline. */
 enum class ConversationEventKind { CHANGE, CANDIDATE_REJECTED, RESET, MULTIPLE }
 
 /** @property ratio BIC gain / penalty of a candidate (0 for resets and state flips) */
 data class ConversationEvent(val timeMs: Long, val kind: ConversationEventKind, val ratio: Double = 0.0)
 
 /**
- * What a detector publishes every 100 ms: the state, the live numbers and, while the debug screen is open, the timeline.
- * Numbers only — no audio and no embedding ever leaves the detector.
+ * State published by a detector every 100 ms: the decision, the live values and, while a debug screen is open, the timeline.
  */
 data class ConversationSnapshot(
     val state: ConversationState = ConversationState.NO_SPEECH,
@@ -101,7 +101,7 @@ data class ConversationSnapshot(
     val multipleByEvidence: Boolean = false,
     val decisionRule: DecisionRule = DecisionRule.EVIDENCE,
     val totalChanges: Int = 0,
-    /** Last ~15 s of audio frames, oldest first; only filled while a debug screen asked for it ([SpeakerChangeDetector.debugTimeline]). */
+    /** Last 15 s of frames, oldest first; empty unless [ConversationDetector.debugTimeline] is set. */
     val timeline: List<AudioFrame> = emptyList(),
     /** Events in that same span (speaker changes, rejected candidates, conversation resets). */
     val events: List<ConversationEvent> = emptyList(),
@@ -118,15 +118,15 @@ data class ConversationSnapshot(
     val timeMs: Long = 0,
     /** Which detector produced this snapshot, so the screens can say what they are showing. */
     val method: DetectionMethod = DetectionMethod.CHANGE,
-    /** Owner detector: similarity of the last piece of speech to the stored voice (null before the first piece). */
+    /** Owner method: similarity of the last piece to the stored voice; null before the first piece. */
     val ownerSimilarity: Float? = null,
-    /** Owner detector: the threshold that piece was judged against. */
+    /** Owner method: threshold the last piece was judged against. */
     val ownerThreshold: Float = 0f,
-    /** Owner detector: how far below the threshold a piece must be to count as somebody else. */
+    /** Owner method: width of the unclear band below the threshold. */
     val ownerMargin: Float = 0f,
-    /** Owner detector: the last readings, newest first (both owner and other pieces). */
+    /** Owner method: last similarity readings, newest first. */
     val ownerReadings: List<Float> = emptyList(),
-    /** Owner detector: pieces in the decision window that matched the owner, and pieces that did not. */
+    /** Owner method: pieces in the decision window that matched the owner. */
     val ownerPieces: Int = 0,
     val otherPieces: Int = 0,
     /** Activity method: share of the window that carried speech (0…1), and the share it is compared against. */
@@ -146,34 +146,19 @@ data class ConversationSnapshot(
     val error: String? = null
 )
 
-/**
- * How the robot decides "one voice or several".
- *
- * [CHANGE] compares two adjacent moments and asks whether the voice changed — nothing about a person is stored.
- * [OWNER] compares each piece of speech with the one voice the robot was taught ([OwnerVoiceprint]) and counts a
- * conversation when the owner and somebody else are both heard. Faster and more direct, but it identifies one person,
- * which the change detector deliberately avoids. Both are kept so the two can be compared.
- */
+/** How the detector decides between one and several speakers. */
 enum class DetectionMethod {
+    /** Detects changes of the speaker between adjacent moments ([SpeakerChangeDetector]). */
     CHANGE,
+
+    /** Compares each piece of speech with the stored owner voice ([OwnerVoiceDetector]). */
     OWNER,
 
-    /**
-     * Experimental: compares the pieces of speech WITH EACH OTHER instead of with a stored voice. Two pieces that are far
-     * enough apart mean two people, whoever they are — no owner needs to be taught, and nobody is recognised. The price is
-     * that a vector is computed for everyone in the room and a handful of them exist side by side for the length of the
-     * window (in memory only, zeroed on reset).
-     */
+    /** Compares pieces of speech with each other; two sufficiently different pieces mean two speakers. */
     PAIRWISE,
 
     /**
-     * The cheapest rule of all: no voice is compared with anything. It only asks how much of the last seconds carried
-     * speech at all — one person leaves gaps to breathe and to think, a conversation fills them, because the other one
-     * answers. Above a share of speech in the window ([ConversationSettings.activityShare]) the robot calls it a
-     * conversation.
-     *
-     * Nothing about a voice is computed, stored or compared here: what exists is a count of frames. That makes it the
-     * easiest method to defend, and the easiest to fool with a television.
+     * Counts the share of speech in a time window; a share above [ConversationSettings.activityShare] counts as a conversation.
      */
     ACTIVITY
 }
@@ -182,7 +167,7 @@ enum class DetectionMethod {
 interface ConversationDetector {
     val snapshot: StateFlow<ConversationSnapshot>
 
-    /** Collect the audio timeline and events for the debug screen (off = nothing extra is kept or copied). */
+    /** Whether the timeline and events are collected for the debug screen. */
     var debugTimeline: Boolean
 
     /** Starts the detector's thread; it opens the microphone itself. */
@@ -193,13 +178,11 @@ interface ConversationDetector {
 }
 
 /**
- * [ConversationDetector] by speaker change detection (see [ChangeDetector]) on 16 kHz mono audio from a [PcmSource].
- *
- * Runs on its own thread. Audio is handled in two fixed buffers (160 new samples, one 400-sample frame) that are
- * overwritten every 10 ms and zeroed on stop; features live only in the ChangeDetector's ring buffer. Nothing is written
- * to disk or logged except numbers.
- *
- * Designed so clustering ("which segments are the same voice") can be added later on top of the accepted changes.
+ * [ConversationDetector] based on speaker change detection ([ChangeDetector]) on 16 kHz mono audio.
+ * Runs on its own thread; audio buffers are overwritten every 10 ms and zeroed on stop.
+ * @param source audio input
+ * @param config detection settings
+ * @param robotSpeaking returns true while the robot itself is speaking; those frames are treated as silence
  */
 class SpeakerChangeDetector(
     private val source: PcmSource,
@@ -215,10 +198,7 @@ class SpeakerChangeDetector(
     private val onCandidate: (ChangeCandidate) -> Unit = {}
 ) : ConversationDetector {
 
-    /**
-     * Collect the audio timeline and events for a debug screen. Off by default: it costs a small ring buffer and copies
-     * ~1500 numbers into every snapshot.
-     */
+    /** Whether the timeline and events are collected for a debug screen. */
     @Volatile
     override var debugTimeline: Boolean = false
 
@@ -278,7 +258,7 @@ class SpeakerChangeDetector(
         var resetsSeen = 0
 
         // The microphone first: an open error used to return after Silero was created, and its session leaked on every
-        // retry (review 2026-10-02, item 35).
+        // retry.
         val openError = source.open()
         if (openError != null) {
             _snapshot.value = ConversationSnapshot(running = false, error = openError)
@@ -483,7 +463,7 @@ class SpeakerChangeDetector(
         const val HISTORY = 300
         const val CANDIDATES = 30
 
-        /** Frames kept for the debug timeline: 1500 × 10 ms = 15 s. */
+        /** Frames kept for the debug timeline (15 s). */
         const val TIMELINE_FRAMES = 1500
     }
 }

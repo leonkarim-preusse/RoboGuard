@@ -33,27 +33,16 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.Executors
 
 /**
- * Listens for conversations whenever RoboGuard runs (started by RobotServerService) and, when more than one person has
- * been talking for [MULTIPLE_FOR_MS], shows [ConversationPromptActivity] and says [apologySentence]. The person can then
- * send the robot away (Navigation and Map), switch the microphone off, or pause this detection for a while.
- *
- * Listens only while all of these hold: RoboGuard's privacy settings allow the microphone, RECORD_AUDIO is granted, the
- * detection is not paused, and no test screen is using the microphone. Uses [SpeakerChangeDetector] with its default
- * settings (Silero speech gate, evidence rule). No audio is stored; see SpeakerChangeDetector.
- *
- * Not asking again: after a prompt, not again in the same conversation (until the detector's 30 s silence reset) and not
- * within [MIN_PROMPT_GAP_MS].
+ * Background conversation detection. Runs the selected [ConversationDetector] while the microphone and Discretion Mode
+ * are enabled, RECORD_AUDIO is granted and no other component holds the microphone. When more than one speaker is
+ * detected it shows [ConversationPromptActivity] and speaks [apologySentence]. A prompt is shown at most once per
+ * conversation and not within [MIN_PROMPT_GAP_MS] of the previous one.
  */
 object ConversationMonitor {
 
     private const val TAG = "ConversationMonitor"
 
-    /**
-     * "More than one speaker" must last this long before the robot reacts. Owner first chose 2 s, then 1 s
-     * (2026-09-17), and switched it OFF for now (2026-09-21): the evidence rule already needs several speaker changes
-     * before the state flips, so the hold only added latency on top of that. 0 = react to the first snapshot that says
-     * MULTIPLE_SPEAKERS, i.e. within the detector's 100 ms publishing interval.
-     */
+    /** Time "more than one speaker" must last before the prompt is shown; 0 reacts to the first such snapshot. */
     const val MULTIPLE_FOR_MS = 0L
 
     /** Minimum time between two prompts. */
@@ -91,7 +80,7 @@ object ConversationMonitor {
     private const val KEY_SPLIT = "split_at_changes"
     private const val KEY_DIFFERENT_BELOW_COHORT = "different_voice_below_cohort"
 
-    /** A detector that stopped by itself is started again after 5, 10, 20, then every 60 s (item 35). */
+    /** Delays before a detector that stopped by itself is started again. */
     private val RESTART_BACKOFF_MS = longArrayOf(5_000, 10_000, 20_000, 60_000)
 
     /** A detector that ran this long counts as healthy again: the next failure starts the backoff from the beginning. */
@@ -106,7 +95,7 @@ object ConversationMonitor {
     /** How long NO_SPEECH must last before the test announcement may come again (sentence + tail + hold). */
     private const val TEST_REARM_SILENCE_MS = 5_000L
 
-    /** Default pause of the detection. Owner: 30 minutes. */
+    /** Default length of a "don't ask again" pause, in minutes. */
     const val DEFAULT_PAUSE_MINUTES = 30
 
     /** Spoken with the prompt; wording in assets/texts/texts.json. */
@@ -126,15 +115,15 @@ object ConversationMonitor {
         val state: ConversationState = ConversationState.NO_SPEECH
     )
 
-    /** Latest detector snapshot, for the speaker debug screen (empty while nothing is listening). */
+    /** Latest detector snapshot, for the speaker debug screen. */
     private val _snapshot = MutableStateFlow(ConversationSnapshot())
     val snapshot: StateFlow<ConversationSnapshot> = _snapshot.asStateFlow()
 
     private val debugViewers = java.util.concurrent.atomic.AtomicInteger(0)
 
     /**
-     * A debug screen is open: the detector also collects the audio timeline and the events (speaker changes, resets).
-     * Pair every call with [removeDebugViewer]; while nobody watches, nothing extra is collected or copied.
+     * Registers an open debug screen; the detector then also collects its timeline and events.
+     * Every call must be paired with [removeDebugViewer].
      */
     @Synchronized
     fun addDebugViewer() {
@@ -142,7 +131,7 @@ object ConversationMonitor {
         detector?.debugTimeline = true
     }
 
-    /** The debug screen closed; when no viewer is left the detector stops collecting the timeline. */
+    /** Unregisters a debug screen; without viewers the timeline is no longer collected. */
     @Synchronized
     fun removeDebugViewer() {
         if (debugViewers.decrementAndGet() <= 0) {
@@ -151,7 +140,7 @@ object ConversationMonitor {
         }
     }
 
-    /** True while the speaker debug screen is open (the test announcement and the prompt look at it). */
+    /** True while the speaker debug screen is open. */
     val debugViewerOpen: Boolean get() = debugViewers.get() > 0
 
     private val _status = MutableStateFlow(Status())
@@ -160,11 +149,7 @@ object ConversationMonitor {
     private lateinit var appContext: Context
     private var scope: CoroutineScope? = null
 
-    /**
-     * Every start and stop of a detector runs on this ONE thread, in order. Before, the restart, the health check, the
-     * watchdog and the listeners each stopped and started from their own thread, and a start in the middle of a stop could
-     * leave a detector without its collector — recording, but silently ignored (review 2026-10-02, item 30).
-     */
+    /** Single thread on which every detector start and stop runs, in order. */
     private var lifecycle: kotlinx.coroutines.ExecutorCoroutineDispatcher? = null
 
     /** The running detector and the coroutine that reads its snapshots, as one pair. */
@@ -239,7 +224,7 @@ object ConversationMonitor {
         _speechThreshold.value = prefs.getFloat(KEY_SPEECH_THRESHOLD, ConversationSettings().speechThreshold.toFloat())
         _speechHysteresis.value = prefs.getFloat(KEY_SPEECH_HYSTERESIS, ConversationSettings().speechHysteresis.toFloat())
         _activityMinSilenceMs.value = prefs.getLong(KEY_ACTIVITY_MIN_SILENCE, ConversationSettings().activityMinSilenceMs)
-        // On by default since 2026-10-19: with a per-voice unclear band it gave no false episode in the replay (item 10).
+        // On by default since 2026-10-19: with a per-voice unclear band it gave no false episode in the replay.
         _confirmTwice.value = prefs.getBoolean(KEY_CONFIRM_TWICE, true)
         _continuousPieces.value = prefs.getBoolean(KEY_CONTINUOUS, ConversationSettings().continuousPieces)
         _splitAtChanges.value = prefs.getBoolean(KEY_SPLIT, ConversationSettings().splitAtChanges)
@@ -251,7 +236,7 @@ object ConversationMonitor {
         scope?.let { startHealthCheck(it) }
         scope?.launch {
             // A voice stored, deleted or switched, its threshold changed, or the cohort replaced: the running detector loaded
-            // them at its start, so it has to start again to use the new ones (review 2026-10-02, item 6).
+            // them at its start, so it has to start again to use the new ones.
             var seen = OwnerVoiceprintStore.get(appContext).generation.value
             OwnerVoiceprintStore.get(appContext).generation.collect { g ->
                 if (g == seen) return@collect
@@ -325,10 +310,10 @@ object ConversationMonitor {
     }
 
     /**
-     * Takes the microphone away from the monitor and WAITS until its detector has really let go of it, so two
-     * AudioRecords never run at once (on Android 9 the second one gets silence, not an error). Every holder gets its own
-     * lease and gives back only its own, so one user releasing it can no longer hand it to the monitor while another one
-     * still records (item 31). Call from a background thread: it blocks for up to a few seconds.
+     * Takes the microphone from the monitor for another component and waits until the detector has released it.
+     * Blocks for up to a few seconds; call it from a background thread.
+     * @param tag name of the caller, for the log
+     * @return the lease; close it when the microphone is no longer needed
      */
     fun acquireMicrophone(tag: String): MicLease {
         val lease = MicLease(tag)
@@ -369,13 +354,8 @@ object ConversationMonitor {
     private var cooldownResetAt = 0L
 
     /**
-     * The speaker screen's test button: forgets everything that would hold the next prompt back and starts the detector
-     * over — the "already asked in this conversation" flag, the two minutes between prompts, a running "don't ask again"
-     * pause, the once-per-episode test announcement, and the detector's own window of speech. Everything heard from this
-     * moment counts as a new conversation, so the prompt can come again straight away.
-     *
-     * Fixed 2026-10-19: the pause used to stay (the button then seemed to do nothing), and the old detector, which still ran
-     * for the restart's debounce, could open a prompt from speech heard BEFORE the reset.
+     * Clears every rule that would delay the next prompt (asked in this conversation, minimum gap, pause, test
+     * announcement) and restarts the detector, so that the next detected conversation is prompted immediately.
      */
     fun resetCooldown() {
         synchronized(this) {
@@ -436,7 +416,7 @@ object ConversationMonitor {
             reason = "waiting ${(waitMs + 999) / 1000} s before starting again"
         } else if (reason == null) {
             // A condition that will not go away by itself (no voice stored, a threshold for another cohort) is a reason,
-            // not a failure: the health check must not restart it every 10 s (item 81).
+            // not a failure: the health check must not restart it every 10 s.
             reason = startDetector()
         } else {
             stopDetector(reason)
@@ -448,23 +428,20 @@ object ConversationMonitor {
         _status.value = _status.value.copy(listening = detector != null, reason = reason, pausedUntil = if (paused) pausedUntil else null)
     }
 
-    /** Which detector is used; survives a restart. Switchable on the speaker debug screen. */
+    /** Selected detection method; saved across restarts. */
     private val _method = MutableStateFlow(DetectionMethod.CHANGE)
     val method: StateFlow<DetectionMethod> = _method.asStateFlow()
 
     /**
-     * Owner method: does ANY voice that is not the owner count as a conversation (true), or must the owner have been
-     * heard in the same window (false, default)?
-     *
-     * True reacts as soon as somebody else speaks — one piece, about three seconds — and also catches a conversation the
-     * owner is not part of. The price is that a television, a radio or a video is a "somebody else" too, so the robot
-     * will ask in an empty room.
+     * Owner method: whether any voice other than the owner's counts as a conversation (true) or the owner must also have
+     * been heard in the same window (false).
      */
     private val _anyOtherIsConversation = MutableStateFlow(false)
     val anyOtherIsConversation: StateFlow<Boolean> = _anyOtherIsConversation.asStateFlow()
 
     /**
-     * Owner method: true = one other voice is already a conversation, false = the owner must have been heard too. Saved; restarts the detector.
+     * Sets [anyOtherIsConversation], saves it and restarts the detector.
+     * @param any true = one other voice is enough
      */
     fun setAnyOtherIsConversation(any: Boolean) {
         if (_anyOtherIsConversation.value == any) return
@@ -522,19 +499,19 @@ object ConversationMonitor {
     }
 
     /**
-     * Starts the owner comparison instead of the change detector. Needs a stored voice; without one it says so and
-     * nothing listens, rather than silently falling back to the other method.
+     * Starts the owner-voice detector.
+     * @return null on success, otherwise the reason it could not start (e.g. no stored voice)
      */
     private fun startOwnerDetector(s: CoroutineScope): String? {
         // Missing, unreadable, or set for another cohort: say so instead of starting a detector that fails every 5 s
-        // or decides on the wrong scale (items 11 and 81).
+        // or decides on the wrong scale.
         OwnerVoiceprintStore.get(appContext).problem()?.let {
             Log.w(TAG, "owner comparison not started: $it")
             return it
         }
         val any = _anyOtherIsConversation.value
         // "Any other voice" reacts to the first piece that is not the owner — but one stray piece must not be enough on
-        // its own, so without the outlier filter two pieces are needed there too (item 10).
+        // its own, so without the outlier filter two pieces are needed there too.
         val settings = audioSettings().copy(
             anyOtherIsConversation = any,
             piecesForOther = if (any && _confirmTwice.value) 1 else ConversationSettings().piecesForOther,
@@ -554,7 +531,7 @@ object ConversationMonitor {
      * recorded cohort is used only to centre the comparison.
      */
     private fun startPairwiseDetector(s: CoroutineScope): String? {
-        // The pairwise threshold is on the scale of the cohort it was set with, like the owner's (item 11).
+        // The pairwise threshold is on the scale of the cohort it was set with, like the owner's.
         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (prefs.contains(KEY_DIFFERENT_BELOW_COHORT) &&
             prefs.getLong(KEY_DIFFERENT_BELOW_COHORT, -1) != OwnerVoiceprintStore.get(appContext).currentCohortId()) {
@@ -574,10 +551,7 @@ object ConversationMonitor {
         return null
     }
 
-    /**
-     * Which gate decides that a frame is speech (see [SpeechGateMode]). Applies to the owner and the compare methods; the
-     * change detector has its own adaptive loudness floor, so there only "level only" reaches it, as its LOUDNESS gate.
-     */
+    /** Speech gate used by the detectors (see [SpeechGateMode]). */
     private val _gateMode = MutableStateFlow(SpeechGateMode.SILERO_AND_LEVEL)
     val gateMode: StateFlow<SpeechGateMode> = _gateMode.asStateFlow()
 
@@ -590,11 +564,7 @@ object ConversationMonitor {
         restartDetector("speech gate changed")
     }
 
-    /**
-     * Silero's own two numbers, for every method: the probability at which speech starts, and how much lower it has to
-     * fall before speech ends again. 0.5 / 0.15 are the values the change detector always used; the other methods ran
-     * without hysteresis until 2026-09-28. The model itself cannot be tuned — these decide what is made of its output.
-     */
+    /** Silero probability at which speech starts; used by every method. */
     private val _speechThreshold = MutableStateFlow(ConversationSettings().speechThreshold.toFloat())
     val speechThreshold: StateFlow<Float> = _speechThreshold.asStateFlow()
 
@@ -613,7 +583,7 @@ object ConversationMonitor {
 
     /** How far below the threshold Silero may drop before speech ends. Saved; restarts the detector. */
     fun setSpeechHysteresis(value: Float) {
-        // Below the threshold, so speech can always end again (item 78).
+        // Below the threshold, so speech can always end again.
         val clamped = value.coerceIn(0f, minOf(0.4f, _speechThreshold.value / 2))
         if (_speechHysteresis.value == clamped) return
         _speechHysteresis.value = clamped
@@ -623,10 +593,7 @@ object ConversationMonitor {
     }
 
     /**
-     * Outlier filter: a verdict that changes has to be repeated by the next piece before it counts (see
-     * [ConversationSettings.confirmTwice]). Costs about three seconds at every transition and drops a real change that
-     * nothing follows; in exchange a single stray piece — the mixture of two voices at a transition, a cough, a door —
-     * cannot move the decision on its own.
+     * Whether a changed verdict must be repeated by the next piece before it counts (see [ConversationSettings.confirmTwice]).
      */
     private val _confirmTwice = MutableStateFlow(ConversationSettings().confirmTwice)
     val confirmTwice: StateFlow<Boolean> = _confirmTwice.asStateFlow()
@@ -640,11 +607,7 @@ object ConversationMonitor {
         restartDetector("outlier filter changed")
     }
 
-    /**
-     * How a piece of speech is cut out of the stream (see [ConversationSettings.continuousPieces]). Off = only the gated
-     * frames, glued together. On = a continuous stretch with a little padding at the start and short pauses left in.
-     * Off by default, so every measurement made before 2026-09-28 stays comparable.
-     */
+    /** Whether pieces are cut as one continuous stretch (see [ConversationSettings.continuousPieces]). */
     private val _continuousPieces = MutableStateFlow(ConversationSettings().continuousPieces)
     val continuousPieces: StateFlow<Boolean> = _continuousPieces.asStateFlow()
 
@@ -676,7 +639,10 @@ object ConversationMonitor {
     private val _activityMinSilenceMs = MutableStateFlow(ConversationSettings().activityMinSilenceMs)
     val activityMinSilenceMs: StateFlow<Long> = _activityMinSilenceMs.asStateFlow()
 
-    /** Activity method: gaps shorter than this still count as speech (0–2000 ms). Saved; restarts the detector. */
+    /**
+     * Sets the shortest gap that still ends speech for the activity method, saves it and restarts the detector.
+     * @param value gap in milliseconds, clamped to 0–2000
+     */
     fun setActivityMinSilenceMs(value: Long) {
         val clamped = value.coerceIn(0L, 2_000L)
         if (_activityMinSilenceMs.value == clamped) return
@@ -700,15 +666,14 @@ object ConversationMonitor {
         restartDetector("level floor changed")
     }
 
-    /**
-     * Test aid: while the speaker screen is open, say "Conversation detected" out loud on every detection, at most every
-     * [TEST_ANNOUNCE_COOLDOWN_MS]. Completely separate from the prompt — it has no cooldown of two minutes, no
-     * "once per conversation" rule, and it never opens a window. Outside that screen nothing is spoken.
-     */
+    /** Whether "Conversation detected" is spoken on each detection while the speaker debug screen is open. */
     private val _announceInTest = MutableStateFlow(true)
     val announceInTest: StateFlow<Boolean> = _announceInTest.asStateFlow()
 
-    /** Whether the robot says "Conversation detected" while the speaker debug screen is open. */
+    /**
+     * Sets [announceInTest] and saves it.
+     * @param on true = speak on detections while the debug screen is open
+     */
     fun setAnnounceInTest(on: Boolean) {
         if (_announceInTest.value == on) return
         _announceInTest.value = on
@@ -716,7 +681,7 @@ object ConversationMonitor {
         Log.i(TAG, "say \"conversation detected\" on the speaker screen: $on")
     }
 
-    /** The test announcement is said once per episode of "more than one speaker" (item 45). */
+    /** True once the test announcement was spoken for the current "more than one speaker" episode. */
     private var announcedThisEpisode = false
     private var noSpeechSince = 0L
 
@@ -724,10 +689,8 @@ object ConversationMonitor {
     private var healthJob: Job? = null
 
     /**
-     * Speaks on the speaker screen, and only there: once per episode of "more than one speaker". It used to repeat every
-     * 5 s while the state held, and each sentence blanked the microphone for ~2 s, so the owner and pairwise methods could
-     * never finish a piece while it was talking (item 45). It comes again after the detector has said "one speaker" or
-     * "listening", or after a real silence — a plain edge would re-fire on the flicker the sentence itself causes.
+     * Speaks the test announcement once per "more than one speaker" episode while the speaker debug screen is open.
+     * @param snap the latest detector snapshot
      */
     private fun maybeAnnounceInTest(snap: ConversationSnapshot) {
         when (snap.state) {
@@ -798,9 +761,8 @@ object ConversationMonitor {
     }
 
     /**
-     * Owner method: the similarity at which a piece counts as the owner. It lives with the stored voice (each voice has
-     * its own), so this writes it back to [OwnerVoiceprintStore] and restarts the detector, which reads the template —
-     * and the threshold with it — when it starts. The same number can also be set on the "Teach owner's voice" screen.
+     * Sets the owner threshold of the active voice and restarts the detector.
+     * @param value similarity at or above which a piece counts as the owner
      */
     fun setOwnerThreshold(value: Float) {
         val store = OwnerVoiceprintStore.get(appContext)
@@ -810,11 +772,14 @@ object ConversationMonitor {
             return
         }
         // The store clamps the value and saves only a change; a saved change restarts the detector through its
-        // generation counter, so nothing to do here but log what was really applied (item 81).
+        // generation counter, so nothing to do here but log what was really applied.
         Log.i(TAG, "owner threshold %.2f".format(store.info.value?.threshold ?: value))
     }
 
-    /** Owner method: the unclear band below the threshold, stored with the voice (see [VoiceprintInfo.margin]). */
+    /**
+     * Sets the margin below the owner threshold within which a piece counts as unclear, and restarts the detector.
+     * @param value width of the unclear band
+     */
     fun setOwnerMargin(value: Float) {
         val store = OwnerVoiceprintStore.get(appContext)
         val error = store.setMargin(value)
@@ -822,7 +787,7 @@ object ConversationMonitor {
         else Log.i(TAG, "owner margin %.2f".format(store.info.value?.margin ?: value))
     }
 
-    /** Pairwise method: similarity below which two pieces count as two voices. Measured on the robot, so adjustable. */
+    /** Pairwise method: similarity below which two pieces count as different voices. */
     private val _differentBelow = MutableStateFlow(ConversationSettings().differentVoiceBelow)
     val differentBelow: StateFlow<Float> = _differentBelow.asStateFlow()
 
@@ -831,7 +796,7 @@ object ConversationMonitor {
         val clamped = value.coerceIn(-0.5f, 0.95f)
         if (_differentBelow.value == clamped) return
         _differentBelow.value = clamped
-        // Remember which cohort this was set against (item 11).
+        // Remember which cohort this was set against.
         appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putFloat(KEY_DIFFERENT_BELOW, clamped)
             .putLong(KEY_DIFFERENT_BELOW_COHORT, OwnerVoiceprintStore.get(appContext).currentCohortId()).apply()
         Log.i(TAG, "two voices below %.2f".format(clamped))
@@ -839,13 +804,8 @@ object ConversationMonitor {
     }
 
     /**
-     * The gate and the piece assembly as they are set right now, WITHOUT the method-specific parts.
-     *
-     * The voice enrolment uses this so a template is recorded exactly the way the detector will later cut the pieces it
-     * is compared against. They used to differ — the enrolment had its own fixed threshold of 0.5, no loudness floor, no
-     * hysteresis and always the glued-together assembly — and a template made one way but compared the other way reads
-     * as a different channel, which is precisely what the similarity is measuring (owner, 2026-09-28: speaking alone
-     * gave 0.20 … 0.73 against a threshold of 0.35).
+     * The current gate and piece-assembly settings without the method-specific values. Used by [VoiceEnrolment] so that
+     * a voice is recorded with the same assembly the detectors use.
      */
     fun audioSettings(): ConversationSettings = ConversationSettings(
         gateMode = _gateMode.value,
@@ -874,7 +834,7 @@ object ConversationMonitor {
                 if (snap.error != null && !snap.running) Log.w(TAG, "detector: ${snap.error}")
                 // A detector that ends on its own (the microphone could not be opened, the model failed to load, an
                 // exception in its thread) is given back and started again later — with a growing pause, so a
-                // permanent failure does not reload the models every 5 s (item 35).
+                // permanent failure does not reload the models every 5 s.
                 if (!snap.running && snap.error != null) {
                     val delayMs = RESTART_BACKOFF_MS[minOf(failures, RESTART_BACKOFF_MS.size - 1)]
                     failures++
@@ -909,11 +869,8 @@ object ConversationMonitor {
     }
 
     /**
-     * Stops the detector and starts it again, on the lifecycle thread.
-     *
-     * Every setting on the speaker screen ends here. Several switches flipped quickly become one restart (debounce), and
-     * the stop and the start run in order on that one thread, so the next detector never opens the microphone while the
-     * previous one still holds it (owner, 2026-09-28).
+     * Stops and restarts the detector on the lifecycle thread; quick successive calls are combined into one restart.
+     * @param reason written to the log
      */
     private fun restartDetector(reason: String) {
         val s = scope ?: return
@@ -928,9 +885,9 @@ object ConversationMonitor {
     }
 
     /**
-     * Checks every [HEALTH_EVERY_MS] that something is actually listening: the conditions are met but no detector
-     * exists, the detector reports "not running", or it has not published anything for [STALE_SNAPSHOT_MS] — then start
-     * it again. A detector that is still starting gets [START_GRACE_MS].
+     * Restarts the detector every [HEALTH_EVERY_MS] if the conditions are met but no detector runs, it reports "not
+     * running", or it has published nothing for [STALE_SNAPSHOT_MS].
+     * @param s scope the check runs in
      */
     private fun startHealthCheck(s: CoroutineScope) {
         healthJob?.cancel()

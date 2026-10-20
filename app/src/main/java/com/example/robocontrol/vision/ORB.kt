@@ -22,24 +22,17 @@ import kotlin.math.max
 import org.opencv.features2d.ORB as OpenCvOrb
 
 /**
- * Tuning parameters for [ORB]. The defaults follow the OpenCV feature-homography tutorial and
- * are a starting point; tune [minInliers] on the robot with real objects and lighting.
- *
- * @property maxFeatures keypoints ORB extracts per image. More = more robust, slower.
- * @property maxReferenceSide reference images are scaled down so their longer side is at most this.
- *           Matches the 640×480 camera frames, so a phone photo is compared at a similar scale.
- * @property ratioTest Lowe's ratio test: a match counts only if its distance is below this share of
- *           the second-best match's distance. Lower = stricter, fewer false matches.
- * @property minGoodMatches matches that must survive the ratio test before a homography is tried.
- * @property minInliers matches that must agree with the homography for the object to count as detected.
- * @property ransacReprojThreshold pixels a match may deviate from the homography and still be an inlier.
- * @property minAreaPx the projected outline must cover at least this many pixels; smaller outlines
- *           are almost always degenerate homographies, not tiny objects.
- * @property fastThreshold FAST corner threshold (OpenCV default 20): lower = weaker corners (e.g. thin grey lines) count too.
- * @property gridDistribution spread keypoints evenly over a [gridColumns]×[gridRows] grid instead of keeping only the globally
- *           strongest; otherwise high-contrast background can use up all [maxFeatures] and leave none on the object.
- * @property contrastBoost apply CLAHE (local contrast equalisation) to camera frames before detection. Helps dark,
- *           low-contrast robot camera images (a snapshot measured mean brightness 48/255); off by default.
+ * Settings for [ORB].
+ * @property maxFeatures maximum number of keypoints per image
+ * @property maxReferenceSide reference images are scaled so that their longer side is at most this many pixels
+ * @property ratioTest Lowe's ratio: a match counts only if its distance is below this share of the second-best distance
+ * @property minGoodMatches matches required after the ratio test before a homography is computed
+ * @property minInliers homography inliers required for a detection
+ * @property ransacReprojThreshold maximum reprojection error of an inlier, in pixels
+ * @property minAreaPx minimum area of the projected outline, in pixels
+ * @property fastThreshold FAST corner threshold; lower values also accept weaker corners
+ * @property gridDistribution distribute keypoints over a [gridColumns] × [gridRows] grid instead of keeping the strongest
+ * @property contrastBoost apply CLAHE contrast equalisation to frames before detection
  */
 data class OrbConfig(
     val maxFeatures: Int = 1000,
@@ -47,11 +40,7 @@ data class OrbConfig(
     val ratioTest: Float = 0.75f,
     val minGoodMatches: Int = 15,
     val minInliers: Int = 12,
-    /**
-     * Keypoints the FRAME (or the crop) must have before it is matched at all. A crop with almost no texture cannot carry a
-     * real match, but it can still produce one: with a handful of keypoints the ratio test and RANSAC degenerate (robot,
-     * 2026-09-21). 0 = no minimum.
-     */
+    /** Minimum number of keypoints a frame or crop must have before it is matched; 0 = no minimum. */
     val minFrameKeypoints: Int = 0,
     val ransacReprojThreshold: Double = 5.0,
     val minAreaPx: Double = 400.0,
@@ -60,11 +49,7 @@ data class OrbConfig(
     val gridColumns: Int = 8,
     val gridRows: Int = 6,
     val contrastBoost: Boolean = false,
-    /**
-     * Scale levels of the ORB image pyramid (factor 1.2 each). 8 covers ~3.6× size difference between reference and frame; when the
-     * caller already scales the image so the object has about the reference's size (pink marker), 4 levels (~1.7×) are enough and
-     * much cheaper.
-     */
+    /** Number of levels of the ORB image pyramid (scale factor 1.2 per level). */
     val pyramidLevels: Int = 8,
     /** OpenCV homography method: Calib3d.RANSAC (classic) or e.g. Calib3d.USAC_DEFAULT (RANSAC with local optimisation and early stopping, faster). */
     val homographyMethod: Int = Calib3d.RANSAC,
@@ -73,13 +58,9 @@ data class OrbConfig(
 )
 
 /**
- * One reference object: the image it was learned from and its ORB features.
- *
- * Features live in native OpenCV memory. They are released by [ORB] when the reference is
- * removed or replaced, or when [ORB.release] is called, so never keep using a reference after that.
- *
- * @property className the dictionary key, e.g. "calendar"
- * @property image the reference as stored: grayscale and scaled down to [OrbConfig.maxReferenceSide]
+ * A learned reference object: its image and ORB features. The features are native memory and are released by [ORB].
+ * @property className name of the reference
+ * @property image the reference image, grayscale and scaled to [OrbConfig.maxReferenceSide]
  */
 class ObjectReference internal constructor(
     val className: String,
@@ -97,14 +78,13 @@ class ObjectReference internal constructor(
 }
 
 /**
- * Result of comparing one reference against one frame.
- *
- * @property detected true if enough matches agree on a plausible outline
+ * Result of comparing one reference with one frame.
+ * @property className name of the reference
+ * @property detected true if the reference was found
  * @property goodMatches matches that passed the ratio test
- * @property inliers matches consistent with the homography (0 if none was computed)
- * @property corners the reference's four corners projected into the frame, in order top-left,
- *           top-right, bottom-right, bottom-left of the reference image. Empty if no homography
- *           was found. Meaningful when [detected]; for non-flat objects only approximate.
+ * @property inliers matches consistent with the homography
+ * @property corners the reference's corners projected into the frame (top-left, top-right, bottom-right, bottom-left);
+ * empty without a homography
  */
 data class ObjectMatch(
     val className: String,
@@ -127,10 +107,9 @@ data class ObjectMatch(
 )
 
 /**
- * What happened to the reference images in the assets folder when an [ORB] was created.
- *
- * @property loaded class names now in the dictionary, in file-name order
- * @property rejected file name -> reason, for every image that is NOT in the dictionary
+ * Result of loading the reference images from the assets.
+ * @property loaded names of the loaded references
+ * @property rejected file name → reason for every image that was not loaded
  */
 data class AssetLoadReport(
     val loaded: List<String>,
@@ -138,49 +117,16 @@ data class AssetLoadReport(
 )
 
 /**
- * ORB-based object re-detection: learn an object from one reference image, then find that same
- * object in new camera frames.
- *
- * References are kept in a dictionary keyed by class name. On creation, every image in the app's
- * assets folder `robocontrol/assets/ORB_img` (see app/build.gradle.kts) is loaded automatically, with
- * its file name without extension as the key, e.g. `calendar.jpg` -> "calendar":
- * ```
- * val orb = ORB(applicationContext)        // on a background thread: loads and analyses all assets
- * orb.assetLoadReport.rejected             // images that could not be used, with the reason
- * orb["calendar"]                          // the stored reference, or null
- * orb.addReference("poster", posterBitmap) // more references can still be added at runtime
- *
- * for (match in orb.detect(frame)) {       // frame: a GrayImage or Bitmap supplied by the caller
- *     // match.className, match.corners -> region to blur
- * }
- * ```
- *
- * ORB never accesses the camera. Getting frames is the caller's job, e.g. a background thread in the
- * activity that grabs a frame every 0.5–1 s (for instance with [CameraSnapshot]) and passes it to
- * [detect]. That keeps camera lifecycle, timing and permissions out of the detector.
- *
- * How detection works (per frame):
- *  1. ORB keypoints and binary descriptors are computed for the frame, once.
- *  2. For each reference, every reference descriptor gets its two nearest frame descriptors
- *     (Hamming distance); Lowe's ratio test keeps only distinctive matches.
- *  3. With enough good matches, a homography is fitted with RANSAC. The matches that agree with it
- *     are the inliers; enough inliers and a convex, non-tiny outline mean "detected".
- *
- * Because step 1 runs once per frame, adding references only adds cheap matching.
- *
- * Works well for textured, mostly flat objects (calendars, posters, book covers, labels, screens).
- * Works poorly for plain or shiny objects, strong viewpoint changes, motion blur, or objects much
- * smaller in the frame than in the reference. ORB is rotation-invariant, so the camera's 90°
- * sensor orientation does not affect matching; corners are in the frame's own coordinates.
- *
- * Thread-safe: all public methods are synchronized. Detection is CPU-heavy, so call from a background
- * dispatcher, never the main thread.
- *
- * Call [release] when done; OpenCV objects hold native memory the garbage collector does not see.
- *
- * @param context used only to read the reference images from the app's assets
- * @param config matching thresholds, also applied to the asset images
- * @throws IllegalStateException from the constructor if the OpenCV native library cannot be loaded
+ * ORB-based object detection: finds objects learned from reference images in camera frames. All images in
+ * `assets/ORB_img` are loaded on construction, keyed by their file name without extension. Per frame, keypoints are
+ * computed once; each reference is matched with a kNN Hamming search and Lowe's ratio test, and a homography with enough
+ * inliers and a plausible outline counts as a detection. All public methods are synchronized; call them off the main
+ * thread and call [release] when done.
+ * @param context used to read the reference images from the assets
+ * @param config default settings
+ * @param configFor settings for one reference by name; null = [config]
+ * @param skipReference true for references that must not be loaded
+ * @throws IllegalStateException if OpenCV cannot be loaded
  */
 class ORB(
     context: Context,
@@ -259,9 +205,9 @@ class ORB(
     }
 
     /**
-     * Changes detector settings at runtime and re-extracts every stored reference from its stored image with them, so frames
-     * and references are always described the same way.
-     * @return class name → keypoints of each reference afterwards (0 = the reference no longer has enough features and was dropped)
+     * Applies new settings and re-extracts the features of every reference with them.
+     * @param newConfig the new settings
+     * @return name → keypoints of each reference afterwards; 0 = the reference was dropped
      */
     @Synchronized
     fun applySettings(newConfig: OrbConfig): Map<String, Int> {
@@ -316,15 +262,10 @@ class ORB(
     // ---- reference dictionary ------------------------------------------------
 
     /**
-     * Learns [className] from a bitmap, e.g. a photo loaded from a file or resource.
-     * Replaces an existing reference with the same name.
-     *
-     * The bitmap must be ARGB_8888 or RGB_565 (not HARDWARE); it is converted to grayscale and
-     * scaled down to [OrbConfig.maxReferenceSide]. Crop it to the object first: background in the
-     * reference produces keypoints that will not be found again.
-     *
-     * @return the stored reference, or null if the image has too few features to ever be detected
-     *         (fewer than [OrbConfig.minGoodMatches] keypoints, typically a plain surface)
+     * Learns [className] from [image], replacing a reference of the same name.
+     * @param className name of the reference
+     * @param image ARGB_8888 or RGB_565 bitmap, ideally cropped to the object
+     * @return the stored reference, or null if the image has too few features
      */
     @Synchronized
     fun addReference(className: String, image: Bitmap): ObjectReference? {
@@ -337,10 +278,10 @@ class ORB(
     }
 
     /**
-     * Learns [className] from a grayscale image, e.g. a frame from [CameraSnapshot] in which the
-     * object fills most of the view. Replaces an existing reference with the same name.
-     *
-     * @return the stored reference, or null if the image has too few features (see the Bitmap overload)
+     * Learns [className] from a grayscale [image], replacing a reference of the same name.
+     * @param className name of the reference
+     * @param image grayscale image, ideally cropped to the object
+     * @return the stored reference, or null if the image has too few features
      */
     @Synchronized
     fun addReference(className: String, image: GrayImage): ObjectReference? {
@@ -382,27 +323,25 @@ class ORB(
     // ---- detection -------------------------------------------------------------
 
     /**
-     * Returns the objects found in [frame]: only matches with [ObjectMatch.detected] = true.
-     *
-     * @param classNames restrict the search to these references; default: all
+     * Returns the references detected in [frame].
+     * @param frame grayscale camera frame
+     * @param classNames references to search for; null = all
      */
     fun detect(frame: GrayImage, classNames: Collection<String>? = null): List<ObjectMatch> =
         evaluate(frame, classNames).filter { it.detected }
 
     /**
-     * Same as the [GrayImage] overload, for a frame the caller already has as a bitmap
-     * (ARGB_8888 or RGB_565). It is used at its own size, so corners are in its pixel coordinates;
-     * scale very large frames down first, since detection time grows with the pixel count.
+     * Returns the references detected in a bitmap [frame] (ARGB_8888 or RGB_565), in its pixel coordinates.
+     * @param frame camera frame
+     * @param classNames references to search for; null = all
      */
     fun detect(frame: Bitmap, classNames: Collection<String>? = null): List<ObjectMatch> =
         evaluate(frame, classNames).filter { it.detected }
 
     /**
-     * Compares [frame] against the references and returns one [ObjectMatch] per reference,
-     * detected or not. Use this to tune [OrbConfig]: log goodMatches and inliers for frames that
-     * do and do not contain the object, then set the thresholds between them.
-     *
-     * @param classNames restrict the comparison to these references; unknown names are ignored
+     * Compares [frame] with the references and returns one result per reference, detected or not.
+     * @param frame grayscale camera frame
+     * @param classNames references to compare; null = all, unknown names are ignored
      */
     @Synchronized
     fun evaluate(frame: GrayImage, classNames: Collection<String>? = null): List<ObjectMatch> {
@@ -415,10 +354,13 @@ class ORB(
     }
 
     /**
-     * Searches enlarged, overlapping tiles of [frame]: the frame is split into [cols]×[rows] tiles that overlap by [overlap]
-     * (share of a tile), each tile is scaled up by [upscale] and evaluated on its own. Small, distant objects then get enough
-     * pixels for ORB. Corners are converted back to [frame] coordinates. Per reference the best tile result is returned
-     * (detected first, then most inliers). Roughly cols·rows times as slow as [evaluate]; meant for about once per second.
+     * Searches overlapping, enlarged tiles of [frame] and returns the best result per reference, in frame coordinates.
+     * @param frame grayscale camera frame
+     * @param cols number of tile columns
+     * @param rows number of tile rows
+     * @param overlap overlap between neighbouring tiles, as a share of a tile
+     * @param upscale enlargement factor of each tile
+     * @param classNames references to compare; null = all
      */
     @Synchronized
     fun evaluateTiles(
@@ -455,9 +397,12 @@ class ORB(
     }
 
     /**
-     * Searches only [region] of [frame] (e.g. the area around a colour marker), scaled so its longer side is about [targetSide]
-     * pixels (at most [maxUpscale]×, never shrunk). Features elsewhere in the frame cannot match. Corners are in [frame]
-     * coordinates. One result per reference.
+     * Searches only [region] of [frame], scaled for matching; results are in frame coordinates.
+     * @param frame grayscale camera frame
+     * @param region area to search
+     * @param targetSide target length of the region's longer side after scaling, in pixels
+     * @param maxUpscale maximum enlargement factor
+     * @param classNames references to compare; null = all
      */
     @Synchronized
     fun evaluateRegion(
@@ -576,9 +521,9 @@ class ORB(
     }
 
     /**
-     * Adds every image in the assets root to the dictionary. Files that are not images (by extension)
-     * are ignored silently; images that cannot be used are listed in the report with a reason.
-     * If two files share a name (calendar.png and calendar.jpg), the first in alphabetical order wins.
+     * Loads every image in `assets/ORB_img` as a reference.
+     * @param assets the app's asset manager
+     * @return which images were loaded and why others were not
      */
     private fun loadReferencesFromAssets(assets: AssetManager): AssetLoadReport {
         val loaded = mutableListOf<String>()
@@ -623,12 +568,10 @@ class ORB(
     }
 
     /**
-     * Decodes an asset into the format OpenCV's bitmapToMat needs (ARGB_8888), whatever the file's
-     * own format is (palette PNG, grayscale JPEG, ...). Large photos are subsampled by a power of two
-     * while decoding, never below [OrbConfig.maxReferenceSide], so a 12 MP photo never has to fit into
-     * memory at full size. The exact downscale to maxReferenceSide happens later in [downscale].
-     *
-     * @return null if the file is not a decodable image
+     * Decodes an image asset as ARGB_8888, subsampled for large images.
+     * @param assets the app's asset manager
+     * @param path asset path
+     * @return the bitmap, or null if the file is not a decodable image
      */
     private fun decodeAsset(assets: AssetManager, path: String): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -775,9 +718,10 @@ class ORB(
     }
 
     /**
-     * RANSAC can return a homography that fits a handful of coincidental matches but folds the
-     * outline into a bow-tie or a sliver. A real, flat object seen by a camera projects to a
-     * convex quadrilateral of reasonable size.
+     * Checks whether projected corners form a plausible outline.
+     * @param corners the four projected corners
+     * @param minAreaPx minimum area in pixels
+     * @return null if plausible, otherwise "non-convex" or "area"
      */
     private fun outlineProblem(corners: List<ImagePoint>, minAreaPx: Double = config.minAreaPx): String? {
         if (corners.size != 4) return "non-convex"

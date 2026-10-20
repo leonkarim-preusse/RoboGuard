@@ -38,21 +38,11 @@ data class EnrolmentState(
 }
 
 /**
- * Teaches the robot one voice — its owner's — and lets that voice be tried out afterwards.
- *
- * Recording: the microphone is read at 16 kHz, Silero decides which 32 ms chunks are speech, and only speech is kept.
- * Every [PIECE_SECONDS] of speech becomes one embedding. When [TARGET_SECONDS] of speech have been collected, the
- * embeddings are averaged into the template, pieces that do not fit the rest are dropped (a door, a second person),
- * and the result is stored encrypted ([OwnerVoiceprintStore]).
- *
- * The audio itself never leaves this class: it lives in one buffer that is overwritten piece by piece and zeroed at
- * the end. Nothing is written to disk except the finished template.
- *
- * Testing: the same pipeline, but instead of collecting, every piece is compared with the stored template and only the
- * similarity is published — the number the threshold is later set from.
- *
- * While this runs, `ConversationMonitor` releases the microphone (`setProbeUsingMicrophone`), the same as the test
- * screens do.
+ * Records a voice template (or the cohort mean) and tests a stored voice. Speech is gated and cut into pieces like in
+ * the detectors; each piece becomes an embedding. Recording ends after [TARGET_SECONDS] of speech, the embeddings are
+ * averaged and stored encrypted in [OwnerVoiceprintStore]. In test mode each piece is only compared with the stored
+ * voice. Audio buffers are zeroed after use.
+ * @param context used for the microphone, the models and the store
  */
 class VoiceEnrolment(private val context: Context) {
 
@@ -62,7 +52,7 @@ class VoiceEnrolment(private val context: Context) {
     @Volatile
     private var thread: Thread? = null
 
-    /** Set by [cancel]: the run ends WITHOUT saving anything (item 58). */
+    /** Set by [cancel]; the run then ends without saving. */
     @Volatile
     private var cancelled = false
 
@@ -72,8 +62,8 @@ class VoiceEnrolment(private val context: Context) {
     enum class Mode { ENROL, TEST, COHORT }
 
     /**
-     * Records until [TARGET_SECONDS] of speech are collected, then stores the template under [profile] and makes that the
-     * voice the detectors use. Several voices can be kept side by side for testing (see [OwnerVoiceprintStore.profiles]).
+     * Records a new voice and stores it as the active voice.
+     * @param profile name under which the voice is stored
      */
     fun startEnrolment(profile: String = OwnerVoiceprintStore.DEFAULT_PROFILE) {
         start(Mode.ENROL, OwnerVoiceprintStore.get(context).safeName(profile))
@@ -82,18 +72,14 @@ class VoiceEnrolment(private val context: Context) {
     /** Listens and reports how close each piece of speech is to the stored template. */
     fun startTest() = start(Mode.TEST, null)
 
-    /**
-     * Records OTHER voices — played from a phone, a video, whoever is in the room — and stores only their average
-     * ([OwnerVoiceprintStore.saveCohort]). That average carries what this microphone and this room add to every voice,
-     * and subtracting it is what makes the owner comparison readable. Individual voices are never stored.
-     */
+    /** Records other voices and stores only their mean as the cohort. */
     fun startCohort() = start(Mode.COHORT, null)
 
     /** Starts a run in its own thread unless one is running or the microphone is switched off in the settings. */
     @Synchronized
     private fun start(mode: Mode, profile: String?) {
         if (thread != null) return
-        // The only part of RoboGuard that STORES something derived from a voice must respect "microphone off" (item 50).
+        // The only part of RoboGuard that STORES something derived from a voice must respect "microphone off".
         if (microphoneSwitchedOff()) {
             _state.value = EnrolmentState(phase = EnrolmentState.Phase.ERROR, error = "the microphone is switched off in the privacy settings")
             return
@@ -114,7 +100,7 @@ class VoiceEnrolment(private val context: Context) {
         val previous = lastThread
         thread = Thread({
             // A run of an earlier screen may still be inside its last embedding: let it finish and give the microphone
-            // back first, so its release cannot hand the microphone to the monitor while this run records (item 31).
+            // back first, so its release cannot hand the microphone to the monitor while this run records.
             runCatching { previous?.join(5_000) }
             run(mode, stored, profile)
         }, "VoiceEnrolment").apply {
@@ -132,7 +118,7 @@ class VoiceEnrolment(private val context: Context) {
         thread = null
     }
 
-    /** Ends the run without saving anything, whatever the mode (the screen went away, item 25). */
+    /** Ends the current run without saving anything. */
     @Synchronized
     fun cancel() {
         cancelled = true
@@ -165,7 +151,7 @@ class VoiceEnrolment(private val context: Context) {
         val audio = ConversationMonitor.audioSettings()
         val gate = SpeechGateState(audio)
         val pieces = PieceAssembler(audio)
-        // The robot's own voice must not end up in a template or a cohort (item 12).
+        // The robot's own voice must not end up in a template or a cohort.
         val speaking = RobotSpeaking(context)
         var speechSamples = 0L
         var samples = 0L
@@ -175,7 +161,7 @@ class VoiceEnrolment(private val context: Context) {
         val cohort = if (mode == Mode.TEST) OwnerVoiceprintStore.get(context).loadCohort() else null
         var worker: EmbeddingWorker<Reading>? = null
         var lease: ConversationMonitor.MicLease? = null
-        // "Microphone off" while recording ends the run and keeps nothing (item 50).
+        // "Microphone off" while recording ends the run and keeps nothing.
         val micListener = SensorChangeListener { name, enabled ->
             if (name.equals("microphone", ignoreCase = true) && !enabled) {
                 Log.i(TAG, "microphone switched off in the privacy settings: run cancelled")
@@ -193,7 +179,7 @@ class VoiceEnrolment(private val context: Context) {
                 return
             }
             if (audio.gateMode != SpeechGateMode.LEVEL_ONLY) vad = SileroVad(context)
-            // Like the detectors: audio not read in time is lost, and a template from a lossy recording is worse (item 37).
+            // Like the detectors: audio not read in time is lost, and a template from a lossy recording is worse.
             runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
             worker = EmbeddingWorker(context, "VoiceEnrolmentEmbed",
                 // Enrolment and cohort must not lose pieces; a test drops them like the detector does.
@@ -321,7 +307,7 @@ class VoiceEnrolment(private val context: Context) {
             worker?.stop()
             // A cohort run is normally ended by hand when the recording has played: keep what was collected — unless it
             // was cancelled (screen left, microphone switched off). This has to happen BEFORE the pieces are zeroed and
-            // before the microphone is handed back, so the restarted detector loads the new cohort (item 5).
+            // before the microphone is handed back, so the restarted detector loads the new cohort.
             if (!finished && !cancelled && mode == Mode.COHORT && _state.value.phase == EnrolmentState.Phase.RECORDING &&
                 embeddings.size >= MIN_PIECES) {
                 finish(mode, embeddings, speechSamples / 16_000.0, profile)
@@ -337,7 +323,13 @@ class VoiceEnrolment(private val context: Context) {
         }
     }
 
-    /** Averages the pieces and stores them — as the owner's template, or as the cohort mean. */
+    /**
+     * Averages the collected embeddings and stores them as a voice template or as the cohort mean.
+     * @param mode what the run was for
+     * @param embeddings collected embeddings
+     * @param speechSeconds collected speech in seconds
+     * @param profile name of the voice; null for the cohort
+     */
     private fun finish(mode: Mode, embeddings: List<FloatArray>, speechSeconds: Double, profile: String?) {
         if (mode == Mode.COHORT) {
             if (embeddings.size < MIN_PIECES) {
@@ -373,7 +365,7 @@ class VoiceEnrolment(private val context: Context) {
         val cohort = store.loadCohort()
         // Leave-one-out: each piece is scored against the average of the OTHER pieces, on the scale the detector uses.
         // Scoring a piece against an average that contains it flattered every score by ~0.14, and the old raw 0.45
-        // outlier filter never removed anything because any voice reads 0.67–0.93 raw on this robot (item 12).
+        // outlier filter never removed anything because any voice reads 0.67–0.93 raw on this robot.
         fun leaveOneOut(pieces: List<FloatArray>): List<Float> = pieces.indices.map { i ->
             val others = centroid(pieces.filterIndexed { j, _ -> j != i })
             Voiceprint.centredSimilarity(others, pieces[i], cohort).also { others.fill(0f) }
@@ -395,7 +387,7 @@ class VoiceEnrolment(private val context: Context) {
         val worst = similarities.min()
         val suggested = max(OwnerVoiceprintStore.MIN_THRESHOLD, mean - 2 * sd)
         // An existing voice keeps its threshold (it was set by hand from measured readings); the computed one is only
-        // offered next to it. A new voice starts with the computed one (item 12).
+        // offered next to it. A new voice starts with the computed one.
         store.setActiveProfile(profile ?: OwnerVoiceprintStore.DEFAULT_PROFILE)
         val existing = store.info.value
         val threshold = existing?.threshold ?: suggested

@@ -7,14 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
 
-/**
- * Event log of the "Navigation and Map" screen: lines for the screen plus Logcat (tag [LOGCAT_TAG]).
- *
- * Unlike the test screens' ProbeLog, nothing is written to a file: in normal use, positions and drives are shown
- * only while the screen is open.
- *
- * Thread-safe: called from the poll coroutine, SDK callback threads and the main thread.
- */
+/** Event log of the navigation: lines for the screen and Logcat (tag [LOGCAT_TAG]). Thread-safe. */
 class NavigationLog {
 
     private val start = SystemClock.elapsedRealtime()

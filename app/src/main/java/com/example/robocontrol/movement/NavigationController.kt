@@ -1,30 +1,12 @@
 package com.example.robocontrol.movement
 
 /**
- * The movement entry point for the rest of the app.
- *
- * Wraps a [RobotBridge] with [PrivacyGuard] enforcement so that no caller can
- * drive the robot without passing the zone checks. Nothing above this class
- * should ever touch the bridge directly.
- *
- * Enforcement happens twice, on purpose:
- *
- *  1. **Before moving** — the target is rejected if it lies in a private zone.
- *     Cheap, and means the robot never even sets off toward the bathroom.
- *  2. **While moving** — every pose is checked, and navigation is aborted if
- *     the robot enters a private zone anyway. Necessary because RobotOS plans
- *     its own path: a legal target in the living room can still be routed
- *     through the bedroom, and we have no API to constrain the planner.
- *
- * Feed poses in via [onPose] (from `bridge.pose` in the app, or by hand in a
- * test). This class deliberately does not own a coroutine scope.
- *
- * Leaving is always allowed. Found on the robot: after a stop at the edge of a private
- * zone the robot stands inside the margin, so a strict in-motion check aborted every
- * following drive at once, even turning away. A drive that *starts* inside a zone
- * (or its margin) is therefore only aborted if the robot gets closer to that zone than
- * the best clearance it has reached during the drive, minus [EXIT_TOLERANCE_M]. Once it
- * is outside the margin, the normal rule applies again.
+ * Entry point for driving: wraps a [RobotBridge] with [PrivacyGuard] checks. A target inside a private zone is refused
+ * before moving, and a drive is stopped when the robot enters a private zone. A drive that starts inside a zone may
+ * leave it; it is only stopped if it gets closer to the zone again than [EXIT_TOLERANCE_M] below its best clearance.
+ * Poses are passed in through [onPose].
+ * @param bridge connection to the robot
+ * @param guard privacy rules
  */
 class NavigationController(
     private val bridge: RobotBridge,
@@ -34,11 +16,7 @@ class NavigationController(
     private var activeListener: NavigationListener? = null
     private var activeTarget: Point2D? = null
 
-    /**
-     * Increments per drive and on every stop/abort. Bridge callbacks carrying an older id are dropped. Found on the robot:
-     * after our privacy abort, RobotOS's own "stopped" result (Sdk code 3) arrived on its callback thread BEFORE our
-     * AbortedOnPrivateZoneEntry, so the caller saw a plain failure and never announced the privacy stop.
-     */
+    /** Id of the current drive; callbacks from older drives are ignored. */
     @Volatile
     private var driveId = 0
 
@@ -75,13 +53,9 @@ class NavigationController(
     }
 
     /**
-     * Navigate to a place the robot knows by name.
-     *
-     * Resolution order:
-     *  1. A [Zone] of that name — uses its `entryPoint` place if set, else its centroid.
-     *  2. A RobotOS place saved with `setLocation`.
-     *
-     * Zones win so that "go to the kitchen" means the room, not a stale point.
+     * Drives to a zone or RobotOS place by name. A zone uses its entry point if set, otherwise its centroid.
+     * @param name name of the zone or place
+     * @param listener receives progress and the result
      */
     fun goTo(name: String, listener: NavigationListener) {
         val zone = guard.zones.byName(name)
@@ -128,12 +102,8 @@ class NavigationController(
     // ---- pose monitoring -------------------------------------------------
 
     /**
-     * Feed every pose update here. Aborts an in-flight navigation if the robot
-     * has entered somewhere it should not be.
-     *
-     * Also checked when idle: the robot can be pushed, or can drift into a zone
-     * while parked, and the thesis's position is that presence in the room is
-     * the problem, not the act of navigating there.
+     * Checks a new pose and stops the drive if the robot entered a private zone.
+     * @param pose the new pose
      */
     fun onPose(pose: RobotPose) {
         lastPose = pose
@@ -206,7 +176,7 @@ class NavigationController(
         launch: (NavigationListener) -> Unit
     ) {
         // Never start over a running drive: stop it first, so a rejected second start cannot leave RobotOS driving the
-        // first one while this controller believes it is idle (review 2026-10-02, item 2). MapNavigation refuses this case
+        // first one while this controller believes it is idle. MapNavigation refuses this case
         // already; this is the second line.
         if (isNavigating) {
             driveId++
@@ -232,7 +202,7 @@ class NavigationController(
             override fun onStarted() { if (current) listener.onStarted() }
             override fun onProgress(event: NavEvent) { if (current) listener.onProgress(event) }
             // SDK callbacks arrive on RobotOS's thread: check and clear under this controller's lock (the same one
-            // MapNavigation holds for onPose / stop), and call the listener after leaving it (review 2026-10-02, item 75).
+            // MapNavigation holds for onPose / stop), and call the listener after leaving it.
             override fun onArrived() {
                 synchronized(this@NavigationController) {
                     if (!current) return
@@ -253,9 +223,8 @@ class NavigationController(
     }
 
     /**
-     * True if every private zone the robot is in right now is one it started this drive in, and it is not closer to
-     * any of them than its best clearance so far (minus the tolerance). Zones it has left drop out of the exemption,
-     * so re-entering them later counts as a normal violation.
+     * True if the robot is only inside zones it started this drive in and is not getting closer to them.
+     * @param pose current pose
      */
     private fun onlyLeavingExemptZones(pose: RobotPose): Boolean {
         val p = pose.point

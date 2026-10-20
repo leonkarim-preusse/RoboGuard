@@ -78,12 +78,9 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Test screen for ORB object detection ("RG Object Test" launcher icon). Not part of RoboGuard's UI.
- *
- * Shows the robot's camera live (SurfaceShare stream, so RobotOS vision keeps working) and runs [ORB] on the latest frame
- * a few times per second against every reference image in `robocontrol/assets`. A detected object gets its projected
- * outline (green) and an axis-aligned bounding box (yellow) with name and inlier count. Frames are only in memory; nothing
- * is saved. Procedure: README.md, "Testing object detection".
+ * Test screen for ORB object detection ("RG Object Test"). Shows the camera stream and runs [ORB] on the latest
+ * frame against the reference images, drawing detected outlines, boxes, keypoints and pink areas. Frames are kept in
+ * memory only.
  */
 class ObjectProbeActivity : ComponentActivity() {
 
@@ -105,7 +102,7 @@ class ObjectProbeActivity : ComponentActivity() {
     private val stats = MutableStateFlow("")
     private val brightness = MutableStateFlow("")
     private val contrastBoost = MutableStateFlow(false)
-    /** Start values from the wall test (2026-09-17): more features, weaker corners allowed, keypoints spread over a grid. */
+    /** ORB settings used by the test; start values from [CalendarDetectionSettings]. */
     private val orbSettings = MutableStateFlow(CalendarDetectionSettings.orb)
 
     /** B: additionally search enlarged, overlapping tiles about once per second (for small, distant objects). */
@@ -114,11 +111,7 @@ class ObjectProbeActivity : ComponentActivity() {
     /** E: a box appears only if the object was detected in enough of the last passes (CalendarDetectionSettings, now 3 of 4). */
     private val consistencyOn = MutableStateFlow(true)
 
-    /**
-     * Pink marker: search features ONLY in areas close to pink pixels (the pink line drawn around the calendar). Replaces the
-     * full-frame and tile passes while on. A match there counts with enough inliers even if its projected outline is folded
-     * (lens distortion); the box is then the pink pixels' bounds.
-     */
+    /** If true, ORB searches only in areas around pink marker pixels. */
     private val markerOn = MutableStateFlow(true)
     private val markerMargin = MutableStateFlow(CalendarDetectionSettings.MARKER_MARGIN_PX)
     private val markerSaturation = MutableStateFlow(com.example.robocontrol.vision.DetectionSettings.pink.minSaturation)
@@ -132,18 +125,18 @@ class ObjectProbeActivity : ComponentActivity() {
 
     /** Keypoints of the latest detection pass (frame coordinates), drawn as small dots. */
     private val featurePoints = MutableStateFlow<List<ImagePoint>>(emptyList())
-    /** Which drawing layers the preview shows; each has its own toggle. */
+    /** Drawing layers shown on the preview. */
     private val layers = MutableStateFlow(Layers())
     private val marker = ColorMarker()
 
     /** Detection thresholds (good matches / inliers); relaxed values are meant to be combined with [consistencyOn]. */
     private val thresholds = MutableStateFlow(CalendarDetectionSettings.MIN_GOOD_MATCHES to CalendarDetectionSettings.MIN_INLIERS)
 
-    /** Region selection on the preview, in frame pixels; null = not selecting. */
+    /** True while a region of the preview is being selected as a new reference. */
     private val selecting = MutableStateFlow(false)
     private val selection = MutableStateFlow<android.graphics.Rect?>(null)
 
-    /** Where captured references are kept on the robot (app-private), so they survive restarts. */
+    /** Folder for references captured from the camera. */
     private val captureDir get() = java.io.File(filesDir, "robocontrol/orb_refs")
     private val references = MutableStateFlow<List<String>>(emptyList())
 
@@ -447,10 +440,12 @@ class ObjectProbeActivity : ComponentActivity() {
     private fun onOff(b: Boolean) = if (b) "on" else "off"
 
     /**
-     * Pink-marker pass: find pink areas, run ORB only inside each (enlarged), keep the best result per reference.
-     * Accepted: a plausible outline whose centre lies in the pink area, or (lens distortion folds outlines) enough good matches
-     * and inliers inside the pink area; the box is then the pink pixels' bounds ("marker").
-     * @return results per reference and a numbers-only description
+     * Runs one pink-marker pass: finds pink areas, runs ORB in each and keeps the best result per reference.
+     * @param o detector
+     * @param f camera frame
+     * @param minGood good matches required
+     * @param minInl inliers required
+     * @return results per reference and a description for the log
      */
     private fun markerPass(o: ORB, f: CameraFrame, minGood: Int, minInl: Int): Pair<List<ObjectMatch>, String> {
         marker.marginPx = markerMargin.value
@@ -472,7 +467,7 @@ class ObjectProbeActivity : ComponentActivity() {
         return pass.results to text
     }
 
-    /** The test screen: preview with the drawing layers, settings, references and the log. */
+    /** The test screen: preview with drawing layers, settings, references and the log. */
     @Composable
     private fun Screen() {
         val lines by log.lines.collectAsState()
@@ -759,7 +754,7 @@ class ObjectProbeActivity : ComponentActivity() {
         }
     }
 
-    /** Drawing layers of the preview, each switchable on the screen. */
+    /** Drawing layers of the preview. */
     private data class Layers(
         val keypoints: Boolean = true,
         val inliers: Boolean = true,
@@ -771,7 +766,12 @@ class ObjectProbeActivity : ComponentActivity() {
         val darkenOutside: Boolean = true
     )
 
-    /** Data the preview can draw on top of the image. */
+    /**
+     * Data drawn on top of the preview.
+     * @property keypoints keypoint positions of the frame
+     * @property matches results of the last pass
+     * @property pinkMask overlay of the pink pixels; null if not requested
+     */
     private class Overlays(val keypoints: List<ImagePoint>, val matches: List<ObjectMatch>, val pinkMask: Bitmap?)
 
     private companion object {

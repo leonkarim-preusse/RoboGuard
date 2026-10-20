@@ -20,13 +20,9 @@ interface ZoneCipher {
 }
 
 /**
- * AES-256-GCM with a key that lives in the Android Keystore and never leaves the robot. Same pattern as RoboGuard's
- * `KeyManager`, but with its own key alias: one key per purpose, and robocontrol does not depend on roboguard.
- *
- * File layout: [MAGIC] (4 bytes) + IV (12 bytes) + ciphertext incl. 128-bit GCM tag.
- *
- * If the key is gone (factory reset, app data cleared), a new key is created and old files fail to decrypt with an
- * exception. [ZoneRegistry] turns that into [ZoneStoreCorrupt], and the caller must fail closed.
+ * AES-256-GCM encryption with a key kept in the Android Keystore. File layout: [MAGIC] (4 bytes), IV (12 bytes),
+ * ciphertext with the 128-bit GCM tag.
+ * @param alias Keystore alias of the key
  */
 class KeystoreZoneCipher(private val alias: String = DEFAULT_ALIAS) : ZoneCipher {
 

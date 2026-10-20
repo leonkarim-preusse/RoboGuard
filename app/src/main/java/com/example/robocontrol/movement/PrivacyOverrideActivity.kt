@@ -37,14 +37,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * Popup on the robot's screen after a drive was stopped at a private area: "Allow robot to temporarily cross <area>?"
- *
- * - green **Yes**: allowed for the chosen time, [DEFAULT_MINUTES] minutes unless changed
- * - red **No**: not allowed (also Back)
- * - **Custom time**: choose 1, 2, 5, 10 or 60 minutes or type minutes (1–60, PrivacyGuard's maximum); this only changes
- *   the time shown on the first page, crossing still needs Yes
- *
- * Question and answer go through [PrivacyOverridePrompt]; the popup closes itself when the question is gone.
+ * Popup that asks whether the robot may temporarily cross a private area: Yes (for the chosen time, [DEFAULT_MINUTES]
+ * by default), No, and a page for choosing another time. Question and answer go through [PrivacyOverridePrompt].
  */
 class PrivacyOverrideActivity : ComponentActivity() {
 

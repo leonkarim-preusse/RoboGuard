@@ -130,21 +130,9 @@ data class RunSettings(
 )
 
 /**
- * Reads `assets/settings/settings.json`: the general object-detection settings plus per-image overrides.
- *
- * ```json
- * "orb": {
- *   "general": { "maxFeatures": { "value": 1500, "note": "…" }, … },
- *   "images":  { "cal_prop_thick_outline.jpg": { "minInliers": { "value": 30, "note": "…" } } }
- * }
- * ```
- * Every value may be written as `{ "value": …, "note": "…" }` (the note explains it and is ignored) or as a plain value.
- * A per-image section overrides only the keys it lists; [forImage] merges it onto [general]. Keys that describe the whole
- * camera picture (the `pink` block, workers, passes per second, …) are read from `general` only; naming them under an image
- * is ignored and logged, as are unknown keys.
- *
- * Missing file or broken JSON: the built-in defaults are used (the same values as in the shipped file) and an error is logged,
- * so a typo never stops the detection.
+ * Reads `assets/settings/settings.json`: general object-detection settings and per-image overrides. Values can be
+ * written as `{ "value": …, "note": "…" }` or as plain values. Settings that apply to the whole picture are read from
+ * `general` only. If the file is missing or invalid, built-in defaults are used.
  */
 object DetectionSettings {
 

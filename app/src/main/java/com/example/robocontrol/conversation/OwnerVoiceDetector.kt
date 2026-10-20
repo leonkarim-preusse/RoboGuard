@@ -10,23 +10,15 @@ import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * [ConversationDetector] by comparison with the owner's stored voice ([OwnerVoiceprint]).
- *
- * Every [CONFIG.pieceSeconds] of speech — silence does not count — becomes one embedding, which is compared with the
- * template. Above the threshold the piece is the owner, below it somebody else. More than one person is reported when
- * both have been heard inside [ConversationSettings.windowMs], or, in [ConversationSettings.anyOtherIsConversation]
- * mode, as soon as a voice that is not the owner is heard at all.
- *
- * Why it is built on a MEASURED threshold rather than a computed one: on this robot the microphone and the room put a
- * large common part into every embedding, so the owner reads ~0.90 and another person ~0.80 (2026-09-23) instead of the
- * 0.55–0.68 vs 0.09–0.24 measured on close-talk recordings. The gap is real but narrow, so the threshold is set by hand
- * on the voice screen from what was actually measured, and two rules keep a single borderline piece from flipping the
- * state: a piece must be below the threshold by [CONFIG.margin] to count as somebody else, and
- * [ConversationSettings.piecesForOther] such pieces are needed.
- *
- * Privacy: the template is the only voice kept on disk. A guest's embedding exists while it is compared, and the
- * decision window keeps nothing but two counters and a handful of similarity NUMBERS — no vectors. Everything is zeroed
- * when the detector stops or after [ConversationSettings.resetAfterSilenceMs] of silence.
+ * [ConversationDetector] that compares each piece of speech with the stored owner voice ([OwnerVoiceprint]).
+ * Each piece of [ConversationSettings.pieceSeconds] of speech is turned into an embedding and compared with the
+ * template: at or above the threshold it counts as the owner, below the threshold minus the margin as another person.
+ * More than one speaker is reported when the owner and another person were both heard within
+ * [ConversationSettings.windowMs], or, with [ConversationSettings.anyOtherIsConversation], as soon as another person
+ * is heard. Only similarity values are kept; embeddings and audio buffers are zeroed after use.
+ * @param context used to load the stored voice and the models
+ * @param source audio input
+ * @param settings detection settings
  */
 class OwnerVoiceDetector(
     private val context: Context,
@@ -82,7 +74,7 @@ class OwnerVoiceDetector(
             return
         }
         val threshold = template.info.threshold
-        // The unclear band belongs to the voice (item 10); the setting is only the fallback for very old files.
+        // The unclear band belongs to the voice; the setting is only the fallback for very old files.
         val margin = template.info.margin
         // Average of other voices through this microphone; subtracted from both sides when comparing (see Voiceprint).
         val cohort = store.loadCohort()
@@ -117,14 +109,14 @@ class OwnerVoiceDetector(
         var samples = 0L
         var lastSpeechAtMs = Long.MIN_VALUE / 2
         // When the last verdict came back: it arrives up to a few seconds after its speech, and must not be hidden by
-        // "nobody is talking" just because the turn ended meanwhile (item 52).
+        // "nobody is talking" just because the turn ended meanwhile.
         var lastResultAtMs = Long.MIN_VALUE / 2
         var lastPublish = -1_000L
         var worker: EmbeddingWorker<Float>? = null
         val silence = SilenceWindow(settings.resetAfterSilenceMs, settings.resetMaxSpeechShare)
 
         try {
-            // The microphone first: if it cannot be opened, no model has been loaded for nothing (item 35).
+            // The microphone first: if it cannot be opened, no model has been loaded for nothing.
             val openError = source.open()
             if (openError != null) {
                 _snapshot.value = _snapshot.value.copy(running = false, error = openError)
@@ -193,7 +185,7 @@ class OwnerVoiceDetector(
                 }
 
                 // speechSamples too: after the robot spoke the half piece is already gone and the window entries expire
-                // after 20 s, so without it the reset never ran and the next conversation got no prompt (item 3). It
+                // after 20 s, so without it the reset never ran and the next conversation got no prompt. It
                 // cannot repeat: speechSamples only grows on speech, which also moves lastSpeechAtMs.
                 // Silence = at most 10 % speech over the window (owner, 2026-10-19), not a single frame.
                 if (silence.add(speech) && (speechSamples > 0 || ownerTimes.isNotEmpty() || otherTimes.isNotEmpty())) {
@@ -343,35 +335,21 @@ class OwnerVoiceDetector(
 }
 
 /**
- * Settings of the owner comparison. Defaults come from what was measured on the robot (owner ≈ 0.90, another person
- * ≈ 0.80); the threshold itself lives with the stored voice and is set on the voice screen.
- *
- * @property margin how far below the threshold a piece must be before it counts as somebody else
- * @property piecesForOther pieces that must say "somebody else" before the robot believes it
- * @property anyOtherIsConversation true = any voice that is not the owner counts as a conversation; false = the owner
- *           must have been heard in the same window (a stranger talking alone is then not a conversation)
- */
-/**
- * Which gate decides that a 10 ms frame carries speech.
- *
- * [SILERO_AND_LEVEL] is the original rule: the neural voice-activity model must agree AND the frame must be louder than
- * [ConversationSettings.minLevelDb]. [SILERO_ONLY] drops the loudness floor, [LEVEL_ONLY] drops Silero — and then the
- * model is not run at all, which also gives its CPU time back (it costs 3–19 ms per 32 ms chunk on this robot).
+ * Gate that decides whether a 10 ms frame contains speech: Silero and the level floor, Silero only, or the level floor only.
  */
 enum class SpeechGateMode { SILERO_AND_LEVEL, SILERO_ONLY, LEVEL_ONLY }
 
 /**
- * All settings of the voice detectors (owner, pairwise, activity) and of the enrolment's piece assembly.
- * Built by [ConversationMonitor] from the saved preferences.
+ * Settings of the voice detectors (owner, pairwise, activity) and of the piece assembly used by the voice enrolment.
+ * @property margin owner method: width of the unclear band below the threshold
+ * @property piecesForOther owner method: "other" pieces needed in the window
+ * @property anyOtherIsConversation owner method: true = any other voice counts as a conversation, false = the owner
+ * must also have been heard
  */
 data class ConversationSettings(
     val pieceSeconds: Double = 3.0,
     val speechThreshold: Double = 0.5,
-    /**
-     * Silero hysteresis: once speech has started it only ends below `speechThreshold - speechHysteresis`. Without it a
-     * probability sitting on the threshold flips the gate every 32 ms chunk. The change detector always had this; the
-     * other methods did not, which is why they flickered at the boundary.
-     */
+    /** Silero hysteresis: after speech has started it ends only below `speechThreshold - speechHysteresis`. */
     val speechHysteresis: Double = 0.15,
     val minLevelDb: Double = -65.0,
     val gateMode: SpeechGateMode = SpeechGateMode.SILERO_AND_LEVEL,
@@ -391,63 +369,27 @@ data class ConversationSettings(
     val differentVoiceBelow: Float = 0.5f,
     /** Pairwise method: how many pieces are held for comparison (in memory only). */
     val piecesKept: Int = 6,
-    /**
-     * Activity method: how long the window is that the share of speech is measured over, and how much of it has to carry
-     * speech before the robot calls it a conversation. Owner's values: first 10 s and 0.8, since 2026-10-19 8 s and 0.5.
-     * Both are meant to be measured on the robot, because how much a single speaker pauses depends on the person and on
-     * the room.
-     */
+    /** Activity method: length of the window over which the share of speech is measured. */
     val activityWindowMs: Long = 8_000,
     val activityShare: Float = 0.5f,
-    /**
-     * Activity method: how long a gap still counts as speech (the "hangover" of a voice-activity detector; Silero's own
-     * utilities call it `min_silence_duration_ms`). Without it the share measures the gaps BETWEEN WORDS, which every
-     * single speaker has; with it, the share measures the gaps between TURNS, which is what tells one speaker from two.
-     */
+    /** Activity method: gaps shorter than this still count as speech. */
     val activityMinSilenceMs: Long = 250,
-    /**
-     * Outlier filter: a verdict that is NEW — the first "somebody else" after the owner, the first piece below the
-     * pairwise threshold, the moment the speech share crosses — only counts when the next piece says the same. A verdict
-     * that simply continues counts at once, so this costs time only at the transitions, which is exactly where the
-     * mistakes were measured (the piece that straddled "video off / owner walks up" read 0.402 and was called the owner,
-     * 2026-09-23).
-     *
-     * The price is one extra piece of delay, about three seconds, at every change — and a real change that is followed by
-     * silence is dropped instead of reported. Off by default; the change detector is not affected, it has its own
-     * confirmation (ΔBIC, plus a rule that needs either two changes or accumulated evidence).
-     */
+    /** If true, a changed verdict counts only when the next piece confirms it. */
     val confirmTwice: Boolean = false,
     /**
-     * How a piece of speech is assembled. False (the old behaviour) puts ONLY the frames that passed the gate into the
-     * piece, so three seconds are glued together from many fragments with every pause cut out. Each cut is a jump in the
-     * signal, i.e. a broadband click in the spectrum, and how often it is cut depends on how far away the speaker is —
-     * which is exactly the axis the comparison is supposed to measure. It also drops the first tens of milliseconds of
-     * every utterance, where the plosives live, and it changes the statistics the speaker network pools over.
-     *
-     * True keeps the audio continuous: [speechPadMs] before the first gated frame are taken from a short ring buffer,
-     * and pauses shorter than [bridgeGapMs] are not cut at all. A piece then contains a little silence, which is what the
-     * model was trained on.
+     * If true, pieces are cut as one continuous stretch: [speechPadMs] of audio before the first speech frame is included
+     * and pauses shorter than [bridgeGapMs] are kept. If false, a piece consists of the speech frames only.
      */
     val continuousPieces: Boolean = false,
     val speechPadMs: Long = 30,
     val bridgeGapMs: Long = 200,
-    /**
-     * A pause longer than this ends the piece being collected: handed off if it holds [minPieceSeconds], else dropped.
-     * Without it one piece joined fragments up to 30 s apart (review 2026-10-02, item 13). The price: people who talk in
-     * very short bursts produce fewer pieces.
-     */
+    /** A pause longer than this ends the current piece. */
     val maxPieceGapMs: Long = 2_000,
     val minPieceSeconds: Double = 1.5,
-    /**
-     * Cut pieces at the voice changes a change detector finds in the same audio, so a piece does not mix two voices
-     * (item 46). Costs about 1.6 s of extra delay per piece (the change detector reports a boundary that late).
-     */
+    /** If true, pieces are split at voice changes found by a change detector on the same audio. */
     val splitAtChanges: Boolean = true
 ) {
-    /**
-     * Where Silero speech ends again: the threshold minus the hysteresis, but never below half the threshold. With a
-     * hysteresis as large as the threshold the bar was 0 or below and the gate never switched off again (item 78).
-     */
+    /** Probability below which Silero speech ends: the threshold minus the hysteresis, but at least half the threshold. */
     val sileroRelease: Double get() = maxOf(speechThreshold - speechHysteresis, speechThreshold / 2)
 
     /** How pieces are cut, for log lines. */

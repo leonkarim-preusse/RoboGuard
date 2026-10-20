@@ -7,10 +7,10 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * A named position recorded on one map, e.g. "Kitchen door".
- *
- * @property position map coordinates in metres, same frame as RobotOS poses and places
- * @property theta the robot's heading when the position was recorded, in radians
+ * A named position saved on one map.
+ * @property name name of the location
+ * @property position map coordinates in metres
+ * @property theta heading of the robot when the position was saved, in radians
  */
 data class SavedPoint(val name: String, val position: Point2D, val theta: Double)
 
@@ -19,18 +19,10 @@ class PointStoreCorrupt(mapName: String, cause: Throwable) :
     Exception("Saved locations for map '$mapName' are unreadable", cause)
 
 /**
- * Stores [SavedPoint]s per map in RoboGuard's private storage, encrypted: `files/robocontrol/points/<map name>.points`.
- *
- * Same protection as the private areas ([ZoneRegistry] + [KeystoreZoneCipher]), with its own Keystore key alias
- * [KEY_ALIAS]: AES-256-GCM, file name authenticated, written to a temp file that is flushed to disk (fsync) and renamed.
- *
- * Deliberately NOT stored as RobotOS places (`RobotApi.setLocation`): places created that way cannot be deleted
- * through the SDK (`removeLocation` is a no-op in robotservice_12.3.jar), so every test location would stay in the
- * robot's shared map for good. Points are bound to a map name, because coordinates are only meaningful on the map
- * they were recorded on.
- *
- * Migration: older versions wrote plain `<map name>.json`. On load, such a file is read, saved encrypted and then
- * deleted.
+ * Stores [SavedPoint]s per map, encrypted with an own Keystore key (`files/robocontrol/points/<map>.points`). Writes go
+ * to a temporary file that is synced and renamed. Older plain JSON files are converted on load.
+ * @param context used for the storage folder
+ * @param cipher encryption of the files
  */
 class SavedPointStore(context: Context, private val cipher: ZoneCipher = KeystoreZoneCipher(KEY_ALIAS)) {
 

@@ -20,10 +20,8 @@ fun interface SensorChangeListener {
 }
 
 /**
- * Called when a situational setting changes ("Discretion Mode", "Pixelate Objects").
- *
- * These are not sensors: they do not switch the microphone or the camera on or off, they only say whether a feature that
- * USES them may run. Discretion Mode gates the conversation detection, Pixelate Objects the object detection.
+ * Called when a situational setting ("Discretion Mode", "Pixelate Objects") changes. These settings enable features;
+ * they do not switch any sensor.
  */
 fun interface SituationalChangeListener {
     /** Called once for every situational feature whose state changed; [enabled] is the new state. */
@@ -31,24 +29,10 @@ fun interface SituationalChangeListener {
 }
 
 /**
- * The robot's current sensor permissions, as set by the user in the RoboGuard phone app.
- *
- * Flow:
- *  1. On first use ([get]) the state is loaded from `privacy_settings.json`. If the phone has never
- *     saved settings, that file does not exist, and [DEFAULT_SENSORS] is used instead.
- *  2. `RobotServerService` calls [update] after every successful `POST /save`.
- *  3. [update] replaces the state and tries to switch the robot's sensors accordingly: LIDAR through the
- *     SDK, microphone and camera through both the SDK and Android (see [SensorSwitches]). It then notifies
- *     every [SensorChangeListener] for each sensor that changed. What each switch achieved is in [switchReports].
- *
- * The switches are also applied once when this object is created, so a sensor the user turned off
- * stays off after the app restarts.
- *
- * There is one instance per app process, obtained with [get], so the server and robocontrol code
- * share the same state without binding to the service.
- *
- * Thread-safe. [update] may be called from the server's network thread; listeners run on that
- * thread, in registration order, and should return quickly (hand longer work off to a coroutine).
+ * Current sensor and situational settings of the robot, shared by the whole process ([get]). The state is loaded from
+ * `privacy_settings.json` (or defaults), updated after each save from the phone, and applied to the hardware through
+ * [SensorSwitches]. Registered listeners are told about every change. Thread-safe.
+ * @param context any context; only the application context is kept
  */
 class Sensors private constructor(private val context: Context) {
 
@@ -94,13 +78,8 @@ class Sensors private constructor(private val context: Context) {
     fun isEnabled(name: String): Boolean? = _states.value[name]
 
     /**
-     * Applies new sensor settings: switches the robot's sensors (false = off, true = on) and notifies
-     * listeners about every sensor whose state changed.
-     *
-     * The hardware switches run for every sensor in [sensors], not only the changed ones, because RobotOS
-     * may have switched something back on in the meantime; the calls are idempotent.
-     * A sensor that is new in [sensors] counts as changed. A sensor missing from [sensors] is removed
-     * from the state without a notification, because there is no on/off value to report for it.
+     * Applies new sensor settings: switches every listed sensor and notifies listeners about the changed ones.
+     * @param sensors sensor name → enabled
      */
     @Synchronized
     fun update(sensors: Map<String, Boolean>) {
@@ -130,11 +109,11 @@ class Sensors private constructor(private val context: Context) {
     }
 
     /**
-     * Switches one sensor from the robot itself (e.g. "Microphone" off from the conversation popup): applies it like
-     * [update] and writes it into `privacy_settings.json`, so it survives a restart. The phone app's next save replaces
-     * it again. If the file does not exist yet (phone never saved), the change is applied in memory only.
-     *
-     * @return true if it was also written to the file
+     * Switches one sensor from the robot (e.g. microphone off from the conversation prompt) and writes it to
+     * `privacy_settings.json` if the file exists.
+     * @param name sensor name
+     * @param enabled new state
+     * @return true if the change was also written to the file
      */
     fun setSensor(name: String, enabled: Boolean): Boolean {
         val current = getSensors()
@@ -157,10 +136,9 @@ class Sensors private constructor(private val context: Context) {
     }
 
     /**
-     * Is a situational setting on? Names are matched case-insensitively, because the robot's own defaults write
-     * "pixelate objects" while the capabilities list and the phone use "Pixelate Objects".
-     *
-     * @return null if the phone has never sent this setting; callers treat that as off.
+     * Whether a situational setting is enabled; names are compared case-insensitively.
+     * @param name setting name
+     * @return the stored value, or null if it was never set
      */
     fun isSituationalEnabled(name: String): Boolean? =
         _situational.value.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
@@ -203,6 +181,13 @@ class Sensors private constructor(private val context: Context) {
         situationalListeners -= listener
     }
 
+    /**
+     * Waits for the hardware answers of the switches an [update] with [sensors] started at [sinceMs] (elapsedRealtime)
+     * and tells whether all, some or none of them were confirmed. See [SensorSwitches.awaitResult].
+     */
+    suspend fun awaitSwitches(sensors: Map<String, Boolean>, sinceMs: Long, timeoutMs: Long): ApplyResult =
+        switches.awaitResult(sensors, sinceMs, timeoutMs)
+
     /** Applies a full settings object, as received by `POST /save`: sensors (with hardware) and situational settings. */
     fun update(settings: AppSettings) = applyBoth(settings.sensors, settings.situationalSettings)
 
@@ -210,9 +195,9 @@ class Sensors private constructor(private val context: Context) {
     fun reload() = applyBoth(readSettingsFile(), readSituationalFile())
 
     /**
-     * Both parts of one save: first BOTH states are set (and the hardware switched), only then are the listeners told.
-     * Telling the situational listeners first made a save with "Discretion Mode on + microphone off" start a detector
-     * on the old sensor state and stop it again a moment later (review 2026-10-02, item 63).
+     * Applies sensor and situational settings together; listeners are notified only after both are stored.
+     * @param sensors sensor name → enabled
+     * @param situational setting name → enabled
      */
     @Synchronized
     private fun applyBoth(sensors: Map<String, Boolean>, situational: Map<String, Boolean>) {
@@ -223,9 +208,9 @@ class Sensors private constructor(private val context: Context) {
     }
 
     /**
-     * Registers [listener] for future changes.
-     * @param notifyCurrent if true, the listener is immediately called once for every current sensor,
-     *        so it can bring the hardware in line with the state that existed before it registered
+     * Registers [listener] for sensor changes.
+     * @param listener the listener
+     * @param notifyCurrent if true, the listener is called once for every current sensor
      */
     fun addListener(listener: SensorChangeListener, notifyCurrent: Boolean = false) {
         listeners += listener
@@ -266,7 +251,7 @@ class Sensors private constructor(private val context: Context) {
          */
         val DEFAULT_SENSORS: Map<String, Boolean> = mapOf("Camera" to true, "LIDAR" to true, "Microphone" to true)
 
-        /** Situational features until the phone has saved once: all on (owner, 2026-10-19). */
+        /** Situational settings used until the phone has saved settings: all enabled. */
         val DEFAULT_SITUATIONAL: Map<String, Boolean> = mapOf("Discretion Mode" to true, "Pixelate Objects" to true)
 
         @Volatile

@@ -1,29 +1,16 @@
 package com.example.robocontrol.movement
 
 /**
- * Decides whether the robot may be somewhere.
- *
- * Design follows the opt-out-by-default position argued in the thesis: a zone
- * marked [PrivacyLevel.PRIVATE] is refused unless someone has explicitly and
- * temporarily lifted the restriction. There is no "allow once and forget" —
- * every override carries a reason, an expiry, and an audit entry, because the
- * literature the thesis draws on identifies *passive, invisible* data-gathering
- * and unexplained movement as the core of the concern. An override that nobody
- * can later see would reproduce exactly that problem.
- *
- * This is enforced in the app, not by the robot. The OrionStar SDK exposes no
- * API for virtual walls or forbidden regions — only the ability to *observe*
- * that the robot has entered an area authored in OrionStar's own map tool
- * ([PoseStatus.FORBIDDEN]). Both are honoured here: SDK-level forbidden areas
- * are treated as hard stops regardless of our own zone model.
+ * Decides whether the robot may go to or be at a position. Private zones are refused unless a time-boxed override is
+ * active; every override is recorded in the audit log. Areas marked forbidden in the robot's map tool
+ * ([PoseStatus.FORBIDDEN]) always stop the robot.
+ * @param zones zones of the active map
+ * @param margin metres added around private zones
+ * @param clock time source in milliseconds
  */
 class PrivacyGuard(
     zones: MapZones,
-    /**
-     * Metres of slack added around private zones. The robot is 0.41 m wide and
-     * localization drifts, so a zero margin means it is already through the
-     * doorway when the test trips.
-     */
+    /** Metres added around private zones. */
     var margin: Double = DEFAULT_MARGIN,
     private val clock: () -> Long = System::currentTimeMillis
 ) {
@@ -64,11 +51,9 @@ class PrivacyGuard(
     }
 
     /**
-     * Whether the robot's *current* pose is somewhere it should not be.
-     * Returns null when the position is acceptable.
-     *
-     * [PoseStatus.FORBIDDEN] is a hard stop: that area was marked forbidden in
-     * the robot's own map tool, and an app-level override does not out-rank it.
+     * Checks the robot's current pose.
+     * @param pose current pose
+     * @return the violation, or null if the position is allowed
      */
     fun violationAt(pose: RobotPose): Violation? {
         if (pose.status == PoseStatus.FORBIDDEN) {
@@ -76,7 +61,7 @@ class PrivacyGuard(
         }
         val blocked = zones.zonesAt(pose.point, margin).filter { it.isPrivate && overrideFor(it) == null }
         // Audit only the moment of entering: while the robot stands inside an area this is called every 500 ms, and
-        // one entry per call pushed every grant and revocation out of the log within minutes (review 2026-10-02, item 29).
+        // one entry per call pushed every grant and revocation out of the log within minutes.
         val names = blocked.map { it.name }.toSet()
         for (name in names - insideZones) record(AuditEntry.EnteredPrivateZone(clock(), name, pose.point))
         insideZones.retainAll(names)
@@ -94,13 +79,11 @@ class PrivacyGuard(
     // ---- override -------------------------------------------------------
 
     /**
-     * Temporarily lift private-zone restrictions.
-     *
-     * The thesis's emergency scenario — the robot has not seen anyone for an
-     * interval and goes looking, including in rooms it normally may not enter —
-     * is exactly this call with [OverrideReason.EmergencySearch].
-     *
-     * @param durationMillis hard expiry. There is no indefinite override.
+     * Lifts the restrictions of all private zones for a limited time.
+     * @param reason why the override is granted
+     * @param durationMillis duration, at most [MAX_OVERRIDE_MILLIS]
+     * @param grantedBy who granted it
+     * @return the new override
      */
     fun grantOverride(
         reason: OverrideReason,
@@ -123,8 +106,12 @@ class PrivacyGuard(
     }
 
     /**
-     * Temporarily lift the restriction for the single zone [zoneName] only, e.g. after a person on the robot's screen
-     * allowed it to cross that area. Same rules as [grantOverride]: hard expiry (max [MAX_OVERRIDE_MILLIS]), audited.
+     * Lifts the restriction of one zone for a limited time.
+     * @param zoneName name of the zone
+     * @param reason why the override is granted
+     * @param durationMillis duration, at most [MAX_OVERRIDE_MILLIS]
+     * @param grantedBy who granted it
+     * @return the new override
      */
     fun grantZoneOverride(
         zoneName: String,
@@ -253,10 +240,10 @@ enum class OverrideReason {
 
 /**
  * A time-boxed permission to enter private zones.
- * @property reason why it was granted.
- * @property grantedBy who granted it (person at the robot screen, phone name, ...).
- * @property grantedAt start time in ms (robot clock).
- * @property expiresAt end time in ms; at most [PrivacyGuard.MAX_OVERRIDE_MILLIS] after [grantedAt].
+ * @property reason why it was granted
+ * @property grantedBy who granted it
+ * @property grantedAt start time in milliseconds
+ * @property expiresAt end time in milliseconds
  */
 data class Override(
     val reason: OverrideReason,

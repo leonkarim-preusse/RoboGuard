@@ -10,24 +10,13 @@ import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * Experimental [ConversationDetector]: compares the pieces of speech **with each other**.
- *
- * Every [ConversationSettings.pieceSeconds] of speech becomes one embedding, which is compared with the pieces already in
- * the window. Two pieces that are further apart than [ConversationSettings.differentVoiceBelow] come from two different
- * voices, and that is a conversation — whoever they are. No voice has to be taught, nobody is recognised, and the robot
- * cannot say WHO is talking, only that it is more than one person.
- *
- * Why this can work where an absolute threshold struggles: the microphone and the room add the same large component to
- * every embedding, which lifts all similarities together. A comparison between two pieces recorded seconds apart shares
- * that component on both sides, so it cancels — the difference that remains is the speaker.
- *
- * The honest cost, and it belongs in the thesis: a vector is computed for everybody who talks, and up to
- * [ConversationSettings.piecesKept] of them exist side by side for the length of the window. They live in memory only,
- * are never written, never logged (only the resulting distances are), and are zeroed when the window resets, the
- * conversation ends after [ConversationSettings.resetAfterSilenceMs] of silence, or the detector stops.
- *
- * A stored owner voice is used only if one exists, and only to CENTRE the comparison (its cohort mean); the decision
- * itself never involves the owner.
+ * [ConversationDetector] that compares pieces of speech with each other: each new embedding is compared with the
+ * pieces held in the window, and a median similarity below [ConversationSettings.differentVoiceBelow] means two
+ * voices. Embeddings are kept in memory only for the window and zeroed on reset and stop. A stored cohort mean is used
+ * to centre the comparison.
+ * @param context used to load the models and the cohort
+ * @param source audio input
+ * @param settings detection settings
  */
 class PairwiseVoiceDetector(
     private val context: Context,
@@ -69,7 +58,9 @@ class PairwiseVoiceDetector(
     /** One piece of speech: its centred embedding and when it was heard. */
     private class Piece(val embedding: FloatArray, val timeMs: Long)
 
-    /** The detector thread: like the owner detector, but each new piece is compared with the pieces still held in the window. */
+    /**
+     * The detector thread: reads the microphone, gates speech, cuts pieces and compares each new embedding with the held pieces.
+     */
     private fun run() {
         val cohort = OwnerVoiceprintStore.get(context).loadCohort()
         var vad: SileroVad? = null
@@ -85,7 +76,7 @@ class PairwiseVoiceDetector(
         val held = ArrayDeque<Piece>()
         // Outlier filter (settings.confirmTwice): a piece that read "another voice" waits HERE, outside `held`, until the
         // next piece says the same. Before, it went into `held` at once, so the next normal piece was compared with the
-        // outlier itself and "confirmed" it (review 2026-10-02, item 14).
+        // outlier itself and "confirmed" it.
         var pending: Piece? = null
         var readings = emptyList<Float>()
         var wasDifferent = false
@@ -118,7 +109,7 @@ class PairwiseVoiceDetector(
         }
 
         try {
-            // The microphone first: if it cannot be opened, no model has been loaded for nothing (item 35).
+            // The microphone first: if it cannot be opened, no model has been loaded for nothing.
             val openError = source.open()
             if (openError != null) {
                 _snapshot.value = _snapshot.value.copy(running = false, error = openError)
@@ -131,7 +122,7 @@ class PairwiseVoiceDetector(
             // One line the graphs can read the threshold lines from (performance/graphs.py).
             Log.i(TAG, "gate: %s, silero %.2f (hysteresis %.2f), level floor %.0f dBFS".format(
                 settings.gateMode, settings.speechThreshold, settings.speechHysteresis, settings.minLevelDb))
-            // The embedding runs on its own thread, so the microphone is read all the time (item 37). It hands back the
+            // The embedding runs on its own thread, so the microphone is read all the time. It hands back the
             // CENTRED vector, which this thread keeps in `held` and zeroes when it is dropped.
             worker = EmbeddingWorker(context, "PairwiseVoiceEmbed", capacity = 1,
                 compute = { embedding, _ -> centre(embedding, cohort) },
@@ -185,7 +176,7 @@ class PairwiseVoiceDetector(
                 for (piece in pieces.onHop(hop, timeMs, levelDb, gated, robotTalking)) {
                     if (!worker.offer(piece)) Log.w(TAG, "embedding still busy: piece dropped")
                 }
-                // speechSamples too, see OwnerVoiceDetector (review 2026-10-02, item 3).
+                // speechSamples too, see OwnerVoiceDetector.
                 // Silence = at most 10 % speech over the window (owner, 2026-10-19), not a single frame.
                 if (silence.add(speech) && (speechSamples > 0 || held.isNotEmpty() || pending != null)) {
                     silence.clear()
@@ -211,7 +202,7 @@ class PairwiseVoiceDetector(
                         continue
                     }
                     // The MEDIAN of the comparisons decides, not the lowest: the minimum of up to six noisy pairs sank the
-                    // more pieces were held, and one outlier in the window pulled every later minimum down (item 47).
+                    // more pieces were held, and one outlier in the window pulled every later minimum down.
                     val similarities = held.map { SpeakerEmbedder.similarity(piece.embedding, it.embedding) }.sorted()
                     val median = if (similarities.size % 2 == 1) similarities[similarities.size / 2]
                     else (similarities[similarities.size / 2 - 1] + similarities[similarities.size / 2]) / 2

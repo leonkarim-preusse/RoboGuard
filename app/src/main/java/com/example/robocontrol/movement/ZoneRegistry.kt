@@ -6,25 +6,10 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * Persistence for [MapZones].
- *
- * Stored as JSON in app-private storage (`filesDir`), one file per RobotOS map.
- * App-private on purpose: zone definitions say which rooms in someone's home are
- * bathroom and bedroom, which is exactly the kind of data the thesis argues
- * should not leave the device. Combined with `allowBackup=false` in the
- * manifest, these files never reach cloud backup.
- *
- * Uses org.json (part of Android) rather than adding a serialization dependency.
- *
- * With a [cipher] (RoboGuard's "Navigation and Map" screen uses [KeystoreZoneCipher]) the JSON is encrypted and files
- * end in `.zones` instead of `.json`. Note: RoboGuard's manifest currently has `allowBackup="true"`, so the encryption,
- * not the storage location, is what keeps a backup copy unreadable.
- *
- * Writes go to a temp file that is flushed to disk (fsync) and then renamed over the old file, so a power cut leaves
- * either the old or the new version, never half a file.
- *
- * @param baseDir normally `context.filesDir`. Injected so tests can use a temp dir.
- * @param cipher encrypts file contents; null = plain JSON (as before)
+ * Stores the [MapZones] of each map as JSON in app-private storage, one file per map, encrypted when a [cipher] is set.
+ * Writes go to a temporary file that is synced and renamed.
+ * @param baseDir folder for the files
+ * @param cipher encryption; null = plain JSON
  */
 class ZoneRegistry(private val baseDir: File, private val cipher: ZoneCipher? = null) {
 
@@ -169,11 +154,8 @@ class ZoneStoreCorrupt(mapName: String, cause: Throwable) :
     Exception("Zone definitions for map '$mapName' are unreadable", cause)
 
 /**
- * Builds a zone from points the robot was physically driven to.
- *
- * This is the practical way to define a room without a map editor: drive the
- * robot to each corner, call [addCurrentPosition], then [build]. It is also how
- * the thesis demo can mark "the bathroom" without any OrionStar tooling.
+ * Builds a zone from positions the robot was driven to.
+ * @param name name of the zone
  */
 class ZoneBuilder(val name: String) {
     private val points = mutableListOf<Point2D>()

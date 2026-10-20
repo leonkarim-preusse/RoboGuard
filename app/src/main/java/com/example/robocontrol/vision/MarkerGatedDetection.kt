@@ -2,17 +2,7 @@ package com.example.robocontrol.vision
 
 import kotlin.math.max
 
-/**
- * The settings the owner chose in the object test (run probe-20260917-153521, 2026-09-17): used by [CalendarMonitor] and as
- * the object test's start values.
- */
-/**
- * The object-detection settings, read from `assets/settings/settings.json` ([DetectionSettings]). This object only gives the
- * values names the code can use; everything that can be tuned lives in that file, including per-image overrides.
- *
- * `MARKER_*`, `WORKER_PRIORITY` and `ORB_MIN_SCALED_BORDER_PX` are fixed in code: they are not tuning knobs but properties of
- * the robot (thread priority) or of ORB itself (its 31 px patch border).
- */
+/** Named access to the object detection settings in `assets/settings/settings.json` ([DetectionSettings]). */
 object CalendarDetectionSettings {
     /** General ORB settings (per-image overrides: `DetectionSettings.forImage(name)`). */
     val orb: OrbConfig get() = DetectionSettings.general.toOrbConfig()
@@ -61,21 +51,22 @@ object CalendarDetectionSettings {
 }
 
 /**
- * ORB on one pink area: for relating detection quality to distance.
- * @property frameSide long side of the pink line's bounds in frame pixels (larger = closer)
+ * ORB result for one pink area.
+ * @property frameSide longer side of the pink bounds in frame pixels
  * @property scale factor the area was scaled by before ORB
- * @property keypoints keypoints ORB found in the area
- * @property goodMatches / [inliers] of the best reference in this area
+ * @property keypoints keypoints found in the area
+ * @property goodMatches good matches of the best reference in the area
+ * @property inliers inliers of the best reference in the area
  */
 data class RegionCheck(val frameSide: Int, val scale: Double, val keypoints: Int, val goodMatches: Int, val inliers: Int)
 
 /**
  * Result of one [markerGatedPass].
- * @property results one entry per reference (best over all pink areas)
- * @property marker the pink search result (null if it failed)
- * @property regions the pink areas that were searched
- * @property keypoints keypoints found in all searched areas
- * @property keypointPositions their frame positions
+ * @property results one entry per reference, the best over all pink areas
+ * @property marker result of the pink search; null if it failed
+ * @property regions pink areas that were searched
+ * @property keypoints number of keypoints found in all searched areas
+ * @property keypointPositions frame positions of these keypoints
  */
 class MarkerPass(
     val results: List<ObjectMatch>,
@@ -94,9 +85,15 @@ class MarkerPass(
 )
 
 /**
- * Pink-marker pass: find pink areas in [frame], run ORB only inside each, keep the best result per reference.
- * Accepted: a plausible outline whose centre lies in the pink area, or (lens distortion folds outlines) at least [minGood] good
- * matches and [minInliers] inliers inside the pink area; the box is then the pink pixels' bounds ("marker").
+ * Runs one detection pass gated by the pink marker: finds pink areas in [frame], runs ORB only inside each and keeps
+ * the best result per reference. A detection counts if its outline centre lies in the pink area, or if enough good
+ * matches and inliers were found in it.
+ * @param orb detector
+ * @param marker pink marker search
+ * @param frame camera frame
+ * @param thresholds good matches and inliers required, per reference name
+ * @param maxRegions maximum number of pink areas searched
+ * @param withOverlay also build the pink overlay for the debug view
  */
 fun markerGatedPass(
     orb: ORB,
@@ -108,10 +105,7 @@ fun markerGatedPass(
     withOverlay: Boolean = false,
     /** Only these references are searched for (null = all); the others are handled elsewhere, e.g. without the pink gate. */
     classNames: Collection<String>? = null,
-    /**
-     * If given, ORB runs only while holding a permit; without one the pass returns [MarkerPass.skipped]. Lets several workers check
-     * colour in parallel while only one runs the expensive ORB step (parallel ORB passes slowed each other down on the robot).
-     */
+    /** If given, ORB runs only while holding a permit; otherwise the pass returns [MarkerPass.skipped]. */
     orbGate: java.util.concurrent.Semaphore? = null
 ): MarkerPass {
     orb.takeTimings() // start a fresh collection for this pass

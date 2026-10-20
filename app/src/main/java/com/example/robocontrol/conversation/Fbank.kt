@@ -9,22 +9,9 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 /**
- * 80-dimensional log-mel filterbank features in the Kaldi layout, which is what the speaker-embedding models expect
- * ([SpeakerEmbedder]). This is NOT the same front-end as [Mfcc]: that one produces 12 cepstral coefficients for the
- * change detector, while the neural models want the raw log-mel energies with Kaldi's exact window, mel scale and
- * pre-emphasis. Both run side by side, on the same audio.
- *
- * Per frame (25 ms, hop 10 ms), exactly as Kaldi does it:
- * remove the DC offset → pre-emphasis 0.97 → Povey window → 512-point FFT → power spectrum → 80 triangular mel filters
- * between 20 Hz and 8 kHz → natural log with a floor.
- *
- * The caller normally subtracts the mean over time afterwards ([cepstralMeanNormalise]), which is what the 3D-Speaker
- * pipeline does; it also makes the features independent of the recording level.
- *
- * **Verified on the PC (2026-09-21)** against the CAM++ model and the sherpa-onnx sample recordings: same speaker 0.55
- * and 0.68 cosine, different speakers 0.09–0.24 — so this front-end and the model agree with each other.
- *
- * Not thread-safe (it reuses its buffers); one instance per audio thread.
+ * 80-dimensional log-mel filterbank features in the Kaldi layout, the input of [SpeakerEmbedder]. Per 25 ms frame (10 ms
+ * hop): DC removal, pre-emphasis 0.97, Povey window, 512-point FFT, power spectrum, 80 mel filters from 20 Hz to 8 kHz
+ * and natural logarithm. [cepstralMeanNormalise] subtracts the mean over time. Not thread-safe.
  */
 class Fbank(
     private val sampleRate: Int = 16_000,

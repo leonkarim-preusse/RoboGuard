@@ -5,22 +5,9 @@ import android.util.Log
 import org.json.JSONObject
 
 /**
- * All texts the robot shows on its screen or says out loud. They live in one file, `robocontrol/assets/texts/texts.json`
- * (ships in the app as `assets/texts/texts.json`): one entry per text, so wording — or the whole language — can be changed
- * there without touching the code.
- *
- * File format:
- * ```json
- * "conversation_popup.title": { "text": "Conversation detected", "note": "Pop-up when more than one person talks: headline" }
- * ```
- * `note` only says where the text appears and is never shown. `meta.speechLanguage` ("de_DE" / "en_US") picks the voice for
- * the spoken sentences (`speech.*` keys).
- *
- * Placeholders are named and written in curly braces, e.g. `"Drive to {location}"`; pass them as pairs:
- * `UiText.get("nav.button.drive_to", "location" to name)`. Unknown placeholders stay as they are, so nothing disappears
- * silently, and a missing key returns the key name (visible on screen instead of an empty label).
- *
- * Thread-safe: the file is read once into an immutable map and only re-read by [reload].
+ * All texts shown on the robot's screen or spoken, loaded from `assets/texts/texts.json`. Each entry has a `text` and a
+ * `note`; `meta.speechLanguage` selects the speech language. Placeholders are written as `{name}` and passed as pairs
+ * to [get]. A missing key returns the key itself. Thread-safe.
  */
 object UiText {
 
@@ -75,8 +62,9 @@ object UiText {
     }
 
     /**
-     * The text for [key], with [placeholders] filled in ("location" to "Kitchen" replaces `{location}`).
-     * Unknown keys return the key itself and are logged, so a missing entry shows up instead of an empty screen.
+     * Returns the text for [key] with the placeholders filled in.
+     * @param key text key
+     * @param placeholders name → value pairs, e.g. "location" to "Kitchen" for `{location}`
      */
     fun get(key: String, vararg placeholders: Pair<String, Any?>): String {
         val template = texts[key] ?: run {

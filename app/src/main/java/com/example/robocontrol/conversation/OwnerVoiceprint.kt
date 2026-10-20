@@ -11,22 +11,16 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * What the robot knows about its owner's voice, and everything it is allowed to do with it.
- *
- * [Voiceprint] deliberately offers no way to read the vector out: it can be compared and it can be erased, nothing
- * else. The values are a biometric template, so the type makes the safe use the only use — no getter, no copy, no
- * serialisation except the one encrypted file below.
+ * A stored voice template. It can only be compared with embeddings and erased; the values cannot be read out.
+ * @property info statistics about the template
  */
 class Voiceprint internal constructor(private val values: FloatArray, val info: VoiceprintInfo) {
 
     /**
-     * How close [embedding] (L2-normalised) is to this voice: 1 = identical, 0 = unrelated.
-     *
-     * With a [cohort] mean the comparison is CENTRED: the average of many other voices heard through the same
-     * microphone is subtracted from both sides first. Every recording made in one room through one microphone shares a
-     * large part that says nothing about the person — on this robot it pushed the owner to ~0.90 and a stranger to
-     * ~0.80 (2026-09-23). Removing it is what makes the remaining difference readable; it is the standard trick from
-     * speaker verification (centering / score normalisation).
+     * Cosine similarity of [embedding] to this voice.
+     * @param embedding L2-normalised embedding
+     * @param cohort mean embedding of other voices; if given, it is subtracted from both sides before comparing
+     * @return similarity, 1 = identical
      */
     fun similarityTo(embedding: FloatArray, cohort: FloatArray? = null): Float =
         centredSimilarity(values, embedding, cohort)
@@ -60,20 +54,13 @@ class Voiceprint internal constructor(private val values: FloatArray, val info: 
 }
 
 /**
- * Everything about the template that may be shown on screen: how it was made and how well it separates. The numbers
- * are statistics, not voice data.
- *
- * @property selfSimilarityMean how close the enrolment pieces were to the finished template on average
- * @property selfSimilarityMin the worst of those pieces — the basis for [threshold]
- * @property threshold similarity from which a voice counts as the owner
- * @property margin how far below [threshold] a piece must be to count as somebody else (the unclear band). Per voice,
- *           because it should be about half the owner's own spread; 0.02 for everybody was far too narrow next to a
- *           measured spread of 0.14–0.20 (review 2026-10-02, item 10).
- * @property cohortId which cohort the threshold was set against: its creation time, [NO_COHORT] for the raw scale, null
- *           for voices stored before this was recorded. Removing or re-recording the cohort changes the scale of every
- *           similarity, so a threshold only means something together with its cohort (item 11).
- * @property suggestedThreshold what the last enrolment computed, kept next to a hand-set [threshold] instead of
- *           overwriting it (item 12)
+ * Statistics about a stored voice that may be shown on screen.
+ * @property selfSimilarityMean mean similarity of the enrolment pieces to the template
+ * @property selfSimilarityMin lowest similarity of an enrolment piece to the template
+ * @property threshold similarity at or above which a voice counts as the owner
+ * @property margin width of the unclear band below [threshold]
+ * @property cohortId creation time of the cohort the threshold was set with; [NO_COHORT] = none, null = not recorded
+ * @property suggestedThreshold threshold computed by the last enrolment
  */
 data class VoiceprintInfo(
     val model: String,
@@ -89,7 +76,7 @@ data class VoiceprintInfo(
     val suggestedThreshold: Float? = null
 ) {
     companion object {
-        /** About half the owner's measured spread (0.14–0.20); the replay of three owner runs gave no false episode with it. */
+        /** Default width of the unclear band below the threshold. */
         const val DEFAULT_MARGIN = 0.07f
 
         /** [cohortId] of a threshold set on the raw scale, without a cohort. */
@@ -98,33 +85,22 @@ data class VoiceprintInfo(
 }
 
 /**
- * Stores the owner's template, encrypted with its own Android Keystore key (AES-256-GCM, the same arrangement as the
- * private areas and the saved places, but a separate key: one key per purpose). File:
- * `files/robocontrol/voice/owner.print`.
- *
- * Only this one voice is ever written to disk. Voices the robot hears while it is running are compared and forgotten.
+ * Stores voice templates and the cohort mean, encrypted with an own Android Keystore key (AES-256-GCM), under
+ * `files/robocontrol/voice/`. Several named voices can be stored; the detectors use the active one.
  */
 class OwnerVoiceprintStore private constructor(private val context: Context) {
 
     private val cipher = KeystoreZoneCipher(KEY_ALIAS)
     private val folder: File get() = File(context.filesDir, "robocontrol/voice")
 
-    /**
-     * Several voices can be stored side by side, under names, and one of them is the ACTIVE one that the detectors compare
-     * against. That is for testing: record two or three people, switch between them, and read off how close each one comes
-     * to the others. Only the active voice is ever used for a decision.
-     */
+    /** Preferences that hold the name of the active voice. */
     private val prefs get() = context.getSharedPreferences("robocontrol_voice", Context.MODE_PRIVATE)
 
     private val _active = MutableStateFlow(safeName(prefs.getString(KEY_ACTIVE, null) ?: DEFAULT_PROFILE))
 
     private val _generation = MutableStateFlow(0L)
 
-    /**
-     * Counts every change of what the detectors compare against: a voice stored, deleted or switched, its threshold
-     * changed, the cohort replaced or deleted. ConversationMonitor restarts a running OWNER/PAIRWISE detector on it, which
-     * otherwise kept deciding with what it loaded at its start (review 2026-10-02, item 6).
-     */
+    /** Incremented on every change of a stored voice, its threshold, the active voice or the cohort. */
     val generation: StateFlow<Long> = _generation.asStateFlow()
 
     /** Counts one change of the stored voices, threshold or cohort, so a running detector restarts with the new state. */
@@ -144,8 +120,8 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
     private fun fileFor(profile: String) = File(folder, safeName(profile) + ".print")
 
     /**
-     * File names are user input: keep them to letters, digits and a few separators. Every name is normalised ONCE here,
-     * so the active name, the listed names and the file always agree ("Jürgen" is "J_rgen" everywhere, item 56).
+     * Normalises a voice name for use as a file name: letters, digits, space, "_" and "-", at most 40 characters.
+     * @param profile name entered by the user
      */
     fun safeName(profile: String) = profile.trim().replace(Regex("[^A-Za-z0-9 _-]"), "_").take(40).ifBlank { DEFAULT_PROFILE }
 
@@ -273,13 +249,9 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
     }
 
     /**
-     * Changes only the decision threshold of the stored voice; the template itself stays as it was.
-     *
-     * The threshold the enrolment computes comes from how consistent the pieces of ONE recording were, which is far too
-     * strict: measured on the robot 2026-09-23, the owner's own voice scored 0.89–0.91 against a computed threshold of
-     * 0.94. Being able to set it by hand from a measured value is the honest way round that.
-     *
-     * @return null on success, else a message for the screen
+     * Sets the decision threshold of the active voice; the template is not changed.
+     * @param threshold new threshold, clamped to [MIN_THRESHOLD]–[MAX_THRESHOLD]
+     * @return null on success, otherwise the error message
      */
     @Synchronized
     fun setThreshold(threshold: Float): String? = update { it.copy(threshold = threshold.coerceIn(MIN_THRESHOLD, MAX_THRESHOLD)) }
@@ -329,7 +301,7 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
      */
     @Synchronized
     fun saveCohort(values: FloatArray, pieces: Int): String? = runCatching {
-        // An all-zero (or nearly zero) mean would switch the centring off without anybody noticing (review 2026-10-02, item 5).
+        // An all-zero (or nearly zero) mean would switch the centring off without anybody noticing.
         require(norm(values) >= MIN_COHORT_NORM) { "the recorded average is empty; record the other voices again" }
         val json = JSONObject()
             .put("pieces", pieces)
@@ -426,7 +398,7 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         private const val KEY_ACTIVE = "active_profile"
         private const val KEY_ALIAS = "robocontrol_owner_voiceprint"
 
-        /** Range the threshold can be set to by hand. Below 0.2 almost any voice passes, above 0.97 not even the owner. */
+        /** Lowest threshold that can be set. */
         const val MIN_THRESHOLD = 0.2f
         const val MAX_THRESHOLD = 0.97f
 

@@ -52,7 +52,7 @@ import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
 
-/** Drawing layers of the camera debug view. Same meaning as in the object test. */
+/** Drawing layers of the camera debug view. */
 private data class CameraLayers(
     // Owner (2026-09-18): only the bounding box by default; the others cost drawing and detection time and can be switched on.
     val keypoints: Boolean = false,
@@ -73,11 +73,10 @@ private fun colorFor(name: String) = REFERENCE_COLORS[Math.floorMod(name.hashCod
 private val SEARCH_ORANGE = Color(0xFFFF9100)
 
 /**
- * Full-screen debug view of [CalendarMonitor]: its live camera stream with the detection drawn on top (keypoints, inliers, green/yellow
- * pink mask, orange search areas, boxes), the numbers of the latest pass and layer toggles. Uses the monitor's own stream, so it
- * shows exactly what the monitor sees and never competes for the camera. Nothing is stored.
- *
- * @param topControls shown above Back, e.g. a STOP button of the screen that embeds this view
+ * Camera debug view of [CalendarMonitor]: the monitor's live stream with the detection drawn on top, the values of the
+ * latest pass and layer toggles.
+ * @param onBack called when the view is closed
+ * @param topControls controls shown above the Back button
  */
 @Composable
 fun CalendarCameraScreen(onBack: () -> Unit, topControls: @Composable () -> Unit = {}) {

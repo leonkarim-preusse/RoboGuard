@@ -11,15 +11,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * The one [MapNavigation] of the robot, owned by RobotServerService instead of by a screen.
- *
- * Why: the robot's own screen and the phone app must see and change the SAME state, and a drive must not stop only because
- * the robot shows a different screen (it used to: `MapNavigationActivity.onStop` stopped every drive). Stopping is now a
- * decision of the person — STOP on either screen — or of the privacy rules, which keep running here exactly as before
- * (position check every 150 ms, refusal without a fresh position, spoken announcements).
- *
- * [remoteControl] is set while the phone app is steering, so the robot's screen can say so: the thesis asks for visible
- * state, and someone standing next to the robot should see that it is being driven from elsewhere.
+ * Holds the single [MapNavigation] of the process, started by RobotServerService, so that the robot screen and the
+ * phone app share the same navigation state and drives continue when the robot shows another screen. [remoteControl]
+ * names the phone that is currently steering.
  */
 object NavigationHub {
 

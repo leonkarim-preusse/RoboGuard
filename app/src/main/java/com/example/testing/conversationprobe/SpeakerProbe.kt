@@ -26,11 +26,11 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /**
- * Hardware test for speaker change detection (`robocontrol.conversation`): runs [SpeakerChangeDetector] on the robot's
- * microphone or on synthetic voices and logs what it decides, so thresholds can be tuned and the tester can judge the
- * result (✔/✘ per scenario).
- *
- * The log file gets numbers only (levels, distances, times, states): no audio and no features, like the detector itself.
+ * Test of speaker change detection: runs [SpeakerChangeDetector] on the microphone or on synthetic voices and logs its
+ * decisions (numbers only) so that thresholds can be tuned and each scenario judged.
+ * @param context used for the microphone and the settings
+ * @param log log of the test screen
+ * @param scope scope for the detector's collector
  */
 class SpeakerProbe(private val context: Context, private val log: ProbeLog, private val scope: CoroutineScope) {
 
@@ -91,10 +91,7 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
         }
     }
 
-    /**
-     * Starts listening on the robot's microphone (AudioRecord, source CAMCORDER).
-     * Refused if the privacy settings switch the microphone off: this test must respect them like the product would.
-     */
+    /** Starts listening on the microphone; refused if the microphone is switched off in the privacy settings. */
     fun startMicrophone() {
         val micSetting = Sensors.get(context).getSensors().entries.firstOrNull { it.key.equals("microphone", ignoreCase = true) }?.value
         if (micSetting == false) {
@@ -102,7 +99,7 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
             return
         }
         start("microphone", AndroidMicSource(), _config.value)
-        // Switched off while the test runs: stop, like the product does (item 50).
+        // Switched off while the test runs: stop, like the product does.
         Sensors.get(context).addListener(micListener)
     }
 
@@ -173,7 +170,7 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
         }
         detector = null
         // Our own detector first, THEN hand the microphone back: the other way round the monitor opened it while this
-        // test still held it (review 2026-10-02, item 31).
+        // test still held it.
         d.stop()
         ConversationMonitor.setProbeUsingMicrophone(false)
         runCatching { Sensors.get(context).removeListener(micListener) }
@@ -193,10 +190,7 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
                 if (c.groupBestRatioBefore > 0) " (same group, best before %.2f)".format(c.groupBestRatioBefore) else ""))
     }
 
-    /**
-     * Runs the detector as fast as possible on four synthetic scenes with known truth and logs PASS/FAIL. Checks the whole
-     * pipeline (MFCC → KL2 → ΔBIC → decision) on the robot's CPU without anyone talking.
-     */
+    /** Runs the detector on four synthetic scenes with known speaker changes and logs PASS or FAIL for each. */
     fun runSyntheticSelfTest() {
         if (_busy.value) return
         stop("self-test")

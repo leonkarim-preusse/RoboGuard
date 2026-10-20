@@ -5,13 +5,8 @@ import android.net.Uri
 import android.util.Log
 
 /**
- * Which voice ("speaker role") the robot's speech service offers for a language.
- *
- * The service speaks through a cloud TTS with ONE robot-wide speaker (here the German "de-de-wavenet-c"); telling it that a
- * sentence is English does not change the voice, and a guessed name ("en-us-wavenet-c") was refused by the cloud with error
- * 400 and nothing was spoken (robot log 2026-10-19). The service keeps the list it got from the cloud in its own provider
- * (`content://com.ainirobot.speechservice.SpokesmanProvider/spokesman_list`, columns langCode, nickname, type, is_default),
- * which an app may read with a normal permission. `type` is the name the cloud accepts as SpeakerRole.
+ * Reads the voices offered by the robot's speech service from its provider
+ * (`content://com.ainirobot.speechservice.SpokesmanProvider/spokesman_list`) and returns the speaker role for a language.
  */
 object TtsVoices {
     private const val TAG = "TtsVoices"

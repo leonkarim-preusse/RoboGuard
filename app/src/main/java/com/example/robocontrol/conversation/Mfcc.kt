@@ -11,16 +11,12 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Mel-frequency cepstral coefficients (MFCCs) for one audio frame, in plain Kotlin (no library).
- *
- * MFCCs describe the short-term spectral shape of a sound, i.e. roughly "what the vocal tract looked like" in the
- * last 25 ms. They do not contain the words; a sequence of them is still speech-derived data, so callers keep them
- * only in a short ring buffer and never log or store them.
- *
- * Pipeline per frame: pre-emphasis → Hamming window → FFT power spectrum → triangular mel filter bank → log → DCT-II.
- * Coefficient 0 (overall loudness) is dropped, so a speaker getting louder or quieter is not a "change".
- *
- * Not thread-safe: reuses internal buffers. One instance per audio thread.
+ * Computes 12 mel-frequency cepstral coefficients (c1–c12) per audio frame: pre-emphasis, Hamming window, FFT power
+ * spectrum, mel filter bank, logarithm and DCT-II. Not thread-safe.
+ * @param sampleRate sample rate in Hz
+ * @param frameLength frame length in samples
+ * @param fftSize FFT length
+ * @param melBands number of mel filters
  */
 class Mfcc(
     val sampleRate: Int = 16_000,
@@ -153,7 +149,7 @@ class Mfcc(
             }
         }
 
-        /** Root mean square of [x] (kept for debugging). */
+        /** Root mean square of [x]. */
         @Suppress("unused")
         fun rms(x: DoubleArray) = sqrt(x.sumOf { it * it } / x.size)
     }

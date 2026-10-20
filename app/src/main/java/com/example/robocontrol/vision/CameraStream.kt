@@ -21,13 +21,9 @@ import org.opencv.imgproc.Imgproc
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * One camera frame in memory: brightness for detection, colour (from the camera's YUV data) for the pink marker and display, and
- * brightness statistics. Never stored.
- *
- * Everything except [gray] is computed on first use with native OpenCV code: converting every frame in Kotlin cost 80–100 ms per
- * frame on the robot (measured 2026-09-17), which was the largest part of a detection pass.
- *
- * @property timestampMs elapsedRealtime when the frame arrived
+ * One camera frame in memory: grayscale image, colour planes and brightness statistics; derived images are computed
+ * on first use.
+ * @property timestampMs time the frame arrived (elapsedRealtime)
  */
 class CameraFrame internal constructor(
     val gray: GrayImage,
@@ -122,24 +118,14 @@ class CameraFrame internal constructor(
 }
 
 /**
- * A continuous camera stream through RobotOS's SurfaceShareApi, so the robot's own vision keeps the camera
- * (see [CameraSnapshot], which opens and closes the stream for one frame). Keeps only the latest frame.
- *
- * Needs RobotApi connected first (else [start] reports code −1). Stop it when the screen is not visible: the
- * OrionStar docs warn about memory and CPU cost.
+ * Continuous camera stream through RobotOS's SurfaceShareApi that keeps only the latest frame. Requires a connected
+ * RobotApi; stop it when it is no longer needed.
  */
 class CameraStream(
-    /**
-     * Frame size requested from SurfaceShare. RobotOS's own camera session runs at 1280×720 (YUV, full-range "JFIF"; read with
-     * `dumpsys media.camera` on the robot, 2026-09-17), so that is the highest real resolution; other sizes are scaled from it
-     * (640×480 also squeezes 16:9 into 4:3).
-     */
+    /** Requested frame width in pixels (the camera session of RobotOS runs at 1280×720). */
     val width: Int = 1280,
     val height: Int = 720,
-    /**
-     * Frames per second passed on at most; RobotOS delivers ~30. Extra frames are closed without copying. Owner (2026-09-18): 20, to leave
-     * CPU for detection. The stream itself cannot be slowed (SurfaceShare has no frame-rate setting), only our handling of it.
-     */
+    /** Maximum number of frames per second that are processed; further frames are dropped. */
     val maxFps: Int = 20
 ) {
     /** The newest frame, or null before the first one. */
@@ -153,7 +139,7 @@ class CameraStream(
     private var reader: ImageReader? = null
     private var bean: SurfaceShareBean? = null
     private var lastError = 0
-    /** Earliest time the next frame is accepted (frame-rate limit). */
+    /** Earliest time at which the next frame is accepted. */
     private var nextDueAt = 0L
 
     // Reused per frame on the camera thread (plane copies and output pixels), so no per-frame allocation except the outputs.
@@ -162,9 +148,9 @@ class CameraStream(
     private var vBytes = ByteArray(0)
 
     /**
-     * Starts the stream. [onError] gets SurfaceShare errors (e.g. −14 camera used by someone else, −15 camera blocked by
-     * the device policy, −16 preempted).
-     * @return the requestImageFrame code (≥ 0 = requested)
+     * Starts the stream.
+     * @param onError called with SurfaceShare error codes (e.g. −14 stream in use, −15 camera blocked, −16 preempted)
+     * @return the code of `requestImageFrame`; ≥ 0 means requested
      */
     @Synchronized
     fun start(onError: (code: Int, message: String?) -> Unit): Int {
@@ -227,10 +213,7 @@ class CameraStream(
         vBytes.fill(0)
     }
 
-    /**
-     * Copies the three planes in bulk (one buffer read per row instead of per pixel), then builds the gray image, the colour
-     * preview (YUV_420_888 → ARGB, BT.601) and the brightness statistics in one pass over plain arrays.
-     */
+    /** Copies the image planes into a [CameraFrame]. */
     private fun Image.toFrame(): CameraFrame {
         val yPlane = planes[0]; val uPlane = planes[1]; val vPlane = planes[2]
         val yStride = yPlane.rowStride
