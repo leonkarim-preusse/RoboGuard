@@ -158,6 +158,7 @@ class RobotMapFile(
         private const val WIRE_LENGTH_DELIMITED = 2
         private const val WIRE_FIXED32 = 5
 
+        /** Reads one protobuf varint (7 bits per byte, low bits first) from [buf]. */
         private fun readVarint(buf: ByteBuffer): Long {
             var result = 0L
             var shift = 0

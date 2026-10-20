@@ -79,6 +79,7 @@ class OrionStarBridge(
     /** The registered pose status listener, so a reconnect does not add a second one and disconnect can remove it. */
     private var poseListener: StatusListener? = null
 
+    /** Listens to RobotOS's pose status and publishes every new pose in [pose]. Replaces an older listener. */
     private fun registerPoseListener() {
         poseListener?.let { runCatching { RobotApi.getInstance().unregisterStatusListener(it) } }
         poseListener = object : StatusListener() {
@@ -243,8 +244,11 @@ class OrionStarBridge(
         if (code < 0) callback(false)
     }
 
-    // The SDK dispatcher calls the (…, extraData) variant AND then the deprecated 2-arg
-    // variant for every event. Override only the 3-arg ones, or each event fires twice.
+    /**
+     * Turns the SDK's action callbacks into [NavigationListener] calls.
+     * The SDK dispatcher calls the (…, extraData) variant AND then the deprecated 2-arg
+     * variant for every event. Override only the 3-arg ones, or each event fires twice.
+     */
     private fun actionListener(listener: NavigationListener) = object : ActionListener() {
         override fun onResult(status: Int, response: String?, extraData: String?) {
             when (status) {
@@ -292,6 +296,7 @@ class OrionStarBridge(
         const val TURN_SPEED_DEG_PER_S = 30f
 
         private var counter = 1000
+        /** A new request id for an SDK call. */
         private fun nextReqId(): Int = ++counter
     }
 }

@@ -89,6 +89,7 @@ class SavedPointStore(context: Context, private val cipher: ZoneCipher = Keystor
         return (!file.exists() || file.delete()) && (!legacy.exists() || legacy.delete())
     }
 
+    /** Reads the JSON list of saved locations. */
     private fun parse(json: String): List<SavedPoint> {
         val array = JSONArray(json)
         return (0 until array.length()).map { i ->
@@ -97,13 +98,16 @@ class SavedPointStore(context: Context, private val cipher: ZoneCipher = Keystor
         }
     }
 
+    /** Authenticated with the encrypted content: binds a file to its own name, i.e. to its map. */
     private fun associatedData(file: File) = "roboguard-points:${file.name}".toByteArray(Charsets.UTF_8)
 
     /** Map names contain spaces and other characters; keep the file name to a safe character set. */
     private fun safeName(mapName: String) = mapName.replace(Regex("[^A-Za-z0-9._-]"), "_")
 
+    /** The encrypted file that holds the locations of [mapName]. */
     private fun fileFor(mapName: String): File = File(directory, safeName(mapName) + ".points")
 
+    /** The old plaintext file of [mapName], read once and then replaced by the encrypted one. */
     private fun legacyFileFor(mapName: String): File = File(directory, safeName(mapName) + ".json")
 
     companion object {

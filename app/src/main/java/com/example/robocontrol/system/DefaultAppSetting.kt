@@ -32,8 +32,11 @@ object DefaultAppSetting {
 
     /** Outcome of [ensureRoboGuardIsDefault] / [restorePrevious]. */
     sealed interface Result {
+        /** The setting already named [value] (this app); nothing was written. */
         data class AlreadySet(val value: String) : Result
+        /** The setting was changed [from] the previous app [to] this one. */
         data class Changed(val from: String, val to: String) : Result
+        /** Reading or writing the setting failed; [reason] says why. */
         data class Failed(val reason: String) : Result
     }
 

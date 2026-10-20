@@ -124,6 +124,7 @@ class MovementProbeActivity : ComponentActivity() {
         probe.start()
     }
 
+    /** The test screen: map, drive controls, places, private areas and the no-go line test. */
     @Composable
     private fun ProbeScreen() {
         val lines by log.lines.collectAsState()
@@ -473,6 +474,7 @@ class MovementProbeActivity : ComponentActivity() {
         )
     }
 
+    /** One place or point in the lists, with its coordinates. */
     @Composable
     private fun PointButton(point: MapPoint, isSelected: Boolean) {
         val label = "${point.name}  (%.2f, %.2f)".format(point.position.x, point.position.y)
@@ -665,6 +667,7 @@ class MovementProbeActivity : ComponentActivity() {
         var zoom by mutableStateOf(1f)
         var pan by mutableStateOf(Offset.Zero)
 
+        /** Back to no zoom and no pan. */
         fun reset() {
             zoom = 1f
             pan = Offset.Zero
@@ -674,6 +677,7 @@ class MovementProbeActivity : ComponentActivity() {
     /** Converts between screen pixels and world metres for the map drawn centred and scaled to fit. */
     private class MapTransform(val rendered: RenderedMap, val scale: Float, val offsetX: Float, val offsetY: Float) {
 
+        /** Map coordinates to screen pixels. */
         fun toScreen(p: Point2D): Offset {
             val (col, row) = rendered.map.toCell(p)
             val bx = col - rendered.bounds.minCol
@@ -690,6 +694,7 @@ class MovementProbeActivity : ComponentActivity() {
         }
     }
 
+    /** The transform that fits the whole map picture into a [width] x [height] canvas, centred. */
     private fun fit(rendered: RenderedMap, width: Float, height: Float): MapTransform {
         val bw = rendered.bitmap.width.toFloat()
         val bh = rendered.bitmap.height.toFloat()

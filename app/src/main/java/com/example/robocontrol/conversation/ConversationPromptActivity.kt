@@ -58,6 +58,7 @@ class ConversationPromptActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /** The prompt: Leave room / Mute mic, "Don't ask again for N min", Close, and the page for choosing another time. */
     @Composable
     private fun Prompt() {
         var minutes by remember { mutableStateOf(ConversationMonitor.DEFAULT_PAUSE_MINUTES) }
@@ -147,6 +148,7 @@ class ConversationPromptActivity : ComponentActivity() {
         }
     }
 
+    /** A text kept on one line, for the small buttons. */
     @Composable
     private fun OneLine(text: String, sizeSp: Int) {
         Text(text, fontSize = sizeSp.sp, maxLines = 1, softWrap = false)

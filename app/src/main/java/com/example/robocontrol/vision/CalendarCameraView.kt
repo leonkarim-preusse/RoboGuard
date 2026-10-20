@@ -68,6 +68,7 @@ private data class CameraLayers(
 }
 
 private val REFERENCE_COLORS = listOf(Color(0xFFFFEB3B), Color(0xFF00E5FF), Color(0xFFFF4081), Color(0xFF76FF03), Color(0xFF448AFF), Color(0xFFE040FB))
+/** The colour of a reference image on the view, fixed by its name. */
 private fun colorFor(name: String) = REFERENCE_COLORS[Math.floorMod(name.hashCode(), REFERENCE_COLORS.size)]
 private val SEARCH_ORANGE = Color(0xFFFF9100)
 
@@ -178,6 +179,7 @@ fun CalendarCameraScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
     }
 }
 
+/** Two switches side by side; [onToggle] gets 0 for the left one, 1 for the right one. */
 @Composable
 private fun ToggleRow(a: Pair<String, Boolean>, b: Pair<String, Boolean>, onToggle: (Int) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -189,6 +191,7 @@ private fun ToggleRow(a: Pair<String, Boolean>, b: Pair<String, Boolean>, onTogg
     }
 }
 
+/** The camera picture with the layers chosen on the screen (boxes, outlines, keypoints, inliers, pink mask, search areas). */
 @Composable
 private fun CameraCanvas(frame: CameraFrame, snapshot: CalendarMonitor.DebugSnapshot?, layers: CameraLayers) {
     val image = frame.preview.asImageBitmap()

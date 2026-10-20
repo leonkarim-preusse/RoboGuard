@@ -38,6 +38,7 @@ class PgmMap(
         require(extra.size == EXTRA_BYTES) { "expected $EXTRA_BYTES trailing bytes, got ${extra.size}" }
     }
 
+    /** Whether pixel [px], [py] lies inside the picture. */
     fun inBounds(px: Int, py: Int): Boolean = px in 0 until width && py in 0 until height
 
     /** Pixel value at column [px], row [py] (row 0 = top). */
@@ -142,8 +143,10 @@ class PgmMap(
         const val VALUE_FREE = 255
         private const val EXTRA_BYTES = 16
 
+        /** The map.pgm file of [mapName] on the robot. */
         fun file(mapName: String): File = File(RobotMapFile.mapDirectory(mapName), "navi_data/map.pgm")
 
+        /** Reads and parses the map.pgm of [mapName]. */
         fun load(mapName: String): PgmMap = parse(file(mapName).readBytes())
 
         /** Parses the format described on the class. Throws on anything unexpected, so a bad file is never rewritten. */

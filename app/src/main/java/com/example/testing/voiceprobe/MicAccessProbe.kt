@@ -64,6 +64,7 @@ class MicAccessProbe(private val context: Context, private val log: ProbeLog) {
         com.example.robocontrol.conversation.ConversationMonitor.acquireMicrophone("mic access test").use { runAttempts(secondsPerAttempt) }
     }
 
+    /** Tries every audio source and channel count for [secondsPerAttempt] each and logs the levels per channel. */
     private fun runAttempts(secondsPerAttempt: Double) {
         listInputDevices()
         logActiveRecordings("before")

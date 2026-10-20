@@ -205,6 +205,7 @@ class CameraStream(
         return code
     }
 
+    /** Stops the stream: gives the share back (unless somebody else held it), then closes the reader, thread and surface. */
     @Synchronized
     fun stop() {
         val r = reader ?: return

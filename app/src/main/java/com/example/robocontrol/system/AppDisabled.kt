@@ -24,6 +24,7 @@ object AppDisabled {
     private const val KEY = "disabled"
     private const val SERVICE = "com.example.roboguard.RobotServerService"
 
+    /** Whether RoboGuard was switched off with the debug switch. */
     fun isDisabled(context: Context): Boolean =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, false)
 

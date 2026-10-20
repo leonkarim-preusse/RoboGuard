@@ -29,6 +29,7 @@ data class MarkerColor(val hueMin: Int, val hueMax: Int, val saturationMin: Int,
  */
 data class ImageRegion(val x: Int, val y: Int, val width: Int, val height: Int) {
     val area: Int get() = width * height
+    /** Whether [p] lies inside this region. */
     fun contains(p: ImagePoint) = p.x >= x && p.x < x + width && p.y >= y && p.y < y + height
 }
 
@@ -314,6 +315,7 @@ class ColorMarker(
         return ImageRegion(b.x + x0, b.y + y0, x1 - x0 + 1, y1 - y0 + 1)
     }
 
+    /** Shape numbers of one pink group: side coverage (top, right, bottom, left), white share inside and the main angle. */
     private class Shape(val coverage: List<Double>, val whiteShare: Double, val angleDeg: Double)
 
     /**
@@ -415,6 +417,7 @@ class ColorMarker(
         return (w.toDouble() * h) / minOf(a.area, b.area).coerceAtLeast(1)
     }
 
+    /** Share of positions along each side (top, right, bottom, left) that have pink in a band along that side. */
     private fun sideCoverage(clean: ByteArray, labels: IntArray, g: Int, b: ImageRegion, width: Int): List<Double> {
         val band = maxOf(3, (minOf(b.width, b.height) * 0.12).toInt())
         val top = BooleanArray(b.width); val bottom = BooleanArray(b.width)
@@ -451,6 +454,7 @@ class ColorMarker(
         }
     }
 
+    /** The overlay picture for the camera view (green = accepted pink, yellow = rejected), or null if not [wanted]. */
     private fun overlay(
         wanted: Boolean, raw: ByteArray, clean: ByteArray?, groups: Pair<IntArray, BooleanArray>?, width: Int, height: Int
     ): Bitmap? {
@@ -464,6 +468,7 @@ class ColorMarker(
         return Bitmap.createBitmap(px, width, height, Bitmap.Config.ARGB_8888)
     }
 
+    /** Marks the pixels of [hsv] whose hue, saturation and value lie in the marker colour's range. */
     private fun inRange(hsv: Mat, out: Mat) {
         val c = color
         val low = Scalar(c.hueMin.toDouble(), c.saturationMin.toDouble(), c.valueMin.toDouble())
@@ -482,5 +487,6 @@ class ColorMarker(
         }
     }
 
+    /** Milliseconds since [t0]. */
     private fun elapsed(t0: Long) = android.os.SystemClock.elapsedRealtime() - t0
 }

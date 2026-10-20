@@ -73,12 +73,14 @@ class PrivacyOverrideActivity : ComponentActivity() {
         answer(null)
     }
 
+    /** Passes the answer on (minutes = allowed, null = no) and closes the popup. */
     private fun answer(minutes: Int?) {
         requestId?.let { PrivacyOverridePrompt.answer(it, minutes) }
         requestId = null
         finish()
     }
 
+    /** The popup: question, Yes / No, and the page for choosing another time. */
     @Composable
     private fun Prompt() {
         val pending by PrivacyOverridePrompt.pending.collectAsState()
@@ -170,6 +172,7 @@ class PrivacyOverrideActivity : ComponentActivity() {
         Text(text, fontSize = sizeSp.sp, maxLines = 1, softWrap = false)
     }
 
+    /** "1 minute" / "N minutes" for the popup. */
     private fun minutesText(minutes: Int) =
         if (minutes == 1) UiText.get("privacy_popup.minutes_one") else UiText.get("privacy_popup.minutes_many", "minutes" to minutes)
 

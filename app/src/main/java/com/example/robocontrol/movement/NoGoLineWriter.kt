@@ -34,6 +34,7 @@ class NoGoLineWriter(
 ) {
     private val backupRoot = File(context.filesDir, "robocontrol/map_backups")
 
+    /** Whether the original map.pgm of [mapName] has already been backed up. */
     fun hasBackup(mapName: String): Boolean = backupPgm(mapName).exists()
 
     /**
@@ -70,8 +71,11 @@ class NoGoLineWriter(
 
     // ---- internals ----------------------------------------------------------------
 
+    /** Backup folder of one map inside the app's files. */
     private fun backupDir(mapName: String) = File(backupRoot, mapName.replace(Regex("[^A-Za-z0-9._-]"), "_"))
+    /** The backed up original map.pgm. */
     private fun backupPgm(mapName: String) = File(backupDir(mapName), "map.pgm")
+    /** The backed up original forbid-line flag. */
     private fun backupFlag(mapName: String) = File(backupDir(mapName), "forbidLine.txt")
 
     /** Copies the original only once: the first backup is the state before RoboGuard changed anything. */
@@ -89,6 +93,7 @@ class NoGoLineWriter(
         JSONObject(outer.getString("mapInfo")).optInt("forbidLine", 0)
     }.getOrDefault(0)
 
+    /** Replaces [target] through a temp file and a rename; falls back to a plain write if the rename fails. */
     private fun writeReplacing(target: File, bytes: ByteArray) {
         val temp = File(target.parentFile, target.name + ".roboguard.tmp")
         temp.writeBytes(bytes)
@@ -98,6 +103,7 @@ class NoGoLineWriter(
         }
     }
 
+    /** Tells RobotOS that the map has no-go lines ([forbidLineFlag]) and a new update time, like the map tool does. */
     private fun notifyRobotOs(mapName: String, forbidLineFlag: Int) {
         val api = RobotApi.getInstance()
         val flagCode = api.setMapForbidLineFlag(reqIdSource(), mapName, forbidLineFlag, answer("setMapForbidLineFlag($forbidLineFlag)"))

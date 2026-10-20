@@ -80,6 +80,7 @@ class SileroVad(context: Context, val sampleRate: Int = 16_000) : AutoCloseable 
         options.close()
     }
 
+    /** Copies the model's recurrent state output into [target] for the next chunk. */
     private fun copyState(value: Any, target: FloatArray) {
         @Suppress("UNCHECKED_CAST")
         val state = value as Array<Array<FloatArray>>

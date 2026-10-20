@@ -18,6 +18,15 @@ This is the source code for the robot application of roboguard. Check [here](htt
 1. ```Praktikumsbericht_fixed``` contains detailed explanations (in german)
 2. All source code is found under ```~/app/src/main/java/com/example/roboguard``` and documented in the Code
 3. ```Main Activity.kt``` controls the UI and ```RobotServerService``` controls the server therefore they control the application flow
+4. The robot control added after the Praktikum is found under ```~/app/src/main/java/com/example/robocontrol``` and documented in the Code. ```RobotServerService``` starts its three background parts: ```ConversationMonitor```, ```CalendarMonitor``` and ```NavigationHub```
+   - ```movement```: map, private areas and driving. ```MapNavigation.kt``` holds the navigation state for the robot screen (```MapNavigationActivity.kt```) and the phone (```NavigationRoutes.kt```, routes ```/nav/...```). ```NavigationController.kt``` and ```PrivacyGuard.kt``` check every drive before and while the robot moves
+   - ```conversation```: conversation detection from the microphone. ```ConversationMonitor.kt``` decides when to listen and shows the prompt; the four methods are ```SpeakerChangeDetector``` (in ```ConversationDetector.kt```), ```OwnerVoiceDetector.kt```, ```PairwiseVoiceDetector.kt``` and ```SpeechActivityDetector.kt```. ```VoiceEnrolment.kt``` teaches the owner's voice, ```OwnerVoiceprint.kt``` stores it encrypted
+   - ```vision```: object detection from the camera. ```CalendarMonitor.kt``` runs the detection, ```ORB.kt``` matches the reference images, ```ColorMarker.kt``` finds the pink frame around the calendar, ```CalendarPromptActivity.kt``` is the calendar popup
+   - ```sensorcontrol```: ```sensors.kt``` holds the sensor and situational settings from the phone, ```SensorSwitches.kt``` switches camera, microphone and LIDAR
+   - ```audio``` (speech output), ```text``` (```UiText.kt```), ```system``` (SDK connection, default app, debug mode, disable switch)
+   - ```assets```: ```texts/texts.json``` contains every text on screen and every spoken sentence, ```settings/settings.json``` all object detection settings, ```ORB_img``` the reference images, ```silero``` and ```speaker``` the two speech models
+5. The on-robot test screens ("RG ... Test" icons) are found under ```~/app/src/main/java/com/example/testing```, see the testing sections below
+6. ```performance``` contains the host-side scripts for recording and plotting the robot's CPU load and detection times (```record.py```, ```graphs.py```, ```plot.py```, ```compare.py```)
 
 ## Testing the voice probes
 The voice probes under ```app/src/main/java/com/example/testing/voiceprobe``` are hardware tests for detecting whether more than one person is speaking. They answer three questions before the detector is built:

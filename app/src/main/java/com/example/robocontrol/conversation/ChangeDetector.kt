@@ -27,6 +27,7 @@ enum class SpeechGate {
     SILERO
 }
 
+/** All settings of the change detector. Defaults are the values the owner's successful probe run used. */
 data class ChangeDetectorConfig(
     /** Which speech gate to use. */
     val speechGate: SpeechGate = SpeechGate.SILERO,
@@ -111,6 +112,7 @@ class SilenceWindow(windowMs: Long, private val maxSpeechShare: Double, frameMs:
         return filled == frames.size && speech <= maxSpeechShare * frames.size
     }
 
+    /** Forgets the window. */
     fun clear() {
         frames.fill(false)
         at = 0; filled = 0; speech = 0
@@ -317,6 +319,7 @@ class ChangeDetector(val dim: Int, private val config: ChangeDetectorConfig = Ch
         return Raw(peakBoundary, ChangeCandidate(time, peak, deltaBic, accepted, gain, penalty))
     }
 
+    /** Noise floor = 10th percentile of the levels of the last 5 s. */
     private fun updateNoiseFloor() {
         val known = levelRing.filter { !it.isNaN() }
         if (known.size < 50) return

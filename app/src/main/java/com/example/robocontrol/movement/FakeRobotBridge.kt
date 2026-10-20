@@ -58,6 +58,7 @@ class FakeRobotBridge(
 
     override fun isLocalized(callback: (Boolean) -> Unit) = callback(localized)
 
+    /** Sets whether the fake robot counts as localised. */
     fun setLocalized(value: Boolean) { localized = value }
 
     override fun setPoseEstimate(x: Double, y: Double, theta: Double, callback: (Boolean) -> Unit) {
@@ -171,6 +172,7 @@ class FakeRobotBridge(
         emitPose()
     }
 
+    /** Ends the fake drive at its target and calls onArrived. */
     private fun finishArrived() {
         val l = listener
         target = null
@@ -179,6 +181,7 @@ class FakeRobotBridge(
         l?.onArrived()
     }
 
+    /** Publishes the fake position as a new [RobotPose]. */
     private fun emitPose() {
         _pose.value = RobotPose(
             x = position.x,

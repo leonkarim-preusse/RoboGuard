@@ -60,6 +60,7 @@ SET_ACTIVITY_RE = re.compile(r"speech activity, (\d+) % of the last ([\d,.]+) s,
 
 
 def fnum_or_none(text):
+    """Number from a log line; None for "-Infinity" / "Infinity" (no sound at all)."""
     return None if text in ("-Infinity", "Infinity") else fnum(text)
 
 
@@ -143,6 +144,7 @@ def parse_similarity(voice):
 
 
 def parse_delays(lines):
+    """Frame-to-decision delays from the 2 s summaries: list of (time, avg ms, worst ms)."""
     out = []
     for e in lines:
         m = DELAY_RE.search(e["text"])
@@ -152,6 +154,7 @@ def parse_delays(lines):
 
 
 def parse_announcements(lines):
+    """Times of the object announcements (and their delay) from the CalendarMonitor log."""
     out = []
     for e in lines:
         m = ANNOUNCE_RE.search(e["text"])
@@ -192,6 +195,7 @@ def parse_speaking(voice, t_end):
 
 
 def parse_events(entries, needle):
+    """Times of all log entries whose text contains needle."""
     return [e["t"] for e in entries if needle in e["text"]]
 
 
@@ -217,6 +221,7 @@ def wrap(text, draw, font_, width):
 
 
 class Figure:
+    """A tall canvas of stacked time panels sharing one time axis; cropped to the used height when saved."""
     def __init__(self, title, subtitle, t0, t_end, width=1800, left=150, right=430, note=""):
         self.W, self.L, self.R = width, left, right
         self.t0, self.t_end = t0, max(t_end, t0 + 1)
@@ -316,6 +321,7 @@ class Figure:
 # ----------------------------------------------------------------------------------------------------------------------
 
 def activity_figure(data, out_path, t0, t_end, windows):
+    """02_activity.png: one row per activity (driving, objects, speech, prompts, ...) with CPU underneath."""
     monitor, voice = data["monitor"], data.get("voice", [])
     seen = parse_seen(monitor, t_end)
     audio = parse_audio(voice)
@@ -412,6 +418,7 @@ def _cpu_context(fig, data, t0):
 # ----------------------------------------------------------------------------------------------------------------------
 
 def cores_figure(data, out_path, t0, t_end):
+    """03_cores.png: busy share of every CPU core and RoboGuard's threads per core. None without core samples."""
     cores = data.get("cores", [])
     if not cores:
         return None
@@ -501,6 +508,7 @@ def _thread_cores(fig, data):
 # ----------------------------------------------------------------------------------------------------------------------
 
 def delay_figure(data, out_path, t0, t_end, windows):
+    """04_object_delay.png: frame-to-decision delay, pass rate, pass time and how long each object was in view."""
     monitor = data["monitor"]
     delays = parse_delays(monitor)
     announcements = parse_announcements(monitor)
@@ -622,6 +630,7 @@ def voice_settings(voice):
 
 
 def voice_figure(data, out_path, t0, t_end):
+    """05_voice.png: speech share, gate numbers, embedding times and similarity readings. None without voice lines."""
     voice = data.get("voice", [])
     audio = parse_audio(voice)
     similarity = parse_similarity(voice)
@@ -787,6 +796,7 @@ def voice_figure(data, out_path, t0, t_end):
 # ----------------------------------------------------------------------------------------------------------------------
 
 def distance_figure(data, out_path, t0):
+    """06_distance.png: inliers and keypoints against the size of the pink frame. None if ORB never ran on one."""
     checks = parse_checks(data["monitor"])
     if not checks:
         return None
@@ -802,6 +812,7 @@ def distance_figure(data, out_path, t0):
 # ----------------------------------------------------------------------------------------------------------------------
 
 def subtitle_for(data, t0):
+    """The subtitle of every figure: start time, length, pid and label of the run."""
     started = datetime.fromtimestamp(t0).strftime("%Y-%m-%d %H:%M:%S")
     text = f"Recorded {started}, {data['seconds']} s, pid {data['pid']}"
     if data.get("label"):

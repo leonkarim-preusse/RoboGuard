@@ -15,6 +15,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * "Camera" is disabled. Called once per sensor whose state actually changed.
  */
 fun interface SensorChangeListener {
+    /** Called once for every sensor whose state changed; [enabled] is the new state. */
     fun onSensorChanged(name: String, enabled: Boolean)
 }
 
@@ -25,6 +26,7 @@ fun interface SensorChangeListener {
  * USES them may run. Discretion Mode gates the conversation detection, Pixelate Objects the object detection.
  */
 fun interface SituationalChangeListener {
+    /** Called once for every situational feature whose state changed; [enabled] is the new state. */
     fun onSituationalChanged(name: String, enabled: Boolean)
 }
 
@@ -113,6 +115,7 @@ class Sensors private constructor(private val context: Context) {
         return sensors.filter { (name, enabled) -> previous[name] != enabled }
     }
 
+    /** Logs the changed sensors and calls every listener once per change (exceptions are caught per listener). */
     private fun notifySensors(changed: Map<String, Boolean>) {
         if (changed.isEmpty()) return
         Log.i(TAG, "sensor settings changed: $changed")
@@ -171,12 +174,14 @@ class Sensors private constructor(private val context: Context) {
         notifySituational(assignSituational(values))
     }
 
+    /** Stores the situational values and returns only the ones that changed. */
     private fun assignSituational(values: Map<String, Boolean>): Map<String, Boolean> {
         val previous = _situational.value
         _situational.value = values.toMap()
         return values.filter { (name, on) -> previous[name] != on }
     }
 
+    /** Logs the changed situational features and calls every listener once per change. */
     private fun notifySituational(changed: Map<String, Boolean>) {
         if (changed.isEmpty()) return
         Log.i(TAG, "situational settings changed: $changed")
@@ -193,6 +198,7 @@ class Sensors private constructor(private val context: Context) {
         situationalListeners += listener
     }
 
+    /** Stops calling [listener] for situational changes. */
     fun removeSituationalListener(listener: SituationalChangeListener) {
         situationalListeners -= listener
     }
@@ -228,6 +234,7 @@ class Sensors private constructor(private val context: Context) {
         }
     }
 
+    /** Stops calling [listener] for sensor changes. */
     fun removeListener(listener: SensorChangeListener) {
         listeners -= listener
     }

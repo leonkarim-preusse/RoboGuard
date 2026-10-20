@@ -48,11 +48,13 @@ class CalendarPromptActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /** Remembers what was chosen and closes the popup. */
     private fun close(chosen: CalendarMonitor.PopupChoice) {
         choice = chosen
         finish()
     }
 
+    /** The popup: "Blur calendar", "Save dates" and "Dismiss". */
     @Composable
     private fun Prompt() {
         val padding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
@@ -81,6 +83,7 @@ class CalendarPromptActivity : ComponentActivity() {
         }
     }
 
+    /** A text kept on one line, for the small buttons. */
     @Composable
     private fun OneLine(text: String) {
         Text(text, fontSize = 15.sp, maxLines = 1, softWrap = false)

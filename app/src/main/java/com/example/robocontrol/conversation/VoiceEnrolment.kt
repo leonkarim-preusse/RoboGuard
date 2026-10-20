@@ -33,6 +33,7 @@ data class EnrolmentState(
     /** In [Phase.TESTING] with a stored cohort: the raw similarity before centring, for comparison. */
     val rawSimilarity: Float? = null
 ) {
+    /** What the enrolment is doing right now. */
     enum class Phase { IDLE, RECORDING, SAVED, TESTING, ERROR }
 }
 
@@ -88,6 +89,7 @@ class VoiceEnrolment(private val context: Context) {
      */
     fun startCohort() = start(Mode.COHORT, null)
 
+    /** Starts a run in its own thread unless one is running or the microphone is switched off in the settings. */
     @Synchronized
     private fun start(mode: Mode, profile: String?) {
         if (thread != null) return
@@ -138,12 +140,17 @@ class VoiceEnrolment(private val context: Context) {
         thread = null
     }
 
+    /** Whether the privacy settings switch the microphone off. */
     private fun microphoneSwitchedOff(): Boolean = Sensors.get(context).getSensors().entries
         .firstOrNull { it.key.equals("microphone", ignoreCase = true) }?.value == false
 
     /** Pieces a worker handed back: an embedding (ENROL, COHORT) or the two similarities (TEST). */
     private class Reading(val embedding: FloatArray?, val similarity: Float, val raw: Float)
 
+    /**
+     * The recording thread: reads the microphone, cuts pieces like the detectors do, embeds them and, at the end,
+     * stores the voice / the cohort or reports the test readings. Every buffer is zeroed before it returns.
+     */
     private fun run(mode: Mode, stored: Voiceprint?, profile: String?) {
         val testing = mode == Mode.TEST
         val source = AndroidMicSource()
@@ -421,6 +428,7 @@ class VoiceEnrolment(private val context: Context) {
         }
     }
 
+    /** Element-wise mean of [embeddings] (not normalised). */
     private fun centroid(embeddings: List<FloatArray>): FloatArray {
         val sum = FloatArray(embeddings.first().size)
         for (e in embeddings) for (i in sum.indices) sum[i] += e[i]

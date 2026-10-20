@@ -65,6 +65,10 @@ class OwnerVoiceDetector(
         return t == null || !t.isAlive
     }
 
+    /**
+     * The detector thread: reads the microphone, gates speech, cuts pieces, compares each embedding with the stored voice
+     * and publishes snapshots. Erases every buffer before it ends.
+     */
     private fun run() {
         val store = OwnerVoiceprintStore.get(context)
         val template = store.load()
@@ -356,6 +360,10 @@ class OwnerVoiceDetector(
  */
 enum class SpeechGateMode { SILERO_AND_LEVEL, SILERO_ONLY, LEVEL_ONLY }
 
+/**
+ * All settings of the voice detectors (owner, pairwise, activity) and of the enrolment's piece assembly.
+ * Built by [ConversationMonitor] from the saved preferences.
+ */
 data class ConversationSettings(
     val pieceSeconds: Double = 3.0,
     val speechThreshold: Double = 0.5,

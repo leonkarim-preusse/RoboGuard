@@ -66,17 +66,20 @@ object DebugMode {
         }
     }
 
+    /** Switches debug mode on or off and saves it. */
     fun set(context: Context, on: Boolean) {
         prefs(context).edit().putBoolean(KEY, on).apply()
         _enabled.value = on
         loaded = true
     }
 
+    /** Shows [text] as a toast, replacing the previous one. */
     private fun show(context: Context, text: String) {
         // Replace the previous toast so fast taps do not queue up a row of them.
         toast?.cancel()
         toast = Toast.makeText(context.applicationContext, text, Toast.LENGTH_SHORT).also { it.show() }
     }
 
+    /** The preferences that hold the debug mode. */
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }

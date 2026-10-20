@@ -12,6 +12,7 @@ import kotlin.math.sqrt
 
 /** A point in the map frame, in metres. */
 data class Point2D(val x: Double, val y: Double) {
+    /** Straight-line distance to [other] in metres. */
     fun distanceTo(other: Point2D): Double {
         val dx = x - other.x
         val dy = y - other.y
@@ -38,6 +39,7 @@ enum class PoseStatus(val code: Int) {
     UNKNOWN(-1);
 
     companion object {
+        /** Maps the SDK's status code to the enum; unknown codes give [UNKNOWN]. */
         fun fromCode(code: Int): PoseStatus =
             entries.firstOrNull { it.code == code } ?: UNKNOWN
     }
@@ -151,6 +153,7 @@ data class Zone(
         polygon.sumOf { it.y } / polygon.size
     )
 
+    /** Shortest distance from [p] to the line segment from [a] to [b]. */
     private fun distancePointToSegment(p: Point2D, a: Point2D, b: Point2D): Double {
         val dx = b.x - a.x
         val dy = b.y - a.y
@@ -174,6 +177,7 @@ data class MapZones(
     val mapName: String,
     val zones: List<Zone> = emptyList()
 ) {
+    /** The first zone that contains [p], with [margin] metres added around each zone; null if none. */
     fun zoneAt(p: Point2D, margin: Double = 0.0): Zone? =
         zones.firstOrNull { it.containsWithMargin(p, margin) }
 
@@ -181,14 +185,17 @@ data class MapZones(
     fun zonesAt(p: Point2D, margin: Double = 0.0): List<Zone> =
         zones.filter { it.containsWithMargin(p, margin) }
 
+    /** The zone with this [name] (case-insensitive), or null. */
     fun byName(name: String): Zone? =
         zones.firstOrNull { it.name.equals(name, ignoreCase = true) }
 
     val privateZones: List<Zone> get() = zones.filter { it.isPrivate }
 
+    /** A copy with [zone] added; a zone with the same name is replaced. */
     fun withZone(zone: Zone): MapZones =
         copy(zones = zones.filterNot { it.name.equals(zone.name, true) } + zone)
 
+    /** A copy without the zone called [name]. */
     fun withoutZone(name: String): MapZones =
         copy(zones = zones.filterNot { it.name.equals(name, true) })
 }

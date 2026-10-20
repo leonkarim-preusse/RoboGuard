@@ -24,6 +24,7 @@ object RobotApiConnection {
 
     private const val TAG = "RobotApiConnection"
 
+    /** Where the one connection of the process stands. */
     private enum class State { IDLE, CONNECTING, CONNECTED }
 
     private var state = State.IDLE
@@ -93,6 +94,7 @@ object RobotApiConnection {
         })
     }
 
+    /** Stops passing connection events to [listener]. */
     fun removeListener(listener: ApiListener) {
         synchronized(this) { listeners -= listener }
     }

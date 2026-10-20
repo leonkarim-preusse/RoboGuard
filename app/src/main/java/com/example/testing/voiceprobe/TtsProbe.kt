@@ -400,6 +400,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         log.i(TAG, "RESULT: ${failure?.let { "failed: $it" } ?: "finished"}, started after $startedAfter, total ${now() - t0} ms")
     }
 
+    /** The speech service's play status as text, or the error. */
     private fun readPlayStatus(): String =
         runCatching { rawApi.getTtsPlayStatus().toString() }.getOrElse { "error ${it.javaClass.simpleName}" }
 
@@ -421,8 +422,10 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         log.i(TAG, if (active) "SDK control active: yes" else "SDK control active: NO (start this screen from the robot's home launcher icon)")
     }
 
+    /** Asks the tester for a ✔ / ✘ verdict. */
     private fun askForVerdict() = log.i(TAG, "Did it behave as expected? Press ✔ or ✘.")
 
+    /** Milliseconds since boot. */
     private fun now() = SystemClock.elapsedRealtime()
 
     private companion object {

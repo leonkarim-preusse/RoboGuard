@@ -52,6 +52,7 @@ class RobotSpeaking(context: Context, private val tailMs: Long = 500) {
         private var next = 0
         private lateinit var audio: AudioManager
 
+        /** Registers the playback callback once per process; until then [activeAt] answers false. */
         @Synchronized
         fun start(context: Context) {
             if (started) return
@@ -67,6 +68,7 @@ class RobotSpeaking(context: Context, private val tailMs: Long = 500) {
             }, Handler(thread.looper))
         }
 
+        /** Records the start and the end of a playback episode. */
         @Synchronized
         private fun update(playing: Boolean) {
             val now = SystemClock.elapsedRealtime()
@@ -79,6 +81,7 @@ class RobotSpeaking(context: Context, private val tailMs: Long = 500) {
             }
         }
 
+        /** Whether the robot was playing sound at time [t] (elapsedRealtime), including [tailMs] of echo after each end. */
         @Synchronized
         fun activeAt(t: Long, tailMs: Long): Boolean {
             if (!started) return false

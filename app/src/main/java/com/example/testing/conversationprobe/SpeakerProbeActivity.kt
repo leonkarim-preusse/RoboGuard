@@ -79,6 +79,7 @@ class SpeakerProbeActivity : ComponentActivity() {
         super.onStop()
     }
 
+    /** The test screen: buttons, settings, verdicts, state banner, numbers, KL2 graph and the log. */
     @Composable
     private fun Screen() {
         val lines by log.lines.collectAsState()
@@ -185,6 +186,7 @@ class SpeakerProbeActivity : ComponentActivity() {
         }
     }
 
+    /** ✔ / ✘ buttons for one test scenario; the verdict goes into the log file. */
     @Composable
     private fun VerdictRow(scenario: String) {
         Column {
@@ -201,6 +203,7 @@ class SpeakerProbeActivity : ComponentActivity() {
         }
     }
 
+    /** Big coloured banner with the detector's current state. */
     @Composable
     private fun StateBanner(s: ConversationSnapshot) {
         val (label, color) = when {
@@ -219,6 +222,7 @@ class SpeakerProbeActivity : ComponentActivity() {
         }
     }
 
+    /** The live numbers: level, gate, speech seconds, evidence and the count rule. */
     @Composable
     private fun Numbers(s: ConversationSnapshot) {
         val level = if (s.levelDb.isFinite()) "%.0f dBFS".format(s.levelDb) else "silent"

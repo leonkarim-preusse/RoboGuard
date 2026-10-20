@@ -34,11 +34,13 @@ class ZoneRegistry(private val baseDir: File, private val cipher: ZoneCipher? = 
 
     private val extension get() = if (cipher != null) ".zones" else ".json"
 
+    /** The file that holds the zones of [mapName]. */
     private fun fileFor(mapName: String) = File(dir, "${sanitize(mapName)}$extension")
 
     /** Authenticated with the encrypted content: binds a file to its own name, i.e. to its map. */
     private fun associatedData(file: File) = "roboguard-zones:${file.name}".toByteArray(Charsets.UTF_8)
 
+    /** Reads [f] and decrypts it when a cipher is set; plain JSON otherwise. */
     private fun readText(f: File): String =
         cipher?.decrypt(f.readBytes(), associatedData(f))?.toString(Charsets.UTF_8) ?: f.readText()
 
@@ -64,6 +66,7 @@ class ZoneRegistry(private val baseDir: File, private val cipher: ZoneCipher? = 
         null
     }
 
+    /** Writes all zones of one map. Temp file, fsync, then rename, so a crash never leaves a half-written file. */
     fun save(zones: MapZones) {
         val f = fileFor(zones.mapName)
         val tmp = File(f.parentFile, f.name + ".tmp")
@@ -81,6 +84,7 @@ class ZoneRegistry(private val baseDir: File, private val cipher: ZoneCipher? = 
         }
     }
 
+    /** Names of all maps that have stored zones. Unreadable files are skipped. */
     fun listMaps(): List<String> =
         dir.listFiles { _, n -> n.endsWith(extension) }
             ?.mapNotNull { runCatching { JSONObject(readText(it)).optString(KEY_MAP) }.getOrNull() }
@@ -88,6 +92,7 @@ class ZoneRegistry(private val baseDir: File, private val cipher: ZoneCipher? = 
             ?.sorted()
             ?: emptyList()
 
+    /** Deletes the stored zones of [mapName]. @return true if a file was deleted. */
     fun delete(mapName: String): Boolean = fileFor(mapName).delete()
 
     /** True if a stored file exists for [mapName] (readable or not). */
@@ -95,6 +100,7 @@ class ZoneRegistry(private val baseDir: File, private val cipher: ZoneCipher? = 
 
     // ---- serialization -------------------------------------------------
 
+    /** Turns [m] into the JSON that is stored (map name, zones with polygon, privacy level and entry point). */
     private fun serialize(m: MapZones): JSONObject {
         val zoneArr = JSONArray()
         m.zones.forEach { z ->
@@ -116,6 +122,7 @@ class ZoneRegistry(private val baseDir: File, private val cipher: ZoneCipher? = 
             .put(KEY_ZONES, zoneArr)
     }
 
+    /** Reads the JSON written by [serialize]; [fallbackMap] is used when the file names no map. */
     private fun parse(o: JSONObject, fallbackMap: String): MapZones {
         val mapName = o.optString(KEY_MAP).ifBlank { fallbackMap }
         val arr = o.optJSONArray(KEY_ZONES) ?: JSONArray()
@@ -144,6 +151,7 @@ class ZoneRegistry(private val baseDir: File, private val cipher: ZoneCipher? = 
         return MapZones(mapName, zones)
     }
 
+    /** File-safe version of a map name: other characters become "_", at most 120 characters. */
     private fun sanitize(name: String) =
         name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(120).ifBlank { "unnamed" }
 
@@ -170,16 +178,26 @@ class ZoneStoreCorrupt(mapName: String, cause: Throwable) :
 class ZoneBuilder(val name: String) {
     private val points = mutableListOf<Point2D>()
 
+    /** Adds a corner at map position [p]. */
     fun addPoint(p: Point2D) = apply { points.add(p) }
 
+    /** Adds the robot's current position as a corner. */
     fun addCurrentPosition(pose: RobotPose) = apply { points.add(pose.point) }
 
+    /** Removes all corners collected so far. */
     fun clear() = apply { points.clear() }
 
     val vertexCount: Int get() = points.size
 
+    /** Whether there are enough corners (at least 3) for a polygon. */
     fun canBuild(): Boolean = points.size >= 3
 
+    /**
+     * Builds the zone from the collected corners.
+     * @param privacy how the zone is treated by [PrivacyGuard].
+     * @param entryPoint optional RobotOS place used to enter the zone.
+     * @throws IllegalStateException if fewer than 3 corners were added.
+     */
     fun build(privacy: PrivacyLevel = PrivacyLevel.OPEN, entryPoint: String? = null): Zone {
         check(canBuild()) { "Need at least 3 corners, have ${points.size}" }
         return Zone(name, points.toList(), privacy, entryPoint)
@@ -187,6 +205,7 @@ class ZoneBuilder(val name: String) {
 
     /** Axis-aligned rectangle from two opposite corners — quickest useful case. */
     companion object {
+        /** An axis-aligned rectangle zone spanned by two opposite corners. */
         fun rectangle(
             name: String,
             corner: Point2D,

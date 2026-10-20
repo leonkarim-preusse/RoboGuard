@@ -215,6 +215,9 @@ class MapNavigation(
         if (name.equals("lidar", ignoreCase = true) && !enabled && controller.isNavigating) stop("LIDAR switched off")
     }
 
+    /**
+     * Whether the saved sensor settings switch the LIDAR off. Without LIDAR the robot can neither localise nor avoid obstacles.
+     */
     private fun lidarOff(): Boolean =
         runCatching { Sensors.get(appContext).getSensors().entries.firstOrNull { it.key.equals("lidar", ignoreCase = true) }?.value == false }
             .getOrDefault(false)
@@ -319,16 +322,19 @@ class MapNavigation(
         }
     }
 
+    /** Starts drawing a private area: map taps add corners until [finishDrawingArea] or [cancelDrawingArea]. */
     fun startDrawingArea() {
         _drawingVertices.value = emptyList()
         log.i(TAG, "drawing a private area: tap the map to add corners, then Finish")
     }
 
+    /** Removes the last corner of the area being drawn. */
     fun undoDrawingVertex() {
         val corners = _drawingVertices.value ?: return
         if (corners.isNotEmpty()) _drawingVertices.value = corners.dropLast(1)
     }
 
+    /** Throws the area being drawn away. */
     fun cancelDrawingArea() {
         if (_drawingVertices.value == null) return
         _drawingVertices.value = null
@@ -392,6 +398,7 @@ class MapNavigation(
     /** True (and logged) while the saved areas are unreadable: editing them now would overwrite what could still be recovered. */
     private fun zonesLocked(): Boolean = lockedMessage()?.also { log.i(TAG, it) } != null
 
+    /** Why areas cannot be edited and the robot cannot drive right now (areas not loaded or unreadable), or null. */
     private fun lockedMessage(): String? = when {
         !_zonesLoaded.value -> UiText.get("nav.error.areas_loading")
         _zoneStoreError.value != null -> UiText.get("nav.error.areas_unreadable", "reason" to _zoneStoreError.value)
@@ -633,9 +640,11 @@ class MapNavigation(
         }
     }
 
+    /** "one minute" / "N minutes" for the spoken sentences. */
     private fun spokenMinutes(minutes: Int) =
         if (minutes == 1) UiText.get("speech.minutes_one") else UiText.get("speech.minutes_many", "minutes" to minutes)
 
+    /** Says [sentence] with the configured voice and logs it; a failure is only logged. */
     private fun speak(sentence: String) {
         log.i(TAG, "saying: \"$sentence\"")
         tts.speakConfigured(sentence, object : TtsListener {
@@ -697,6 +706,7 @@ class MapNavigation(
         log.i(TAG, "point ${point.name} added at ${fmt(position)} and selected")
     }
 
+    /** Makes [point] the drive target shown on the screen and sent with "Drive to". */
     fun select(point: MapPoint) {
         if (!point.position.isFinite()) return log.i(TAG, "selection ignored: position is not a number")
         _selected.value = point
@@ -800,6 +810,10 @@ class MapNavigation(
         return driveTo(target)
     }
 
+    /**
+     * Starts a drive to [target] through the [NavigationController], after all checks (drive running, LIDAR, position, areas).
+     * @return null if the drive was started, otherwise the reason it was refused (also spoken / shown).
+     */
     private fun driveTo(target: MapPoint): String? {
         // A second drive over a running one: if RobotOS rejected it, its failure cleared the controller's drive while the
         // first one went on, and the in-motion privacy check and the position watchdog were off (review 2026-10-02, item 2).
@@ -929,6 +943,10 @@ class MapNavigation(
     @Volatile
     private var mapNameStale = false
 
+    /**
+     * Reads the active map name and the RobotOS places, then loads the map picture, the private areas and the saved locations of that map.
+     * An unreadable map name keeps what is loaded (or blocks driving if nothing is), because blank does not mean "no map".
+     */
     private fun reloadMapAndPlaces() {
         val api = RobotApi.getInstance()
         val name = runCatching { api.getMapName() }.getOrNull()
@@ -989,6 +1007,7 @@ class MapNavigation(
         out
     }.getOrElse { emptyMap() }
 
+    /** Loads and renders the map file of [name]; errors are logged and leave [rendered] empty. */
     private fun loadMap(name: String) {
         runCatching { RobotMapFile.load(name) }
             .onSuccess { map ->
@@ -1094,6 +1113,7 @@ class MapNavigation(
         return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
     }
 
+    /** Colour of one map cell in the picture: unknown grey, free white, occupied black, in between shades of grey. */
     private fun colorFor(value: Int): Int = when {
         value == RobotMapFile.UNKNOWN -> 0xFFD0D0D0.toInt()
         value == RobotMapFile.FREE -> 0xFFFFFFFF.toInt()
@@ -1104,8 +1124,10 @@ class MapNavigation(
         }
     }
 
+    /** Coordinates as "(x, y)" with two decimals, for the log. */
     private fun fmt(p: Point2D) = "(%.2f, %.2f)".format(p.x, p.y)
 
+    /** False if a coordinate is NaN or infinite (e.g. from a malformed phone command). */
     private fun Point2D.isFinite() = x.isFinite() && y.isFinite()
 
     /** Smallest signed difference between two angles in radians. */
