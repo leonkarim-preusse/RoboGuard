@@ -2106,3 +2106,7 @@ debug-display items (95, 96), hygiene (71, 72, 79, 82).
   not successfully updated.") — any error status from the robot; no connection stays `Failed`. OkHttp readTimeout 20 s.
 - Expected consequence, not yet seen on the robot: Microphone ON after an earlier OFF reports PARTIAL until reboot, because
   RobotOS speech recognition cannot be re-enabled through the SDK.
+- 2026-10-20 (owner): the SDK part of Microphone ON (speech recognition re-enable) no longer counts for the save result
+  (`SensorSwitches.isSpeechReEnable`, listed in `ApplyResult.ignored` and logged "not counted for the save result").
+  Microphone ON after an earlier OFF now answers OK if everything else is confirmed. Side effect: without SDK control a
+  Microphone ON is no longer flagged by itself; LIDAR/camera SDK switches of the same save still are. Compiled, not installed.

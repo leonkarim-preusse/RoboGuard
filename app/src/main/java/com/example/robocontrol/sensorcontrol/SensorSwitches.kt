@@ -64,8 +64,9 @@ data class SwitchReport(
  * Result of applying one save to the hardware, over all its switches (SDK and Android).
  * @property outcome all, some or none of the switches confirmed
  * @property notConfirmed one line per switch that was not confirmed
+ * @property ignored switches that were not confirmed but do not count for [outcome] (re-enabling speech recognition)
  */
-data class ApplyResult(val outcome: Outcome, val notConfirmed: List<String>) {
+data class ApplyResult(val outcome: Outcome, val notConfirmed: List<String>, val ignored: List<String> = emptyList()) {
     enum class Outcome {
         /** Every switch of the save was read back as requested. */
         ALL_CONFIRMED,
@@ -331,22 +332,34 @@ internal class SensorSwitches(private val context: Context) {
                     .maxByOrNull { it.atMs }
             }
             if (latest.all { it != null && it.outcome.isFinal } || SystemClock.elapsedRealtime() >= deadline) {
-                val notConfirmed = expected.zip(latest)
+                fun describe(e: Triple<String, Boolean, String>, r: SwitchReport?) =
+                    "${e.first} ${if (e.second) "ON" else "OFF"} via ${r?.method ?: e.third}: " +
+                        (r?.let { "${it.outcome}${it.detail?.let { d -> " ($d)" } ?: ""}" } ?: "no answer")
+                val (ignoredPairs, countedPairs) = expected.zip(latest).partition { (e, _) -> isSpeechReEnable(e) }
+                val notConfirmed = countedPairs
                     .filter { (_, r) -> r?.outcome != SwitchReport.Outcome.CONFIRMED }
-                    .map { (e, r) ->
-                        "${e.first} ${if (e.second) "ON" else "OFF"} via ${r?.method ?: e.third}: " +
-                            (r?.let { "${it.outcome}${it.detail?.let { d -> " ($d)" } ?: ""}" } ?: "no answer")
-                    }
+                    .map { (e, r) -> describe(e, r) }
+                val ignored = ignoredPairs
+                    .filter { (_, r) -> r?.outcome != SwitchReport.Outcome.CONFIRMED }
+                    .map { (e, r) -> describe(e, r) }
+                ignored.forEach { Log.i(TAG, "not counted for the save result: $it") }
                 val outcome = when {
                     notConfirmed.isEmpty() -> ApplyResult.Outcome.ALL_CONFIRMED
-                    notConfirmed.size == expected.size -> ApplyResult.Outcome.NONE
+                    notConfirmed.size == countedPairs.size -> ApplyResult.Outcome.NONE
                     else -> ApplyResult.Outcome.PARTIAL
                 }
-                return ApplyResult(outcome, notConfirmed)
+                return ApplyResult(outcome, notConfirmed, ignored)
             }
             delay(AWAIT_POLL_MS)
         }
     }
+
+    /**
+     * Whether a switch is the SDK part of switching the microphone ON. RobotOS speech recognition cannot be re-enabled
+     * through the SDK once it was switched off, so its result does not count for the save result.
+     */
+    private fun isSpeechReEnable(switch: Triple<String, Boolean, String>): Boolean =
+        switch.first.lowercase() == MICROPHONE && switch.second && switch.third == SDK
 
     /** Which kinds of switch [apply] makes for a sensor: LIDAR only the SDK, microphone and camera both. */
     private fun kindsFor(name: String): List<String> = when (name.lowercase()) {
