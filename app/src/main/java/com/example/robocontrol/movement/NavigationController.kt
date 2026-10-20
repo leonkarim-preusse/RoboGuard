@@ -112,6 +112,10 @@ class NavigationController(
         }
     }
 
+    /**
+     * Stops the running drive (navigation and turning) and reports [NavFailure.CancelledByCaller] to its listener.
+     * Later SDK callbacks of that drive are ignored.
+     */
     fun stop() {
         val listener = activeListener
         driveId++
@@ -187,10 +191,15 @@ class NavigationController(
     fun nameCurrentPosition(placeName: String, callback: (Boolean) -> Unit) =
         bridge.saveCurrentPositionAs(placeName, callback)
 
+    /** Names of the RobotOS places on the active map. */
     fun places(callback: (List<String>) -> Unit) = bridge.listPlaces(callback)
 
     // ---- internals -------------------------------------------------------
 
+    /**
+     * Common start of every drive: stops a drive that is still running, remembers the target and calls [launch]
+     * with a listener that ignores callbacks from older drives.
+     */
     private fun start(
         target: Point2D,
         listener: NavigationListener,

@@ -53,5 +53,6 @@ object TtsVoices {
         return found
     }
 
+    /** "en-US" and "en_us" both become "en_us", so language codes can be compared. */
     private fun normalise(code: String) = code.replace('-', '_').lowercase()
 }

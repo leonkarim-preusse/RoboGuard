@@ -54,24 +54,34 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
     /** Settings used by the next start; changed from the screen. Changing them while listening restarts listening. */
     val config: StateFlow<ChangeDetectorConfig> = _config.asStateFlow()
 
+    /** BIC penalty weight λ; a higher λ needs a clearer change. */
     fun setLambda(lambda: Double) = changeConfig("λ", lambda.toString()) { it.copy(bicLambda = lambda) }
 
+    /** Length of each comparison window in 10 ms frames. */
     fun setWindowFrames(frames: Int) = changeConfig("window", "%.1f s".format(frames / 100.0)) { it.copy(windowFrames = frames) }
 
+    /** Loudness gate: how far above the noise floor speech must be. */
     fun setSpeechMargin(db: Double) = changeConfig("speech margin", "$db dB") { it.copy(speechMarginDb = db) }
 
+    /** Which rule turns changes into "more than one speaker" (count or evidence). */
     fun setDecisionRule(rule: DecisionRule) = changeConfig("decision rule", rule.name) { it.copy(decisionRule = rule) }
 
+    /** Evidence rule: ratio r₀ a candidate must exceed to add evidence. */
     fun setEvidenceBaseRatio(r: Double) = changeConfig("evidence r₀", r.toString()) { it.copy(evidenceBaseRatio = r) }
 
+    /** Evidence rule: evidence needed for "more than one speaker". */
     fun setEvidenceThreshold(t: Double) = changeConfig("evidence threshold", t.toString()) { it.copy(evidenceThreshold = t) }
 
+    /** Evidence rule: time after which the evidence has halved. */
     fun setEvidenceHalfLife(ms: Long) = changeConfig("evidence half-life", "${ms / 1000} s") { it.copy(evidenceHalfLifeMs = ms) }
 
+    /** Speech gate for the microphone (Silero or loudness). */
     fun setSpeechGate(gate: SpeechGate) = changeConfig("speech gate", gate.name) { it.copy(speechGate = gate) }
 
+    /** Silero probability at which speech starts. */
     fun setSileroThreshold(t: Double) = changeConfig("Silero threshold", t.toString()) { it.copy(sileroThreshold = t) }
 
+    /** Applies one setting change to the config, logs it and restarts a running detector with it. */
     private fun changeConfig(name: String, value: String, change: (ChangeDetectorConfig) -> ChangeDetectorConfig) {
         _config.value = change(_config.value)
         log.i(TAG, "setting: $name = $value")
@@ -107,6 +117,7 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
         start("synthetic demo", SyntheticVoicesSource(script, realtime = true), _config.value.copy(speechGate = SpeechGate.LOUDNESS))
     }
 
+    /** Starts a detector on [pcm] (microphone or synthetic voices) and logs everything it reports. */
     private fun start(name: String, pcm: PcmSource, config: ChangeDetectorConfig) {
         stop("restart")
         // The background monitor would compete for the microphone: pause it while this test records.
@@ -153,6 +164,7 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
         d.start()
     }
 
+    /** Stops the running detector, if any, and frees the microphone. */
     fun stop(reason: String) {
         val d = detector
         if (d == null) {
@@ -172,6 +184,7 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
         _snapshot.value = _snapshot.value.copy(running = false)
     }
 
+    /** Logs one change candidate with KL2, ΔBIC and the λ it would have needed. */
     private fun logCandidate(c: ChangeCandidate) {
         log.i(TAG, "  candidate at %.2f s: KL2 %.1f, ΔBIC %.0f (gain %.0f vs penalty %.0f × λ; would need λ < %.2f) → %s".format(
             c.timeMs / 1000.0, c.kl2, c.deltaBic, c.bicGain, c.bicPenalty, if (c.bicPenalty > 0) c.bicGain / c.bicPenalty else 0.0,
@@ -204,6 +217,7 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
         }
     }
 
+    /** Runs one synthetic scene as fast as possible and checks whether the result matches [expectMultiple]. */
     private fun scene(name: String, script: List<Segment>, expectMultiple: Boolean): Boolean {
         // Synthetic voices are not real speech (Silero rejects them): the self-test checks change detection with loudness.
         val config = _config.value.copy(speechGate = SpeechGate.LOUDNESS)

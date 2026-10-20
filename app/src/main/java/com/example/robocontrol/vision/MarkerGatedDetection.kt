@@ -159,6 +159,10 @@ fun markerGatedPass(
     }
 }
 
+/**
+ * Judges an ORB result found inside a pink area: a plausible outline with its centre in the area counts; otherwise
+ * enough good matches and inliers count too, with the pink bounds as the box.
+ */
 private fun judgeInMarker(m: ObjectMatch, region: MarkerRegion, minGood: Int, minInliers: Int): ObjectMatch {
     // The caller's thresholds apply to both paths (ORB's own config may differ, e.g. after adjusting the inliers at runtime).
     if (m.detected && m.corners.size == 4 && m.goodMatches >= minGood && m.inliers >= minInliers) {

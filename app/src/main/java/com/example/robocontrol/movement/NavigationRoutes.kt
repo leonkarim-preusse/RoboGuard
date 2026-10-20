@@ -63,8 +63,10 @@ suspend fun navigationCommand(body: String, client: String): Pair<HttpStatusCode
     return (if (result.ok) HttpStatusCode.OK else HttpStatusCode.BadRequest) to answer.toString()
 }
 
+/** The JSON answer for a failed request. */
 private fun errorJson(message: String) = JSONObject().put("ok", false).put("error", message).toString()
 
+/** Outcome of one phone command: [ok] and the robot's own wording when it refused. */
 private class CommandResult(val ok: Boolean, val message: String? = null)
 
 /**
@@ -237,6 +239,7 @@ private fun insideMap(navigation: MapNavigation, p: Point2D): Boolean {
         p.y >= map.originY + b.minRow * map.resolution && p.y <= map.originY + (b.maxRow + 1) * map.resolution
 }
 
+/** One place or location as JSON for the phone (name, x, y, saved). */
 private fun pointJson(point: MapPoint) = JSONObject()
     .put("name", point.name)
     .put("x", point.position.x)

@@ -164,6 +164,7 @@ class MapNavigationActivity : ComponentActivity() {
         when (localized) { true -> "nav.label.yes"; false -> "nav.label.no"; null -> "nav.label.unknown" }
     )
 
+    /** The normal navigation screen: map, drive controls, places, saved locations, private areas and the debug section. */
     @Composable
     private fun NavigationScreen() {
         val lines by log.lines.collectAsState()
@@ -699,6 +700,7 @@ class MapNavigationActivity : ComponentActivity() {
         )
     }
 
+    /** One place or location in the lists; the selected one is drawn filled. */
     @Composable
     private fun PointButton(point: MapPoint, isSelected: Boolean) {
         val label = point.name
@@ -873,6 +875,7 @@ class MapNavigationActivity : ComponentActivity() {
         var zoom by mutableStateOf(1f)
         var pan by mutableStateOf(Offset.Zero)
 
+        /** Back to no zoom and no pan. */
         fun reset() {
             zoom = 1f
             pan = Offset.Zero
@@ -882,6 +885,7 @@ class MapNavigationActivity : ComponentActivity() {
     /** Converts between screen pixels and world metres for the map drawn centred and scaled to fit. */
     private class MapTransform(val rendered: RenderedMap, val scale: Float, val offsetX: Float, val offsetY: Float) {
 
+        /** Map coordinates to screen pixels. */
         fun toScreen(p: Point2D): Offset {
             val (col, row) = rendered.map.toCell(p)
             val bx = col - rendered.bounds.minCol
@@ -898,6 +902,7 @@ class MapNavigationActivity : ComponentActivity() {
         }
     }
 
+    /** The transform that fits the whole map picture into a [width] x [height] canvas, centred. */
     private fun fit(rendered: RenderedMap, width: Float, height: Float): MapTransform {
         val bw = rendered.bitmap.width.toFloat()
         val bh = rendered.bitmap.height.toFloat()

@@ -47,8 +47,11 @@ sealed interface TtsFailure {
  * before touching UI.
  */
 interface TtsListener {
+    /** Called when the robot starts to speak the sentence. */
     fun onStarted() {}
+    /** Called when the sentence was spoken completely. */
     fun onFinished() {}
+    /** Called when the sentence could not be spoken; [failure] says why. */
     fun onFailed(failure: TtsFailure) {}
 }
 
@@ -125,6 +128,7 @@ class OrionStarTts(private val context: Context) {
             listener, voice = com.example.robocontrol.text.UiText.speechVoice
                 ?: TtsVoices.voiceFor(context, com.example.robocontrol.text.UiText.speechLanguage))
 
+    /** Speaks [text] with the German voice. Kept for the test screens; product sentences use [speakConfigured]. */
     fun speakGerman(text: String, listener: TtsListener? = null): Boolean =
         speak(text, TtsLanguage.GERMAN, listener)
 

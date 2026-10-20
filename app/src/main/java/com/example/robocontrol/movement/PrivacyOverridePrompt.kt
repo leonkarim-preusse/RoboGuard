@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 object PrivacyOverridePrompt {
 
+    /** How a crossing question ended. */
     enum class Outcome { ALLOWED, DENIED, SUPERSEDED, CANCELLED, EXPIRED }
 
     /** @property minutes allowed minutes (only for [Outcome.ALLOWED]); [answeredBy] who answered (screen or a phone) */
@@ -74,6 +75,7 @@ object PrivacyOverridePrompt {
         request.onAnswer(Answer(Outcome.CANCELLED))
     }
 
+    /** Removes and returns the open question if it meets [condition]; null otherwise. */
     private fun take(condition: (Request) -> Boolean): Request? = synchronized(this) {
         val r = _pending.value?.takeIf(condition) ?: return null
         _pending.value = null

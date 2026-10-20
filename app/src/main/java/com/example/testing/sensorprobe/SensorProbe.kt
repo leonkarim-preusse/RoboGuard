@@ -223,6 +223,7 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
 
     // ---- effect checks ------------------------------------------------------------
 
+    /** Reads the LIDAR status back from RobotOS and logs it. */
     private suspend fun checkLidar() {
         if (!robotConnected()) return log.i(TAG, "radar status skipped: RobotApi not connected")
         ensureRadarListener()
@@ -437,6 +438,7 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
         log.i(TAG, "$name: $text")
     }
 
+    /** Registers the listener for RobotOS's radar status once. */
     private fun ensureRadarListener() {
         if (radarListenerRegistered) return
         runCatching { RobotApi.getInstance().registerStatusListener(Definition.STATUS_RADAR, radarStatus) }
@@ -453,8 +455,10 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
         }
     }
 
+    /** Whether the RobotApi connection is up. */
     private fun robotConnected(): Boolean = runCatching { RobotApi.getInstance().isApiConnectedService() }.getOrDefault(false)
 
+    /** What the tester should see after switching [sensor] on or off. */
     private fun expectation(sensor: String, enabled: Boolean): String = when (sensor.lowercase() to enabled) {
         "lidar" to false -> "Expect: SDK report CONFIRMED, radar status closed, LIDAR visibly stopped. The robot must not move."
         "lidar" to true -> "Expect: SDK report CONFIRMED, radar status open, LIDAR running again. The robot may need to relocalize."
@@ -465,14 +469,17 @@ class SensorProbe(private val context: Context, private val log: ProbeLog) {
         else -> "No expectation defined for $sensor."
     }
 
+    /** Starts a test section in the log and prints what to expect. */
     private fun begin(name: String, expectation: String) {
         lastTest = name
         log.section("Sensors: $name")
         log.i(TAG, expectation)
     }
 
+    /** Asks the tester for a ✔ / ✘ verdict. */
     private fun askForVerdict() = log.i(TAG, "Did it behave as expected? Press ✔ or ✘.")
 
+    /** "ON" / "OFF" for the log. */
     private fun onOff(enabled: Boolean) = if (enabled) "ON" else "OFF"
 
     private companion object {

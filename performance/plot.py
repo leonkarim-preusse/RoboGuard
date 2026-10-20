@@ -55,6 +55,7 @@ STEPS = [
 
 
 def thread_group(pid, tid, name):
+    """Index of the RoboGuard thread group (detection, camera, audio, UI, ...) a thread belongs to."""
     if name.startswith("CalendarDetect"):
         return 0
     if tid == pid:
@@ -74,6 +75,7 @@ def thread_group(pid, tid, name):
 
 
 def process_group(roboguard_pid, pid, name):
+    """Index of the robot process group (RoboGuard, chassis, audio, camera, vision, other) a process belongs to."""
     if pid == roboguard_pid:
         return 0
     if "chassis" in name:
@@ -88,6 +90,7 @@ def process_group(roboguard_pid, pid, name):
 
 
 def font(size, bold=False):
+    """DejaVu Sans in the given size, or Pillow's default font if it is not installed."""
     path = "/usr/share/fonts/truetype/dejavu/DejaVuSans%s.ttf" % ("-Bold" if bold else "")
     try:
         return ImageFont.truetype(path, size)
@@ -96,10 +99,12 @@ def font(size, bold=False):
 
 
 def fnum(s):
+    """Number from a log line; accepts the German decimal comma."""
     return float(s.replace(",", "."))
 
 
 def parse_monitor(lines):
+    """Reads the CalendarMonitor 2 s summaries into one dict per window (rates, step times, detections, ...)."""
     windows = []
     for entry in lines:
         text, t = entry["text"], entry["t"]
@@ -229,6 +234,7 @@ def drive_intervals(nav, t_end):
 
 
 def settings_line(lines):
+    """The detector settings line ("references [...]") of the run, or None."""
     for entry in lines:
         if entry["text"].startswith("references ["):
             return entry["text"]
@@ -267,6 +273,7 @@ def activity_bands(data, t0, t_end):
 
 
 def render(data, out_path):
+    """01_overview.png: CPU of RoboGuard and of the robot, step times, rates and the thread table."""
     pid = data["pid"]
     threads, processes = data["threads"], data["processes"]
     # The timeline starts one interval before the first CPU sample (setup such as reading process names happens before it).

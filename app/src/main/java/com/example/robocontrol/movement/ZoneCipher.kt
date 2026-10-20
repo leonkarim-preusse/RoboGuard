@@ -13,7 +13,9 @@ import javax.crypto.spec.GCMParameterSpec
  * file name, so a file copied over another map's file fails to decrypt instead of loading the wrong areas.
  */
 interface ZoneCipher {
+    /** Encrypts [plain]; [associated] is authenticated but not stored, so decrypting needs the same bytes. */
     fun encrypt(plain: ByteArray, associated: ByteArray): ByteArray
+    /** Decrypts [data]; throws if the data or [associated] do not match. */
     fun decrypt(data: ByteArray, associated: ByteArray): ByteArray
 }
 
@@ -48,6 +50,7 @@ class KeystoreZoneCipher(private val alias: String = DEFAULT_ALIAS) : ZoneCipher
         return cipher.doFinal(data, MAGIC.size + IV_BYTES, data.size - MAGIC.size - IV_BYTES)
     }
 
+    /** The AES key from the Android Keystore; created on first use. */
     @Synchronized
     private fun key(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }

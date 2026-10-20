@@ -25,6 +25,7 @@ PACKAGE = "com.example.roboguard"
 
 
 def adb(serial, *args, **kw):
+    """Runs an adb command on the robot and returns the completed process (text output)."""
     return subprocess.run([ADB, "-s", serial, *args], capture_output=True, text=True, **kw)
 
 
@@ -112,6 +113,7 @@ def to_core_rows(samples):
 
 
 def main():
+    """Parses the arguments, records CPU and logs for the given seconds and writes data.json and the graphs."""
     args = sys.argv[1:]
     seconds = 60
     serial = "10.131.33.35:5555"

@@ -73,6 +73,7 @@ object EscapeHeading {
         return lookRange
     }
 
+    /** The point [d] metres from [p] in direction [heading]. */
     private fun along(p: Point2D, heading: Double, d: Double) = Point2D(p.x + cos(heading) * d, p.y + sin(heading) * d)
 
     /** Positive outside the polygon, negative inside. */
@@ -86,5 +87,6 @@ object EscapeHeading {
         return r
     }
 
+    /** Radians to degrees for the log; values close to zero are printed as 0. */
     fun degrees(a: Double) = Math.toDegrees(a).let { if (abs(it) < 0.05) 0.0 else it }
 }

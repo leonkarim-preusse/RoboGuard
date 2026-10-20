@@ -27,10 +27,13 @@ class NavigationLog {
     /** Writes a visible separator. */
     fun section(title: String) = write("==== $title ====")
 
+    /** Adds an info line with [tag] to the screen and to Logcat. */
     fun i(tag: String, message: String) = write("[$tag] $message")
 
+    /** Empties the lines on the screen (Logcat keeps them). */
     fun clearScreen() { _lines.value = emptyList() }
 
+    /** Adds [line] with the seconds since start; the screen keeps only the newest [MAX_SCREEN_LINES]. */
     @Synchronized
     private fun write(line: String) {
         val t = "%7.2f".format(Locale.US, (SystemClock.elapsedRealtime() - start) / 1000.0)

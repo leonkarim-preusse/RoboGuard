@@ -260,16 +260,19 @@ class MovementProbe(
         }
     }
 
+    /** Starts drawing a private area: map taps add corners until it is finished or cancelled. */
     fun startDrawingArea() {
         _drawingVertices.value = emptyList()
         log.i(TAG, "drawing a private area: tap the map to add corners, then Finish")
     }
 
+    /** Removes the last corner of the area being drawn. */
     fun undoDrawingVertex() {
         val corners = _drawingVertices.value ?: return
         if (corners.isNotEmpty()) _drawingVertices.value = corners.dropLast(1)
     }
 
+    /** Throws the area being drawn away. */
     fun cancelDrawingArea() {
         if (_drawingVertices.value == null) return
         _drawingVertices.value = null
@@ -297,6 +300,7 @@ class MovementProbe(
         _pose.value?.let { if (zone.containsWithMargin(it.point, guard.margin)) log.i(TAG, "note: the robot is currently inside this area") }
     }
 
+    /** Removes all private areas of the test (they live in memory only). */
     fun clearPrivateAreas() {
         synchronized(controller) {
             guard.updateZones(MapZones(guard.zones.mapName))
@@ -362,6 +366,7 @@ class MovementProbe(
         log.i(TAG, "point ${point.name} added at ${fmt(position)} and selected")
     }
 
+    /** Makes [point] the drive target. */
     fun select(point: MapPoint) {
         _selected.value = point
         log.i(TAG, "selected ${point.name} ${fmt(point.position)}")
@@ -573,6 +578,7 @@ class MovementProbe(
 
     // ---- internals ----------------------------------------------------------------
 
+    /** Reads the active map name and the RobotOS places, then loads the map picture. */
     private fun reloadMapAndPlaces() {
         val api = RobotApi.getInstance()
         val name = runCatching { api.getMapName() }.getOrNull()
@@ -605,6 +611,7 @@ class MovementProbe(
         log.i(TAG, "my locations (${stored.size}): " + stored.joinToString { "${it.name} ${fmt(it.position)}" })
     }
 
+    /** Loads and renders the map file of [name]; errors are logged. */
     private fun loadMap(name: String) {
         runCatching { RobotMapFile.load(name) }
             .onSuccess { map ->
@@ -668,6 +675,7 @@ class MovementProbe(
         return Bitmap.createBitmap(pixels, w, h, Bitmap.Config.ARGB_8888)
     }
 
+    /** Colour of one map cell in the picture: unknown grey, free white, occupied black, in between shades of grey. */
     private fun colorFor(value: Int): Int = when {
         value == RobotMapFile.UNKNOWN -> 0xFFD0D0D0.toInt()
         value == RobotMapFile.FREE -> 0xFFFFFFFF.toInt()
@@ -678,6 +686,7 @@ class MovementProbe(
         }
     }
 
+    /** Coordinates as "(x, y)" with two decimals, for the log. */
     private fun fmt(p: Point2D) = "(%.2f, %.2f)".format(p.x, p.y)
 
     /** A regular polygon approximating a circle, counter-clockwise. */

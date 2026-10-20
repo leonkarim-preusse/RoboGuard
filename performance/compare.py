@@ -18,6 +18,7 @@ import plot  # noqa: E402
 
 
 def main():
+    """Reads the runs named on the command line and writes the comparison picture."""
     args = sys.argv[1:]
     name = None
     if "--name" in args:

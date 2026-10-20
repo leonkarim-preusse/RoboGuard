@@ -93,6 +93,7 @@ class SensorProbeActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /** The test screen: one button per switch test on the left, the log on the right, last camera snapshot below. */
     @Composable
     private fun ProbeScreen() {
         val lines by log.lines.collectAsState()

@@ -71,6 +71,7 @@ internal class SpeechGateState(private val settings: ConversationSettings) {
     var loud = false
         private set
 
+    /** Decides whether one frame is speech from Silero's [probability] and the [levelDb]; updates [silero] and [loud]. */
     fun decide(probability: Double, levelDb: Double): Boolean {
         val limit = if (sileroWasSpeech) settings.sileroRelease else settings.speechThreshold
         silero = probability >= limit
@@ -86,6 +87,7 @@ internal class SpeechGateState(private val settings: ConversationSettings) {
         }
     }
 
+    /** Forgets the hysteresis state, e.g. after a silence reset. */
     fun reset() {
         sileroWasSpeech = false
     }
@@ -235,6 +237,7 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
         changes?.clear()
     }
 
+    /** Copies one hop into the piece buffer; stops silently when the buffer is full. */
     private fun append(src: ShortArray, offset: Int, timeMs: Long, levelDb: Double, speech: Boolean) {
         if (hops >= capacityHops) return
         val base = hops * SPEECH_HOP
@@ -288,6 +291,7 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
         hops = maxOf(keep, 0)
     }
 
+    /** Zeroes the used part of the buffer and empties it. */
     private fun clearBuffer() {
         buffer.fill(0f, 0, hops * SPEECH_HOP)
         hops = 0
@@ -321,6 +325,7 @@ internal class EmbeddingWorker<R : Any>(
     private val discard: (R) -> Unit = {},
     private val onEnd: () -> Unit = {}
 ) {
+    /** One finished embedding run: the computed [value], the piece it came from and how long it took. */
     class Done<R>(val value: R, val piece: SpeechPiece, val embedNs: Long)
 
     private val queue = ArrayBlockingQueue<SpeechPiece>(capacity)
@@ -379,6 +384,7 @@ internal class EmbeddingWorker<R : Any>(
         return false
     }
 
+    /** The next finished result, or null. */
     fun poll(): Done<R>? = results.poll()
 
     /** Ends the thread after its current run; it closes the model and erases everything itself. */

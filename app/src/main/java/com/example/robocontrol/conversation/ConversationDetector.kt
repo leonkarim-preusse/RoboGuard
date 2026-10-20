@@ -43,6 +43,7 @@ internal class DebugTimeline {
     private val frames = ArrayDeque<AudioFrame>()
     private val events = ArrayDeque<ConversationEvent>()
 
+    /** Adds one 10 ms frame while [enabled]; drops everything as soon as nobody watches. */
     fun frame(enabled: Boolean, f: AudioFrame) {
         if (!enabled) {
             if (frames.isNotEmpty() || events.isNotEmpty()) { frames.clear(); events.clear() }
@@ -53,11 +54,14 @@ internal class DebugTimeline {
         while (events.isNotEmpty() && f.timeMs - events.first().timeMs > FRAMES * 10L) events.removeFirst()
     }
 
+    /** Adds an event mark while [enabled]. */
     fun event(enabled: Boolean, e: ConversationEvent) {
         if (enabled) events.addLast(e)
     }
 
+    /** Copy of the frames for the snapshot; empty when not enabled. */
     fun frames(enabled: Boolean): List<AudioFrame> = if (enabled) frames.toList() else emptyList()
+    /** Copy of the events for the snapshot; empty when not enabled. */
     fun events(enabled: Boolean): List<ConversationEvent> = if (enabled) events.toList() else emptyList()
 
     private companion object {
@@ -72,6 +76,10 @@ enum class ConversationEventKind { CHANGE, CANDIDATE_REJECTED, RESET, MULTIPLE }
 /** @property ratio BIC gain / penalty of a candidate (0 for resets and state flips) */
 data class ConversationEvent(val timeMs: Long, val kind: ConversationEventKind, val ratio: Double = 0.0)
 
+/**
+ * What a detector publishes every 100 ms: the state, the live numbers and, while the debug screen is open, the timeline.
+ * Numbers only — no audio and no embedding ever leaves the detector.
+ */
 data class ConversationSnapshot(
     val state: ConversationState = ConversationState.NO_SPEECH,
     val running: Boolean = false,
@@ -177,6 +185,7 @@ interface ConversationDetector {
     /** Collect the audio timeline and events for the debug screen (off = nothing extra is kept or copied). */
     var debugTimeline: Boolean
 
+    /** Starts the detector's thread; it opens the microphone itself. */
     fun start()
 
     /** Stops and waits a moment for the thread; true if it really ended (the microphone is free again). */
@@ -245,6 +254,7 @@ class SpeakerChangeDetector(
         run()
     }
 
+    /** The detector thread: reads 10 ms hops, runs the speech gate and the change detection and publishes snapshots. */
     private fun run() {
         val mfcc = Mfcc(sampleRate = source.sampleRate)
         val detector = ChangeDetector(mfcc.coefficients, config)

@@ -69,6 +69,7 @@ class PairwiseVoiceDetector(
     /** One piece of speech: its centred embedding and when it was heard. */
     private class Piece(val embedding: FloatArray, val timeMs: Long)
 
+    /** The detector thread: like the owner detector, but each new piece is compared with the pieces still held in the window. */
     private fun run() {
         val cohort = OwnerVoiceprintStore.get(context).loadCohort()
         var vad: SileroVad? = null

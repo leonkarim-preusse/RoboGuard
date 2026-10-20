@@ -33,6 +33,7 @@ data class SwitchReport(
     val outcome: Outcome,
     val detail: String? = null
 ) {
+    /** How far a switch is known to have worked. */
     enum class Outcome {
         /** The state was read back and matches the request. */
         CONFIRMED,
@@ -126,6 +127,7 @@ internal class SensorSwitches(private val context: Context) {
 
     // ---- LIDAR --------------------------------------------------------------------
 
+    /** Switches the LIDAR through the SDK (stops a drive first when switching off). */
     private fun switchLidarSdk(name: String, enabled: Boolean) {
         val method = "SDK RobotApi.updateRadarStatus"
         if (!robotApiReady()) {
@@ -146,6 +148,7 @@ internal class SensorSwitches(private val context: Context) {
 
     // ---- Microphone ---------------------------------------------------------------
 
+    /** Switches RobotOS speech recognition through the SDK and reads `isRecognizable` back after 2 s. */
     private fun switchMicrophoneSdk(name: String, enabled: Boolean) {
         val method = "SDK SkillApi.setASREnabled + setRecognizable"
         if (!skillApiReady()) {
@@ -173,6 +176,7 @@ internal class SensorSwitches(private val context: Context) {
         }
     }
 
+    /** Mutes or unmutes the microphone for Android apps and reads the state back. */
     private fun switchMicrophoneAndroid(name: String, enabled: Boolean) {
         val method = "Android AudioManager.setMicrophoneMute"
         runCatching { audioManager.isMicrophoneMute = !enabled }
@@ -186,6 +190,7 @@ internal class SensorSwitches(private val context: Context) {
 
     // ---- Camera -------------------------------------------------------------------
 
+    /** Starts or stops RobotOS's vision through the SDK. */
     private fun switchCameraSdk(name: String, enabled: Boolean) {
         val method = if (enabled) "SDK RobotApi.startVision" else "SDK RobotApi.stopVision"
         if (!robotApiReady()) {
@@ -203,6 +208,7 @@ internal class SensorSwitches(private val context: Context) {
         else report(name, method, enabled, SwitchReport.Outcome.SENT, "waiting for result")
     }
 
+    /** Disables or enables the camera through the device policy (needs the device admin) and reads it back. */
     private fun switchCameraAndroid(name: String, enabled: Boolean) {
         val method = "Android DevicePolicyManager.setCameraDisabled"
         if (!devicePolicy.isAdminActive(adminComponent)) {
@@ -296,6 +302,7 @@ internal class SensorSwitches(private val context: Context) {
         }
     }
 
+    /** Stores the outcome of one switch in [reports] and logs it. */
     private fun report(sensor: String, method: String, enabled: Boolean, outcome: SwitchReport.Outcome, detail: String?) {
         val entry = SwitchReport(sensor, method, enabled, outcome, detail)
         _reports.value = _reports.value + ("$sensor | $method" to entry)

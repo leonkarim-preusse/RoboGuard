@@ -156,6 +156,7 @@ class CameraSnapshot(
         }
     }
 
+    /** Maps a SurfaceShare error code to a [SnapshotFailure]. */
     private fun mapError(error: Int, message: String?): SnapshotFailure = when (error) {
         SurfaceShareError.ERROR_SURFACE_SHARE_USED -> SnapshotFailure.CameraBusy
         SurfaceShareError.ERROR_SURFACE_SHARE_PREEMPTED -> SnapshotFailure.Preempted

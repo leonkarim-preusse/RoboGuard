@@ -65,6 +65,7 @@ class SpeechActivityDetector(
         return t == null || !t.isAlive
     }
 
+    /** The detector thread: gates every 10 ms hop and keeps only the share of speech in the window. */
     private fun run() {
         var vad: SileroVad? = null
         val read = ShortArray(HOP)

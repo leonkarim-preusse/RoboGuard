@@ -92,6 +92,7 @@ class ObjectReference internal constructor(
     /** Number of ORB keypoints found. Few keypoints (< ~100) means a poorly textured reference. */
     val keypointCount: Int get() = keypoints.size
 
+    /** Frees the native descriptor matrix. */
     internal fun release() = descriptors.release()
 }
 
@@ -241,12 +242,14 @@ class ORB(
     /** Over-detects for [OrbConfig.gridDistribution]: candidates from which the grid keeps the best per cell. */
     private var wideOrb: OpenCvOrb = createDetector(config.maxFeatures * 4, config.fastThreshold, config.pyramidLevels)
 
+    /** A new OpenCV ORB detector with the given number of features, FAST threshold and pyramid levels. */
     private fun createDetector(features: Int, fastThreshold: Int, levels: Int): OpenCvOrb =
         OpenCvOrb.create(features, 1.2f, levels.coerceIn(1, 12), 31, 0, 2, 0 /* HARRIS_SCORE */, 31, fastThreshold)
 
     /** Detectors for references whose settings differ from [config]; keyed by the values that shape a detector. */
     private val extraDetectors = HashMap<Triple<Int, Int, Int>, OpenCvOrb>()
 
+    /** The detector for [settings]; a cached extra one when they differ from the general config. */
     private fun detectorFor(settings: OrbConfig): OpenCvOrb {
         if (settings.maxFeatures == config.maxFeatures && settings.fastThreshold == config.fastThreshold &&
             settings.pyramidLevels == config.pyramidLevels
@@ -503,6 +506,7 @@ class ORB(
         }
     }
 
+    /** Which of two results is better: detected first, then more inliers, then more good matches. */
     private fun better(a: ObjectMatch, b: ObjectMatch): Boolean =
         if (a.detected != b.detected) a.detected else if (a.inliers != b.inliers) a.inliers > b.inliers else a.goodMatches > b.goodMatches
 
@@ -642,6 +646,7 @@ class ORB(
         return assets.open(path).use { BitmapFactory.decodeStream(it, null, options) }
     }
 
+    /** Extracts the features of one reference image and stores it under [className]; null if it has too few features. */
     private fun addReferenceMat(className: String, gray: Mat): ObjectReference? {
         require(className.isNotBlank()) { "className must not be blank" }
         // Per-image settings from settings.json, else the general ones this ORB was built with.
@@ -791,6 +796,7 @@ class ORB(
         return if (abs(doubleArea) / 2 >= minAreaPx) null else "area"
     }
 
+    /** A "not detected" result for [className]. */
     private fun notFound(className: String, goodMatches: Int) =
         ObjectMatch(className, detected = false, goodMatches = goodMatches, inliers = 0, corners = emptyList())
 

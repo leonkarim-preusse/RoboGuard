@@ -19,6 +19,7 @@ interface PcmSource {
     /** Reads up to [count] samples into [buffer]. @return samples read, 0 if none yet, −1 at the end or on error */
     fun read(buffer: ShortArray, count: Int): Int
 
+    /** Stops reading and frees the source. */
     fun close()
 }
 
@@ -106,8 +107,10 @@ class SyntheticVoicesSource(
     seed: Int = 7
 ) : PcmSource {
 
+    /** One part of the script: [speaker] 0 or 1, or null for silence, for [durationMs]. */
     data class Segment(val speaker: Int?, val durationMs: Long)
 
+    /** A synthetic voice: pitch and how much all formants are scaled (vocal-tract length). */
     private data class Voice(val pitchHz: Double, val formantScale: Double)
 
     private val voices = listOf(Voice(115.0, 1.0), Voice(215.0, 1.2))
@@ -156,6 +159,7 @@ class SyntheticVoicesSource(
         return n
     }
 
+    /** Produces the next sample of the script. */
     private fun nextSample(): Short {
         val t = sample.toDouble() / sampleRate
         val ms = sample * 1000 / sampleRate

@@ -142,6 +142,7 @@ object ConversationMonitor {
         detector?.debugTimeline = true
     }
 
+    /** The debug screen closed; when no viewer is left the detector stops collecting the timeline. */
     @Synchronized
     fun removeDebugViewer() {
         if (debugViewers.decrementAndGet() <= 0) {
@@ -337,6 +338,7 @@ object ConversationMonitor {
         return lease
     }
 
+    /** Takes a microphone lease back; when the last one is gone the monitor may listen again. */
     private fun releaseMicrophone(lease: MicLease) {
         val removed = synchronized(micLeases) { micLeases.remove(lease) }
         if (removed) {
@@ -394,7 +396,6 @@ object ConversationMonitor {
     }
 
     /** Called by the prompt when it closes. */
-
     fun promptClosed() {
         promptOpen = false
     }
@@ -404,6 +405,10 @@ object ConversationMonitor {
         post { reevaluateNow() }
     }
 
+    /**
+     * Checks every condition (Discretion Mode, microphone setting, permission, pause, leases, stored voice) and starts
+     * or stops the detector accordingly. Runs on the monitor's lifecycle thread.
+     */
     private fun reevaluateNow() {
         if (scope == null) return
         val micAllowed = Sensors.get(appContext).getSensors().entries
@@ -458,6 +463,9 @@ object ConversationMonitor {
     private val _anyOtherIsConversation = MutableStateFlow(false)
     val anyOtherIsConversation: StateFlow<Boolean> = _anyOtherIsConversation.asStateFlow()
 
+    /**
+     * Owner method: true = one other voice is already a conversation, false = the owner must have been heard too. Saved; restarts the detector.
+     */
     fun setAnyOtherIsConversation(any: Boolean) {
         if (_anyOtherIsConversation.value == any) return
         _anyOtherIsConversation.value = any
@@ -573,6 +581,7 @@ object ConversationMonitor {
     private val _gateMode = MutableStateFlow(SpeechGateMode.SILERO_AND_LEVEL)
     val gateMode: StateFlow<SpeechGateMode> = _gateMode.asStateFlow()
 
+    /** Chooses the speech gate (Silero and level, Silero only, level only). Saved; restarts the detector. */
     fun setGateMode(mode: SpeechGateMode) {
         if (_gateMode.value == mode) return
         _gateMode.value = mode
@@ -589,6 +598,7 @@ object ConversationMonitor {
     private val _speechThreshold = MutableStateFlow(ConversationSettings().speechThreshold.toFloat())
     val speechThreshold: StateFlow<Float> = _speechThreshold.asStateFlow()
 
+    /** Silero probability at which speech starts (0.05–0.95). Saved; restarts the detector. */
     fun setSpeechThreshold(value: Float) {
         val clamped = value.coerceIn(0.05f, 0.95f)
         if (_speechThreshold.value == clamped) return
@@ -601,6 +611,7 @@ object ConversationMonitor {
     private val _speechHysteresis = MutableStateFlow(ConversationSettings().speechHysteresis.toFloat())
     val speechHysteresis: StateFlow<Float> = _speechHysteresis.asStateFlow()
 
+    /** How far below the threshold Silero may drop before speech ends. Saved; restarts the detector. */
     fun setSpeechHysteresis(value: Float) {
         // Below the threshold, so speech can always end again (item 78).
         val clamped = value.coerceIn(0f, minOf(0.4f, _speechThreshold.value / 2))
@@ -620,6 +631,7 @@ object ConversationMonitor {
     private val _confirmTwice = MutableStateFlow(ConversationSettings().confirmTwice)
     val confirmTwice: StateFlow<Boolean> = _confirmTwice.asStateFlow()
 
+    /** A verdict that changes must be repeated by the next piece before it counts. Saved; restarts the detector. */
     fun setConfirmTwice(on: Boolean) {
         if (_confirmTwice.value == on) return
         _confirmTwice.value = on
@@ -636,6 +648,9 @@ object ConversationMonitor {
     private val _continuousPieces = MutableStateFlow(ConversationSettings().continuousPieces)
     val continuousPieces: StateFlow<Boolean> = _continuousPieces.asStateFlow()
 
+    /**
+     * Cut pieces as one continuous stretch (with pre-roll and short gaps kept) instead of gated frames only. Saved; restarts the detector.
+     */
     fun setContinuousPieces(on: Boolean) {
         if (_continuousPieces.value == on) return
         _continuousPieces.value = on
@@ -648,6 +663,7 @@ object ConversationMonitor {
     private val _splitAtChanges = MutableStateFlow(ConversationSettings().splitAtChanges)
     val splitAtChanges: StateFlow<Boolean> = _splitAtChanges.asStateFlow()
 
+    /** Cut pieces at the voice changes found in the same audio. Saved; restarts the detector. */
     fun setSplitAtChanges(on: Boolean) {
         if (_splitAtChanges.value == on) return
         _splitAtChanges.value = on
@@ -660,6 +676,7 @@ object ConversationMonitor {
     private val _activityMinSilenceMs = MutableStateFlow(ConversationSettings().activityMinSilenceMs)
     val activityMinSilenceMs: StateFlow<Long> = _activityMinSilenceMs.asStateFlow()
 
+    /** Activity method: gaps shorter than this still count as speech (0–2000 ms). Saved; restarts the detector. */
     fun setActivityMinSilenceMs(value: Long) {
         val clamped = value.coerceIn(0L, 2_000L)
         if (_activityMinSilenceMs.value == clamped) return
@@ -673,6 +690,7 @@ object ConversationMonitor {
     private val _minLevelDb = MutableStateFlow(ConversationSettings().minLevelDb.toFloat())
     val minLevelDb: StateFlow<Float> = _minLevelDb.asStateFlow()
 
+    /** Loudness floor of the speech gate (−90…−20 dBFS). Saved; restarts the detector. */
     fun setMinLevelDb(value: Float) {
         val clamped = value.coerceIn(-90f, -20f)
         if (_minLevelDb.value == clamped) return
@@ -690,6 +708,7 @@ object ConversationMonitor {
     private val _announceInTest = MutableStateFlow(true)
     val announceInTest: StateFlow<Boolean> = _announceInTest.asStateFlow()
 
+    /** Whether the robot says "Conversation detected" while the speaker debug screen is open. */
     fun setAnnounceInTest(on: Boolean) {
         if (_announceInTest.value == on) return
         _announceInTest.value = on
@@ -755,6 +774,7 @@ object ConversationMonitor {
     private val _activityShare = MutableStateFlow(ConversationSettings().activityShare)
     val activityShare: StateFlow<Float> = _activityShare.asStateFlow()
 
+    /** Activity method: share of speech in the window that counts as a conversation (0.3–1.0). Saved; restarts the detector. */
     fun setActivityShare(value: Float) {
         val clamped = value.coerceIn(0.3f, 1.0f)
         if (_activityShare.value == clamped) return
@@ -767,6 +787,7 @@ object ConversationMonitor {
     private val _activityWindowMs = MutableStateFlow(ConversationSettings().activityWindowMs)
     val activityWindowMs: StateFlow<Long> = _activityWindowMs.asStateFlow()
 
+    /** Activity method: length of the window (3–60 s). Saved; restarts the detector. */
     fun setActivityWindowMs(value: Long) {
         val clamped = value.coerceIn(3_000L, 60_000L)
         if (_activityWindowMs.value == clamped) return
@@ -805,6 +826,7 @@ object ConversationMonitor {
     private val _differentBelow = MutableStateFlow(ConversationSettings().differentVoiceBelow)
     val differentBelow: StateFlow<Float> = _differentBelow.asStateFlow()
 
+    /** Pairwise method: two pieces below this similarity are two different voices. Saved; restarts the detector. */
     fun setDifferentBelow(value: Float) {
         val clamped = value.coerceIn(-0.5f, 0.95f)
         if (_differentBelow.value == clamped) return

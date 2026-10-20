@@ -188,6 +188,7 @@ class ObjectProbeActivity : ComponentActivity() {
         }
     }
 
+    /** Cuts rectangle [r] (clamped to the image) out of [g]. */
     private fun cropGray(g: com.example.robocontrol.vision.GrayImage, r: android.graphics.Rect): com.example.robocontrol.vision.GrayImage {
         val x0 = r.left.coerceIn(0, g.width - 1); val y0 = r.top.coerceIn(0, g.height - 1)
         val w = (r.right.coerceIn(x0 + 1, g.width) - x0); val h = (r.bottom.coerceIn(y0 + 1, g.height) - y0)
@@ -196,6 +197,7 @@ class ObjectProbeActivity : ComponentActivity() {
         return com.example.robocontrol.vision.GrayImage(w, h, out)
     }
 
+    /** Turns a gray image into a bitmap for the screen. */
     private fun grayToBitmap(g: com.example.robocontrol.vision.GrayImage): Bitmap {
         val px = IntArray(g.width * g.height) { val v = g.pixels[it].toInt() and 0xFF; (0xFF shl 24) or (v shl 16) or (v shl 8) or v }
         return Bitmap.createBitmap(px, g.width, g.height, Bitmap.Config.ARGB_8888)
@@ -251,6 +253,7 @@ class ObjectProbeActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /** Opens the camera stream (if the camera is allowed) and starts the preview and detection loops. */
     private fun startCamera() {
         if (cameraJob != null) return
         val cameraAllowed = Sensors.get(applicationContext).getSensors().entries.firstOrNull { it.key.equals("camera", ignoreCase = true) }?.value
@@ -290,6 +293,7 @@ class ObjectProbeActivity : ComponentActivity() {
         }
     }
 
+    /** Stops both loops and closes the camera stream. */
     private fun stopCamera(reason: String) {
         val job = cameraJob ?: return
         job.cancel()
@@ -439,6 +443,7 @@ class ObjectProbeActivity : ComponentActivity() {
     @Volatile
     private var markerStats = ""
 
+    /** "on" / "off" for the log. */
     private fun onOff(b: Boolean) = if (b) "on" else "off"
 
     /**
@@ -467,6 +472,7 @@ class ObjectProbeActivity : ComponentActivity() {
         return pass.results to text
     }
 
+    /** The test screen: preview with the drawing layers, settings, references and the log. */
     @Composable
     private fun Screen() {
         val lines by log.lines.collectAsState()
@@ -633,9 +639,11 @@ class ObjectProbeActivity : ComponentActivity() {
     /** Stable colour per reference name. */
     private fun colorFor(className: String): Color = BOX_COLORS[Math.floorMod(className.hashCode(), BOX_COLORS.size)]
 
+    /** Which of two results is better: detected first, then more inliers, then more good matches. */
     private fun better(a: ObjectMatch, b: ObjectMatch): Boolean =
         if (a.detected != b.detected) a.detected else if (a.inliers != b.inliers) a.inliers > b.inliers else a.goodMatches > b.goodMatches
 
+    /** A row of buttons, one per option; the current one is filled. */
     @Composable
     private fun <T> Choice(options: List<T>, current: T, label: (T) -> String, onPick: (T) -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {

@@ -153,6 +153,7 @@ class Mfcc(
             }
         }
 
+        /** Root mean square of [x] (kept for debugging). */
         @Suppress("unused")
         fun rms(x: DoubleArray) = sqrt(x.sumOf { it * it } / x.size)
     }

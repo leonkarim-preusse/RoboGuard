@@ -117,6 +117,7 @@ object CalendarMonitor {
     /** A debug view is open: publish [debug] snapshots (with the pink overlay). Pair with [removeDebugViewer]. */
     fun addDebugViewer() { debugViewers.incrementAndGet() }
 
+    /** The camera view closed; when no viewer is left the debug data is no longer published. */
     fun removeDebugViewer() {
         if (debugViewers.decrementAndGet() <= 0) {
             debugViewers.set(0)
@@ -139,6 +140,9 @@ object CalendarMonitor {
      */
     val announceEveryDetection: StateFlow<Boolean> = _announceEveryDetection.asStateFlow()
 
+    /**
+     * Test mode: speak on every confirmed detection instead of once per object. Only applies while the camera view is open. Saved.
+     */
     fun setAnnounceEveryDetection(on: Boolean) {
         _announceEveryDetection.value = on
         if (::appContext.isInitialized) appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_EVERY_DETECTION, on).apply()
@@ -149,6 +153,7 @@ object CalendarMonitor {
     /** Inliers a detection needs; changed in the camera debug view, kept across restarts (SharedPreferences). */
     val minInliers: StateFlow<Int> = _minInliers.asStateFlow()
 
+    /** Inliers a reference needs to count as found (clamped to the allowed range). Saved; applies from the next pass. */
     fun setMinInliers(value: Int) {
         val v = value.coerceIn(CalendarDetectionSettings.MIN_INLIERS_LOWEST, CalendarDetectionSettings.MIN_INLIERS_HIGHEST)
         _minInliers.value = v
@@ -254,6 +259,7 @@ object CalendarMonitor {
         if (scope != null) reevaluate()
     }
 
+    /** Checks every condition (Pixelate Objects, camera setting, camera leases) and starts or stops the detection loop. */
     @Synchronized
     private fun reevaluate() {
         if (scope == null) return
@@ -279,6 +285,7 @@ object CalendarMonitor {
         }
     }
 
+    /** Starts the loop that opens the camera stream and runs the detection workers; restarts it after errors. */
     private fun startLoop() {
         if (loopJob != null) return
         val s = scope ?: return
@@ -286,6 +293,7 @@ object CalendarMonitor {
         loopJob = s.launch { watch() }
     }
 
+    /** Stops the detection loop and closes the camera stream. */
     private fun stopLoop(reason: String) {
         val job = loopJob ?: return
         loopJob = null
@@ -380,6 +388,7 @@ object CalendarMonitor {
         var wholeSearches = 0; var wholeMsSum = 0L; val wholeOrb = ORB.Timings()
     }
 
+    /** Runs the detection workers on the newest frames until the stream fails, and logs a summary every 2 s. */
     private suspend fun detectUntilError(
         workers: List<Pair<ORB, ColorMarker>>, camera: CameraStream, dispatcher: kotlinx.coroutines.CoroutineDispatcher, failed: () -> Boolean
     ) = coroutineScope {
@@ -583,6 +592,10 @@ object CalendarMonitor {
         else -> 1
     }
 
+    /**
+     * Handles one finished pass: history per reference, "seen"/"gone" transitions, confirmation, announcements or the
+     * calendar popup, debug data and the 2 s statistics.
+     */
     private fun onPass(log: PassLog, pass: MarkerPass, frameTs: Long, ms: Long, debugging: Boolean) {
         val now = SystemClock.elapsedRealtime()
         if (pass.skipped) {

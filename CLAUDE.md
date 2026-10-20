@@ -2080,3 +2080,12 @@ debug-display items (95, 96), hygiene (71, 72, 79, 82).
   the manifest, granted=true). New `robocontrol/audio/TtsVoices.voiceFor(context, "en_US")` picks the list's default (else first)
   English entry's `type` as SpeakerRole; texts.json `meta.speechVoice` is now "" (= use the list). Installed; log tag TtsVoices
   prints all offered voices on first use. Not yet heard on the robot.
+
+## Code documentation (owner request 2026-10-20)
+
+- KDoc in the old RoboGuard style (short `/** */` per class and function, `@param`/`@property`/`@return` where useful) added to every
+  class, object, interface and member function in `robocontrol/` and `testing/` that had none, and to the new phone files
+  (`NavigationScreen`, `NavigationModel`, `RobotAPI` nav part, `DebugMode`). Local helper functions inside functions are left without.
+  Comments only; both apps compile (`:app:compileDebugKotlin`). `roboguard/` untouched.
+- README "Documentation" section extended (robot: points 4–6 = robocontrol packages, test screens, performance scripts; phone: point 4).
+- `performance/*.py`: docstrings for the top-level functions that had none.
