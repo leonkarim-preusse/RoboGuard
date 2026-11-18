@@ -21,8 +21,14 @@ import org.opencv.imgproc.Imgproc
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * One camera frame in memory: grayscale image, colour planes and brightness statistics; derived images are computed
- * on first use.
+ * One camera frame in memory; derived images are computed on first use.
+ * @property gray grayscale image
+ * @property uPlane U plane
+ * @property vPlane V plane
+ * @property uRowStride row stride of U
+ * @property uPixelStride pixel stride of U
+ * @property vRowStride row stride of V
+ * @property vPixelStride pixel stride of V
  * @property timestampMs time the frame arrived (elapsedRealtime)
  */
 class CameraFrame internal constructor(
@@ -35,7 +41,6 @@ class CameraFrame internal constructor(
     private val vPixelStride: Int,
     val timestampMs: Long
 ) {
-    /** mean, standard deviation, share ≥ 250 of Y. */
     private val stats: DoubleArray by lazy {
         ORB.loadOpenCv()
         val y = gray.toMat(); val mean = MatOfDouble(); val std = MatOfDouble(); val bright = Mat()
@@ -48,16 +53,19 @@ class CameraFrame internal constructor(
         }
     }
 
-    /** Average Y (0–255). */
     val meanBrightness: Double get() = stats[0]
-    /** Standard deviation of Y (0–~128); low = flat, washed-out or dark image. */
     val contrast: Double get() = stats[1]
-    /** Share of pixels at Y ≥ 250 (0–1): overexposed, detail lost there. */
     val clippedShare: Double get() = stats[2]
 
-    /** Chroma planes at their native half resolution, without row/pixel padding: Cb (U) and Cr (V). */
     private val chroma: Pair<ByteArray, ByteArray> by lazy {
         val cw = gray.width / 2; val ch = gray.height / 2
+        /**
+         * Copies a chroma plane without padding.
+         * @param plane plane data
+         * @param rowStride row stride
+         * @param pixelStride pixel stride
+         * @return the tight plane
+         */
         fun tight(plane: ByteArray, rowStride: Int, pixelStride: Int): ByteArray {
             val out = ByteArray(cw * ch)
             for (row in 0 until ch) {
@@ -75,8 +83,9 @@ class CameraFrame internal constructor(
     }
 
     /**
-     * New RGB Mat (CV_8UC3, caller releases) from the YUV data, full-range BT.601 (JFIF; OpenCV's YCrCb conversion uses the same
-     * full-range formulas). [half] = at half size (640×360), where the colour data is native and only brightness is averaged.
+     * New RGB Mat from the YUV data (full-range BT.601); the caller releases it.
+     * @param half true for half size
+     * @return the Mat
      */
     fun rgbMat(half: Boolean): Mat {
         ORB.loadOpenCv()
@@ -104,7 +113,6 @@ class CameraFrame internal constructor(
         }
     }
 
-    /** Full-size colour bitmap for display, built on first use. Thread-safe. */
     val preview: Bitmap by lazy {
         val rgb = rgbMat(half = false)
         val rgba = Mat()
@@ -118,17 +126,16 @@ class CameraFrame internal constructor(
 }
 
 /**
- * Continuous camera stream through RobotOS's SurfaceShareApi that keeps only the latest frame. Requires a connected
- * RobotApi; stop it when it is no longer needed.
+ * Continuous camera stream through SurfaceShareApi that keeps only the latest frame.
+ * @property width frame width in pixels
+ * @property height frame height in pixels
+ * @property maxFps maximum processed frames per second
  */
 class CameraStream(
-    /** Requested frame width in pixels (the camera session of RobotOS runs at 1280×720). */
     val width: Int = 1280,
     val height: Int = 720,
-    /** Maximum number of frames per second that are processed; further frames are dropped. */
     val maxFps: Int = 20
 ) {
-    /** The newest frame, or null before the first one. */
     val latest = AtomicReference<CameraFrame?>(null)
 
     @Volatile
@@ -139,10 +146,8 @@ class CameraStream(
     private var reader: ImageReader? = null
     private var bean: SurfaceShareBean? = null
     private var lastError = 0
-    /** Earliest time at which the next frame is accepted. */
     private var nextDueAt = 0L
 
-    // Reused per frame on the camera thread (plane copies and output pixels), so no per-frame allocation except the outputs.
     private val yBytes = ByteArray(width * height)
     private var uBytes = ByteArray(0)
     private var vBytes = ByteArray(0)
@@ -155,7 +160,6 @@ class CameraStream(
     @Synchronized
     fun start(onError: (code: Int, message: String?) -> Unit): Int {
         if (reader != null) return 0
-        // Only copies frames: background priority, so it does not compete with the detection threads for fast cores.
         val t = HandlerThread("CameraStream", android.os.Process.THREAD_PRIORITY_BACKGROUND).apply { start() }
         val r = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
         r.setOnImageAvailableListener({ rd ->
@@ -163,8 +167,7 @@ class CameraStream(
             try {
                 val now = SystemClock.elapsedRealtime()
                 if (maxFps > 0) {
-                    // Schedule-based limit: frames arrive every ~33 ms, so "at least 50 ms apart" would give only 15 fps.
-                    // Advancing the due time by exactly 1000/maxFps keeps the average at maxFps.
+                    // Advance the due time by 1000/maxFps so the average stays at maxFps.
                     if (now < nextDueAt) return@setOnImageAvailableListener
                     val interval = 1000L / maxFps
                     nextDueAt = maxOf(nextDueAt + interval, now - interval)
@@ -177,11 +180,21 @@ class CameraStream(
         }, Handler(t.looper))
         val b = SurfaceShareBean().apply { name = STREAM_NAME }
         val code = SurfaceShareApi.getInstance().requestImageFrame(r.surface, b, object : SurfaceShareListener() {
+            /**
+             * Reports a stream error.
+             * @param error error code
+             * @param message error text
+             */
             override fun onError(error: Int, message: String?) {
                 lastError = error
                 onError(error, message)
             }
 
+            /**
+             * Logs status updates.
+             * @param status status code
+             * @param message status text
+             */
             override fun onStatusUpdate(status: Int, message: String?) {}
         })
         thread = t
@@ -213,7 +226,10 @@ class CameraStream(
         vBytes.fill(0)
     }
 
-    /** Copies the image planes into a [CameraFrame]. */
+    /**
+     * Copies the image planes into a [CameraFrame].
+     * @return the frame
+     */
     private fun Image.toFrame(): CameraFrame {
         val yPlane = planes[0]; val uPlane = planes[1]; val vPlane = planes[2]
         val yStride = yPlane.rowStride
@@ -229,7 +245,6 @@ class CameraStream(
         uBuf.get(uBytes)
         vBuf.get(vBytes)
 
-        // Own copies: the reused buffers change with the next frame, and conversions run later (only if the frame is used).
         return CameraFrame(
             GrayImage(width, height, yBytes.copyOf()),
             uBytes.copyOf(), vBytes.copyOf(),

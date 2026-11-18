@@ -9,9 +9,15 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 /**
- * 80-dimensional log-mel filterbank features in the Kaldi layout, the input of [SpeakerEmbedder]. Per 25 ms frame (10 ms
- * hop): DC removal, pre-emphasis 0.97, Povey window, 512-point FFT, power spectrum, 80 mel filters from 20 Hz to 8 kHz
- * and natural logarithm. [cepstralMeanNormalise] subtracts the mean over time. Not thread-safe.
+ * 80-dimensional log-mel filterbank features in the Kaldi layout, the input of [SpeakerEmbedder].
+ * @property sampleRate sample rate in Hz
+ * @property frameLength frame length in samples
+ * @property frameShift frame shift in samples
+ * @property fftSize FFT size
+ * @property bands number of mel bands
+ * @property lowHz lowest band edge in Hz
+ * @property highHz highest band edge in Hz
+ * @property preEmphasis pre-emphasis factor
  */
 class Fbank(
     private val sampleRate: Int = 16_000,
@@ -23,8 +29,6 @@ class Fbank(
     private val highHz: Double = 8_000.0,
     private val preEmphasis: Double = 0.97
 ) {
-
-    /** Povey window: a Hamming-like window raised to 0.85, as Kaldi uses for speech features. */
     private val window = DoubleArray(frameLength) { (0.5 - 0.5 * cos(2 * PI * it / (frameLength - 1))).pow(0.85) }
 
     private val re = DoubleArray(fftSize)
@@ -32,11 +36,17 @@ class Fbank(
     private val frame = DoubleArray(frameLength)
     private val filters: Array<DoubleArray> = buildFilterBank()
 
-    /** Frames that [compute] will produce for [samples] samples (Kaldi's "snip edges": no partial frame at the end). */
+    /**
+     * Frames that [compute] will produce for [samples] samples (Kaldi's "snip edges": no partial frame at the end).
+     * @param samples number of samples
+     * @return number of frames
+     */
     fun frameCount(samples: Int): Int = if (samples < frameLength) 0 else 1 + (samples - frameLength) / frameShift
 
     /**
      * Features of [samples] (−1…1; the scale does not matter after mean normalisation) as one row per frame.
+     * @param samples audio samples (−1…1)
+     * @param length number of samples to use
      * @return array of [frameCount] rows with [bands] values each
      */
     fun compute(samples: FloatArray, length: Int = samples.size): Array<FloatArray> {
@@ -44,12 +54,10 @@ class Fbank(
         val out = Array(frames) { FloatArray(bands) }
         for (t in 0 until frames) {
             val start = t * frameShift
-            // Remove the DC offset of this frame.
             var mean = 0.0
             for (i in 0 until frameLength) mean += samples[start + i]
             mean /= frameLength
             for (i in 0 until frameLength) frame[i] = samples[start + i] - mean
-            // Pre-emphasis; the first sample uses itself, like Kaldi.
             for (i in frameLength - 1 downTo 1) frame[i] -= preEmphasis * frame[i - 1]
             frame[0] -= preEmphasis * frame[0]
 
@@ -72,7 +80,10 @@ class Fbank(
         return out
     }
 
-    /** Subtracts each band's mean over time, in place (what the 3D-Speaker pipeline feeds to the model). */
+    /**
+     * Subtracts each band's mean over time, in place (what the 3D-Speaker pipeline feeds to the model).
+     * @param features features to normalise
+     */
     fun cepstralMeanNormalise(features: Array<FloatArray>) {
         if (features.isEmpty()) return
         for (b in 0 until bands) {
@@ -83,8 +94,16 @@ class Fbank(
         }
     }
 
-    /** Triangular filters, equally spaced on the mel scale, over the FFT power bins. */
+    /**
+     * Triangular filters, equally spaced on the mel scale, over the FFT power bins.
+     * @return one filter per mel band
+     */
     private fun buildFilterBank(): Array<DoubleArray> {
+        /**
+         * Converts a frequency to mel.
+         * @param hz frequency in Hz
+         * @return the mel value
+         */
         fun mel(hz: Double) = 1127.0 * ln(1.0 + hz / 700.0)
         val bins = fftSize / 2 + 1
         val melLow = mel(lowHz)
@@ -104,10 +123,13 @@ class Fbank(
     }
 
     private companion object {
-        /** Kaldi floors the mel energies at the float epsilon before taking the log. */
         val FLOOR = 1.1920929e-7
 
-        /** In-place iterative radix-2 FFT (same as [Mfcc]'s; kept here so the two front-ends stay independent). */
+        /**
+         * In-place iterative radix-2 FFT (same as [Mfcc]'s; kept here so the two front-ends stay independent).
+         * @param re real parts
+         * @param im imaginary parts
+         */
         fun fft(re: DoubleArray, im: DoubleArray) {
             val n = re.size
             var j = 0

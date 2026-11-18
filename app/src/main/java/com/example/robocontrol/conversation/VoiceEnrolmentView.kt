@@ -66,24 +66,19 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
     val cohortPieces by store.cohortPieces.collectAsState()
     val profiles by store.profiles.collectAsState()
     val activeProfile by store.activeProfile.collectAsState()
-    // Name the NEXT recording is stored under: the active voice by default, so "Record again" replaces it; type another
-    // name to keep several voices side by side and switch between them.
     var recordAs by remember(activeProfile) { mutableStateOf(activeProfile) }
     var confirmDelete by remember { mutableStateOf(false) }
     var missingPermission by remember { mutableStateOf(false) }
     var confirmDeleteCohort by remember { mutableStateOf(false) }
-    // The button that was pressed, remembered across the permission dialog. It used to always start an ENROL run, so
-    // "Record other voices" or "Try the voice" recorded and saved an owner voice after granting the permission.
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
-    // Store writes (decrypt, encrypt, fsync) off the UI thread.
     val io = rememberCoroutineScope()
+    /**
+     * Runs [block] off the UI thread.
+     * @param block work to run
+     */
     fun inBackground(block: () -> Unit) { io.launch(Dispatchers.IO) { block() } }
-    // Derived from the published state, NOT from VoiceEnrolment.running: that is a plain property, so Compose never
-    // redraws when the recording thread ends — the screen kept showing "Stop" and never offered "Try the voice".
     val running = state.phase == EnrolmentState.Phase.RECORDING || state.phase == EnrolmentState.Phase.TESTING
 
-    // Recording must end when the screen is no longer visible (Home, another app), not only when it is closed — and then
-    // it keeps nothing, not even a half cohort.
     WhileVisible(onStart = {}, onStop = { enrolment.cancel() })
 
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -91,6 +86,10 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
         if (granted) pendingAction?.invoke()
         pendingAction = null
     }
+    /**
+     * Runs [action] once RECORD_AUDIO is granted.
+     * @param action work to run
+     */
     fun withMicrophone(action: () -> Unit) {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) action()
         else {
@@ -172,7 +171,6 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                         Text(UiText.get("voice.button.delete"), color = Color(0xFFD32F2F))
                     }
                 }
-                // Other voices: press, then play the recording; stop when it has finished.
                 Text(UiText.get("voice.cohort.title"), fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 Text(
                     cohortPieces?.let { UiText.get("voice.cohort.stored", "pieces" to it) }
@@ -197,7 +195,6 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
         Spacer(Modifier.width(16.dp))
 
         Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            // ---- the voices the robot knows; exactly one of them is compared against
             if (profiles.isNotEmpty()) {
                 Text(UiText.get("voice.profiles.title"), fontWeight = FontWeight.Bold)
                 profiles.forEach { profile ->
@@ -226,7 +223,6 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                 Spacer(Modifier.height(4.dp))
             }
 
-            // ---- what is stored
             Text(UiText.get("voice.stored.title", "name" to activeProfile), fontWeight = FontWeight.Bold)
             val info = stored
             if (info == null) {
@@ -252,8 +248,6 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                     ),
                     fontSize = 14.sp
                 )
-                // The computed threshold comes from ONE recording and is far too strict (owner measured 0.89-0.91
-                // against a computed 0.94). Set it by hand from what "Try the voice" actually reads.
                 Text(UiText.get("voice.threshold.title", "value" to "%.2f".format(info.threshold)), fontSize = 14.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf(-0.05f, -0.01f, +0.01f, +0.05f).forEach { step ->
@@ -265,7 +259,6 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                     }
                 }
                 Text(UiText.get("voice.threshold.hint"), fontSize = 12.sp, color = Color(0xFF555555))
-                // What the last recording computed, offered next to the hand-set value instead of replacing it.
                 info.suggestedThreshold?.let { suggested ->
                     if (kotlin.math.abs(suggested - info.threshold) >= 0.005f) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -278,7 +271,6 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                         }
                     }
                 }
-                // The unclear band: a piece must be this far below the threshold to count as somebody else.
                 Text(UiText.get("voice.margin.title", "value" to "%.2f".format(info.margin)), fontSize = 14.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     listOf(-0.02f, -0.01f, +0.01f, +0.02f).forEach { step ->
@@ -289,13 +281,11 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                         ) { Text(if (step > 0) "+%.2f".format(step) else "%.2f".format(step), fontSize = 13.sp) }
                     }
                 }
-                // A threshold only means something on the scale of the cohort it was set with.
                 if (store.cohortMismatch(info)) {
                     Text(UiText.get("voice.threshold.cohort_mismatch"), fontSize = 13.sp, color = Color(0xFFD32F2F))
                 }
             }
 
-            // ---- what is happening now
             Spacer(Modifier.height(4.dp))
             Text(UiText.get("voice.now.title"), fontWeight = FontWeight.Bold)
             when (state.phase) {
@@ -322,7 +312,6 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
                     Text(UiText.get("voice.hint.speak"), fontSize = 13.sp)
                 }
                 EnrolmentState.Phase.TESTING -> {
-                    // Always visible while trying, so it never looks as if nothing is happening.
                     Text(UiText.get("voice.now.testing_wait"), fontSize = 14.sp, color = Color(0xFF2E7D32))
                     val similarity = state.similarity
                     if (similarity != null) {
@@ -376,7 +365,11 @@ fun VoiceEnrolmentScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
     }
 }
 
-/** Similarity from 0 to 1 with the stored threshold marked, so a test run can be read off at a glance. */
+/**
+ * Similarity from 0 to 1 with the stored threshold marked, so a test run can be read off at a glance.
+ * @param similarity current similarity
+ * @param threshold stored threshold
+ */
 @Composable
 private fun SimilarityBar(similarity: Float, threshold: Float) {
     Box(Modifier.fillMaxWidth().height(26.dp).background(Color(0xFFEEEEEE), RoundedCornerShape(4.dp))) {

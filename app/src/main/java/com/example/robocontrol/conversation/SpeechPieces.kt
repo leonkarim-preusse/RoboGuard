@@ -9,17 +9,7 @@ import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.sqrt
 
-/*
- * The parts the owner comparison, the pairwise comparison and the voice enrolment share: the speech gate, reading the
- * microphone, cutting speech into pieces, and the thread that turns a piece into an embedding.
- *
- * They used to be written out three times, and every fix had to be made three times — and was not always (review
- * 2026-10-02: the enrolment had no robot-speech mask, its pieces were cut differently from the detector's, and the
- * hysteresis could switch the gate on for good). A template is only comparable with pieces cut the SAME way, so one
- * implementation is not only shorter, it is a correctness requirement.
- */
 
-/** Samples per 10 ms hop at 16 kHz. */
 internal const val SPEECH_HOP = 160
 
 /**
@@ -48,10 +38,13 @@ internal fun readHop(source: PcmSource, read: ShortArray, hop: ShortArray): Bool
     return true
 }
 
-/** About one second of reads that deliver nothing: the recording is not running any more. */
 private const val MAX_EMPTY_READS = 200
 
-/** Level of one hop in dBFS. */
+/**
+ * Level of one hop in dBFS.
+ * @param hop samples of the hop
+ * @return the level in dBFS
+ */
 internal fun hopLevelDb(hop: ShortArray): Double {
     var sum = 0.0
     for (k in hop.indices) {
@@ -72,14 +65,18 @@ internal class SpeechGateState(private val settings: ConversationSettings) {
     var loud = false
         private set
 
-    /** Decides whether one frame is speech from Silero's [probability] and the [levelDb]; updates [silero] and [loud]. */
+    /**
+     * Decides whether one frame is speech from Silero's [probability] and the [levelDb]; updates [silero] and [loud].
+     * @param probability Silero probability
+     * @param levelDb level in dBFS
+     * @return true if the frame counts as speech
+     */
     fun decide(probability: Double, levelDb: Double): Boolean {
         val limit = if (sileroWasSpeech) settings.sileroRelease else settings.speechThreshold
         silero = probability >= limit
         sileroWasSpeech = silero
         loud = levelDb > settings.minLevelDb
-        // Digital silence is never speech, whatever a neural network makes of it (2026-09-28: Silero said "speech" on
-        // every frame of a muted microphone).
+        // Digital silence is never speech, regardless of Silero's output.
         if (levelDb < DIGITAL_SILENCE_DB) return false
         return when (settings.gateMode) {
             SpeechGateMode.SILERO_AND_LEVEL -> silero && loud
@@ -98,28 +95,29 @@ internal class SpeechGateState(private val settings: ConversationSettings) {
     }
 }
 
-/** One finished piece of speech on its way to the speaker model. Whoever uses [samples] zeroes them. */
+/**
+ * One finished piece of speech on its way to the speaker model. Whoever uses [samples] zeroes them.
+ * @property samples audio of the piece
+ * @property timeMs audio time of its last hop
+ * @property levelDb mean level of its speech frames
+ * @property spanMs time from its first to its last hop
+ * @property reason why it was handed off
+ */
 internal class SpeechPiece(
     val samples: FloatArray,
-    /** Audio time of its last hop. */
     val timeMs: Long,
-    /** Mean level of its speech frames: the closest thing to a distance for one reading. */
     val levelDb: Double,
-    /** From its first to its last hop. */
     val spanMs: Long,
-    /** Why it was handed off: "full", "pause", "voice changed", "robot spoke", "end". */
     val reason: String
 )
 
 /**
- * Cuts gated speech into pieces of [ConversationSettings.pieceSeconds]. Supports continuous pieces with pre-roll and
- * bridged pauses, ends a piece after a long pause, discards audio while the robot speaks and optionally splits pieces
- * at speaker changes. Audio is kept only in fixed buffers that [clear] zeroes. Not thread-safe.
+ * Cuts gated speech into pieces for the speaker model. Audio is kept only in fixed buffers that [clear] zeroes. Not
+ * thread-safe.
  * @param settings assembly settings
  * @param sampleRate sample rate in Hz
  */
 internal class PieceAssembler(private val settings: ConversationSettings, private val sampleRate: Int = 16_000) {
-
     private val pieceHops = (settings.pieceSeconds * sampleRate / SPEECH_HOP).toInt()
     private val holdHops = if (settings.splitAtChanges) HOLD_SPEECH_FRAMES else 0
     private val minHops = (settings.minPieceSeconds * sampleRate / SPEECH_HOP).toInt().coerceAtLeast(MIN_EMBED_HOPS)
@@ -143,7 +141,6 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
     private var lastGateMs = Long.MIN_VALUE / 2
     private var lastAppendMs = Long.MIN_VALUE / 2
 
-    // Speaker changes inside the stream: MFCC on a sliding 25 ms frame, fed with the gate's verdict.
     private val mfcc = if (settings.splitAtChanges) Mfcc(sampleRate = sampleRate) else null
     private val changes = mfcc?.let {
         ChangeDetector(it.coefficients, ChangeDetectorConfig(
@@ -153,12 +150,16 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
     private val frame = DoubleArray(mfcc?.frameLength ?: 0)
     private val features = DoubleArray(mfcc?.coefficients ?: 0)
 
-    /** Samples collected and not yet handed off. */
     val collectedSamples: Int get() = hops * SPEECH_HOP
 
     /**
-     * One hop. [speech] is the gate's verdict for it, [robotTalking] whether the robot's own playback is on. Returns the
-     * pieces that became ready (usually none).
+     * Processes one hop.
+     * @param hop samples of the hop
+     * @param timeMs audio time of the hop
+     * @param levelDb level in dBFS
+     * @param speech gate verdict
+     * @param robotTalking whether the robot is playing sound
+     * @return pieces that were completed
      */
     fun onHop(hop: ShortArray, timeMs: Long, levelDb: Double, speech: Boolean, robotTalking: Boolean): List<SpeechPiece> {
         val out = ArrayList<SpeechPiece>(1)
@@ -209,7 +210,10 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
         return out
     }
 
-    /** Hands off whatever is collected (end of a run). */
+    /**
+     * Hands off whatever is collected (end of a run).
+     * @return the remaining pieces
+     */
     fun flush(): List<SpeechPiece> {
         val out = ArrayList<SpeechPiece>(2)
         emitRange(0, hops, "end", out)
@@ -230,7 +234,14 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
         changes?.clear()
     }
 
-    /** Copies one hop into the piece buffer; stops silently when the buffer is full. */
+    /**
+     * Copies one hop into the piece buffer; stops silently when the buffer is full.
+     * @param src hop samples
+     * @param offset start in [src]
+     * @param timeMs audio time
+     * @param levelDb level in dBFS
+     * @param speech gate verdict
+     */
     private fun append(src: ShortArray, offset: Int, timeMs: Long, levelDb: Double, speech: Boolean) {
         if (hops >= capacityHops) return
         val base = hops * SPEECH_HOP
@@ -241,7 +252,11 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
         hops++
     }
 
-    /** An accepted change at audio time [boundaryMs]: what came before it is one voice, and goes out on its own. */
+    /**
+     * Hands off the part before an accepted change as its own piece.
+     * @param boundaryMs audio time of the change
+     * @param out receives the pieces
+     */
     private fun splitAt(boundaryMs: Long, out: MutableList<SpeechPiece>) {
         if (hops == 0) return
         var h = 0
@@ -251,7 +266,13 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
         shift(h)
     }
 
-    /** Hands off hops [from, to) as pieces of at most [pieceHops]; parts shorter than [minHops] are dropped. */
+    /**
+     * Hands off hops [from, to) as pieces of at most [pieceHops]; parts shorter than [minHops] are dropped.
+     * @param from first hop
+     * @param to end hop (exclusive)
+     * @param reason hand-off reason
+     * @param out receives the pieces
+     */
     private fun emitRange(from: Int, to: Int, reason: String, out: MutableList<SpeechPiece>) {
         var start = from
         while (start < to) {
@@ -271,7 +292,10 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
         }
     }
 
-    /** Drops the first [count] hops and moves the rest to the front. */
+    /**
+     * Drops the first [count] hops and moves the rest to the front.
+     * @param count hops to drop
+     */
     private fun shift(count: Int) {
         val keep = hops - count
         if (keep > 0) {
@@ -291,10 +315,8 @@ internal class PieceAssembler(private val settings: ConversationSettings, privat
     }
 
     private companion object {
-        /** One comparison window plus one step of the change detector: how late it reports a boundary (1.6 s). */
         const val HOLD_SPEECH_FRAMES = 160
 
-        /** The speaker model needs at least one second. */
         const val MIN_EMBED_HOPS = 100
     }
 }
@@ -317,7 +339,12 @@ internal class EmbeddingWorker<R : Any>(
     private val discard: (R) -> Unit = {},
     private val onEnd: () -> Unit = {}
 ) {
-    /** One finished embedding run: the computed [value], the piece it came from and how long it took. */
+    /**
+     * One finished embedding run: the computed [value], the piece it came from and how long it took.
+     * @property value computed result
+     * @property piece source piece
+     * @property embedNs duration in nanoseconds
+     */
     class Done<R>(val value: R, val piece: SpeechPiece, val embedNs: Long)
 
     private val queue = ArrayBlockingQueue<SpeechPiece>(capacity)
@@ -327,15 +354,11 @@ internal class EmbeddingWorker<R : Any>(
     @Volatile
     private var busy = false
 
-    /** Set when the model could not be loaded or a run failed in a way that ends the worker. */
     val error: String? get() = failure.get()
 
-    /** Nothing queued and nothing running. */
     val idle: Boolean get() = queue.isEmpty() && !busy
 
     private val thread = Thread({
-        // A defined priority: below the audio thread (-16), above ordinary background work, so the time to a verdict
-        // stays bounded on a busy robot.
         runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_FOREGROUND) }
         var embedder: SpeakerEmbedder? = null
         try {
@@ -357,7 +380,6 @@ internal class EmbeddingWorker<R : Any>(
                 }
             }
         } catch (_: InterruptedException) {
-            // stop() while waiting: a normal end
         } catch (e: Exception) {
             Log.e(name, "embedding stopped", e)
             failure.set("speaker model: " + (e.message ?: e.toString()))
@@ -369,14 +391,21 @@ internal class EmbeddingWorker<R : Any>(
         }
     }, name).apply { isDaemon = true; start() }
 
-    /** Queues [piece]; if the queue is full it is zeroed and dropped (a piece judged seconds late says nothing). */
+    /**
+     * Queues [piece]; if the queue is full it is zeroed and dropped (a piece judged seconds late says nothing).
+     * @param piece piece to embed
+     * @return true if it was queued
+     */
     fun offer(piece: SpeechPiece): Boolean {
         if (queue.offer(piece)) return true
         piece.samples.fill(0f)
         return false
     }
 
-    /** The next finished result, or null. */
+    /**
+     * The next finished result, or null.
+     * @return the result, or null
+     */
     fun poll(): Done<R>? = results.poll()
 
     /** Ends the thread after its current run; it closes the model and erases everything itself. */
@@ -384,7 +413,11 @@ internal class EmbeddingWorker<R : Any>(
         thread.interrupt()
     }
 
-    /** Waits up to [millis] for the thread to end; true if it did. */
+    /**
+     * Waits up to [millis] for the thread to end; true if it did.
+     * @param millis maximum wait
+     * @return true if the thread ended
+     */
     fun join(millis: Long): Boolean {
         runCatching { thread.join(millis) }
         return !thread.isAlive

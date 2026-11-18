@@ -42,23 +42,23 @@ import kotlinx.coroutines.withContext
  * ([SpeechServiceProbe]) and sound direction ([SoundDirectionProbe]).
  */
 class VoiceProbeActivity : ComponentActivity() {
-
     private lateinit var log: ProbeLog
     private lateinit var mic: MicAccessProbe
     private lateinit var speech: SpeechServiceProbe
     private lateinit var direction: SoundDirectionProbe
 
+    /**
+     * Sets up the voice test screen.
+     * @param savedInstanceState saved state
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Application context: the probes register SDK listeners and a broadcast receiver
-        // that must not keep this activity alive after it closes.
         log = ProbeLog(applicationContext)
         mic = MicAccessProbe(applicationContext, log)
         speech = SpeechServiceProbe(applicationContext, log)
         direction = SoundDirectionProbe(applicationContext, log)
         log.i("probe", "log file: ${log.filePath}")
 
-        // Plain MaterialTheme instead of RoboGuard's theme: robocontrol must not depend on roboguard.
         setContent {
             MaterialTheme {
                 ProbeScreen()
@@ -78,16 +78,13 @@ class VoiceProbeActivity : ComponentActivity() {
     private fun ProbeScreen() {
         val lines by log.lines.collectAsState()
 
-        // Disables the mic button while a run is in progress, so two runs cannot fight over the mic.
         var micRunning by remember { mutableStateOf(false) }
 
-        // RECORD_AUDIO is a runtime permission. If the user grants it, the probe starts right away.
         val requestMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             log.i("probe", "RECORD_AUDIO granted=$granted")
             if (granted) runMicProbe { micRunning = it }
         }
 
-        // Keep the newest line visible.
         val listState = rememberLazyListState()
         LaunchedEffect(lines.size) {
             if (lines.isNotEmpty()) listState.scrollToItem(lines.lastIndex)

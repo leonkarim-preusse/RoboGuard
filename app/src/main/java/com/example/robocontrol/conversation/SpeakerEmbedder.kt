@@ -8,12 +8,10 @@ import java.nio.FloatBuffer
 import kotlin.math.sqrt
 
 /**
- * Computes speaker embeddings with the CAM++ model (`assets/speaker/campplus_en_voxceleb.onnx`, 512 dimensions) via
- * ONNX Runtime. Callers zero the input samples and the returned vector after use. Not thread-safe; call [close] when done.
+ * Computes speaker embeddings with the local CAM++ model. Not thread-safe; call [close] when done.
  * @param context used to load the model from the assets
  */
 class SpeakerEmbedder(context: Context) : AutoCloseable {
-
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val session: OrtSession
     private val options: OrtSession.SessionOptions
@@ -30,8 +28,10 @@ class SpeakerEmbedder(context: Context) : AutoCloseable {
     }
 
     /**
-     * The embedding of [samples] (16 kHz mono, −1…1), L2-normalised so that [similarity] is a plain dot product.
-     * Needs at least [MIN_SAMPLES]; returns null below that, because short pieces give unreliable vectors.
+     * Computes the L2-normalised embedding of [samples].
+     * @param samples 16 kHz mono audio (−1…1)
+     * @param length number of samples to use
+     * @return the embedding, or null below one second of audio
      */
     fun embed(samples: FloatArray, length: Int = samples.size): FloatArray? {
         if (length < MIN_SAMPLES) return null
@@ -54,6 +54,7 @@ class SpeakerEmbedder(context: Context) : AutoCloseable {
         }
     }
 
+    /** Closes the model session. */
     override fun close() {
         session.close()
         options.close()
@@ -62,16 +63,18 @@ class SpeakerEmbedder(context: Context) : AutoCloseable {
     companion object {
         const val MODEL_ASSET = "speaker/campplus_en_voxceleb.onnx"
 
-        /** Dimensions of the embedding this model produces. */
         const val DIMENSIONS = 512
 
-        /** Shortest piece of speech that is embedded at all: 1 s at 16 kHz. */
         const val MIN_SAMPLES = 16_000
 
         private const val MIN_FRAMES = 20
         private const val INPUT = "x"
 
-        /** Scales [v] to length 1, in place, and returns it. A zero vector is left as it is. */
+        /**
+         * Scales [v] to length 1, in place, and returns it. A zero vector is left as it is.
+         * @param v vector to scale
+         * @return the same vector
+         */
         fun normalise(v: FloatArray): FloatArray {
             var sum = 0.0
             for (x in v) sum += x * x

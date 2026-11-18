@@ -39,7 +39,12 @@ import kotlinx.coroutines.withContext
  */
 data class MapPoint(val name: String, val position: Point2D, val saved: Boolean, val persistent: Boolean = false)
 
-/** The map prepared for display: [bitmap] shows exactly the cells in [bounds], with the top row = highest world y. */
+/**
+ * The map prepared for display: [bitmap] shows exactly the cells in [bounds], with the top row = highest world y.
+ * @property map map file
+ * @property bitmap rendered cells
+ * @property bounds cells shown
+ */
 class RenderedMap(val map: RobotMapFile, val bitmap: Bitmap, val bounds: CellBounds)
 
 /**
@@ -55,11 +60,8 @@ enum class SpeedPreset(val label: String, val linear: Double?, val angular: Doub
 }
 
 /**
- * State and actions of the "Navigation and Map" screen and of the phone's navigation routes: the active map with the
- * robot's position, places, saved locations and temporary points, drives to a selected point, and private areas.
- * Every drive runs through [NavigationController] and [PrivacyGuard]: a target inside a private area is refused, and a
- * route that enters one is stopped. Private areas are stored encrypted per map ([ZoneRegistry]); if the stored file
- * cannot be read, driving and editing are blocked until the areas are reset.
+ * State and actions of the "Navigation and Map" screen and of the phone routes. Every drive runs through
+ * [NavigationController] and [PrivacyGuard].
  * @param context any context; only the application context is kept
  * @param log log shown on the screen and in Logcat
  * @param scope scope for background work (polling, saving, reloading)
@@ -74,37 +76,23 @@ class MapNavigation(
     private val pointStore = SavedPointStore(context)
     private val zoneRegistry = ZoneRegistry(context.filesDir, KeystoreZoneCipher())
 
-    /** Set when the saved private areas of the current map exist but cannot be read: driving and editing are blocked. */
     private val _zoneStoreError = MutableStateFlow<String?>(null)
     val zoneStoreError: StateFlow<String?> = _zoneStoreError.asStateFlow()
 
-    /** Set when the latest change to the private areas could not be saved (they still apply until the screen closes). */
     private val _zoneSaveWarning = MutableStateFlow<String?>(null)
     val zoneSaveWarning: StateFlow<String?> = _zoneSaveWarning.asStateFlow()
 
-    /**
-     * False until the saved areas of the current map were read. Before that, driving is refused (areas not known yet)
-     * and editing is refused (a save would overwrite the stored areas with an incomplete set).
-     */
     private val _zonesLoaded = MutableStateFlow(false)
     val zonesLoaded: StateFlow<Boolean> = _zonesLoaded.asStateFlow()
 
-    /**
-     * Set when the saved named locations of the current map exist but cannot be read. Saving and deleting locations is
-     * then refused (it would overwrite them) until they are reset; driving stays allowed.
-     */
     private val _pointStoreError = MutableStateFlow<String?>(null)
     val pointStoreError: StateFlow<String?> = _pointStoreError.asStateFlow()
 
-    /** Orders background saves: a save older than the last one written is skipped. */
     private var zoneSaveSeq = 0L
     private var zoneWrittenSeq = 0L
 
-    /** Counts zone edits so that a load started before an edit does not overwrite it. */
     private var zoneEditSeq = 0L
 
-    // ---- privacy areas: every drive goes through NavigationController, which checks the target before starting
-    //      and aborts when a pose from the poll loop lies inside a private zone (plus PrivacyGuard's margin).
     private val guard = PrivacyGuard(MapZones(mapName = ""))
     private val controller = NavigationController(bridge, guard)
     private val tts = OrionStarTts(context)
@@ -112,17 +100,13 @@ class MapNavigation(
     private val _privateZones = MutableStateFlow<List<Zone>>(emptyList())
     val privateZones: StateFlow<List<Zone>> = _privateZones.asStateFlow()
 
-    /** Margin PrivacyGuard adds around every private zone, in metres (shown on the map as an outer ring). */
     val privacyMargin: Double get() = guard.margin
 
-    /** Name of the zone the robot was last found standing in while idle, to log each entry only once. */
     private var idleViolationZone: String? = null
 
-    /** Newest privacy decisions (grants, refusals, entries, expiries), for the screen and the phone. */
     private val _audit = MutableStateFlow<List<String>>(emptyList())
     val audit: StateFlow<List<String>> = _audit.asStateFlow()
 
-    /** Last robot position OUTSIDE each private area (plus margin), to leave it again when a permission ends. */
     private val lastOutside = HashMap<String, Point2D>()
 
     init {
@@ -150,7 +134,6 @@ class MapNavigation(
     private val _pose = MutableStateFlow<RobotPose?>(null)
     val pose: StateFlow<RobotPose?> = _pose.asStateFlow()
 
-    /** null until first read. */
     private val _localized = MutableStateFlow<Boolean?>(null)
     val localized: StateFlow<Boolean?> = _localized.asStateFlow()
 
@@ -170,22 +153,23 @@ class MapNavigation(
     val navState: StateFlow<String> = _navState.asStateFlow()
 
     private val _driving = MutableStateFlow(false)
-    /** A drive is running: the Drive buttons are off meanwhile (a second drive could switch off the privacy check). */
     val driving: StateFlow<Boolean> = _driving.asStateFlow()
 
     private val _turning = MutableStateFlow(false)
-    /** The robot turns on the spot (after a privacy stop); STOP must work then too. */
     val turning: StateFlow<Boolean> = _turning.asStateFlow()
 
     private val _speed = MutableStateFlow(SpeedPreset.SLOW)
     val speed: StateFlow<SpeedPreset> = _speed.asStateFlow()
 
-    /** Latest raw `navi_speed` status from RobotOS (device state, format undocumented). */
     private val _measuredSpeed = MutableStateFlow<String?>(null)
     val measuredSpeed: StateFlow<String?> = _measuredSpeed.asStateFlow()
 
-    /** Keeps [measuredSpeed] up to date from the robot's speed status. */
     private val speedStatus = object : StatusListener() {
+        /**
+         * Updates the measured speed.
+         * @param type status type
+         * @param value status value
+         */
         override fun onStatusUpdate(type: String?, value: String?) {
             _measuredSpeed.value = value
         }
@@ -195,13 +179,14 @@ class MapNavigation(
     private var watchdogJob: Job? = null
     private var customCounter = 0
 
-    /** Stops a running drive or turn when LIDAR is switched off. */
     private val lidarListener = SensorChangeListener { name, enabled ->
         if (name.equals("lidar", ignoreCase = true) && !enabled && controller.isNavigating) stop("LIDAR switched off")
     }
 
     /**
-     * Whether the saved sensor settings switch the LIDAR off. Without LIDAR the robot can neither localise nor avoid obstacles.
+     * Whether the saved sensor settings switch the LIDAR off. Without LIDAR the robot can neither localise nor avoid
+     * obstacles.
+     * @return true if the LIDAR is switched off
      */
     private fun lidarOff(): Boolean =
         runCatching { Sensors.get(appContext).getSensors().entries.firstOrNull { it.key.equals("lidar", ignoreCase = true) }?.value == false }
@@ -236,8 +221,6 @@ class MapNavigation(
         runCatching { tts.disconnect() }
     }
 
-    // ---- privacy areas ------------------------------------------------------------------
-
     /**
      * Creates a circular private area around the selected point and saves it.
      * @param rawName name entered by the user
@@ -255,7 +238,10 @@ class MapNavigation(
         return null
     }
 
-    /** Default name for a new area: "Area N", one higher than the highest number in use. */
+    /**
+     * Default name for a new area: "Area N", one higher than the highest number in use.
+     * @return the default name
+     */
     fun nextAreaName(): String {
         val names = guard.zones.zones.map { it.name }
         var n = (names.mapNotNull { AREA_NUMBER.find(it)?.groupValues?.get(1)?.toIntOrNull() }.maxOrNull() ?: 0) + 1
@@ -263,7 +249,11 @@ class MapNavigation(
         return "Area $n"
     }
 
-    /** Trimmed name, or an error message: empty, too long, or already used by another area of this map. */
+    /**
+     * Validates a new area name.
+     * @param raw entered name
+     * @return the trimmed name or an error message
+     */
     private fun validateAreaName(raw: String): Pair<String?, String?> {
         val name = raw.trim()
         return when {
@@ -276,6 +266,7 @@ class MapNavigation(
 
     /**
      * Deletes the single private area [name] (also from storage) and ends any temporary permission for it.
+     * @param name area name
      */
     fun removePrivateArea(name: String) {
         if (zonesLocked()) return
@@ -287,13 +278,13 @@ class MapNavigation(
         log.i(TAG, "private area \"$name\" deleted")
     }
 
-    // ---- drawing a private area by hand ----------------------------------------------------
-
-    /** Corners of the area being drawn, in world coordinates; null when not in drawing mode. */
     private val _drawingVertices = MutableStateFlow<List<Point2D>?>(null)
     val drawingVertices: StateFlow<List<Point2D>?> = _drawingVertices.asStateFlow()
 
-    /** A tap on the map: adds a corner while drawing an area, otherwise adds a temporary point. */
+    /**
+     * A tap on the map: adds a corner while drawing an area, otherwise adds a temporary point.
+     * @param position tapped position
+     */
     fun handleMapTap(position: Point2D) {
         if (!position.isFinite()) return log.i(TAG, "tap ignored: position is not a number")
         val corners = _drawingVertices.value
@@ -376,17 +367,27 @@ class MapNavigation(
         }
     }
 
-    /** True (and logged) while the saved areas are unreadable: editing them now would overwrite what could still be recovered. */
+    /**
+     * True (and logged) while the saved areas are unreadable: editing them now would overwrite what could still be
+     * recovered.
+     * @return true while the areas are unreadable
+     */
     private fun zonesLocked(): Boolean = lockedMessage()?.also { log.i(TAG, it) } != null
 
-    /** Why areas cannot be edited and the robot cannot drive right now (areas not loaded or unreadable), or null. */
+    /**
+     * Why areas cannot be edited and the robot cannot drive right now (areas not loaded or unreadable), or null.
+     * @return the reason, or null
+     */
     private fun lockedMessage(): String? = when {
         !_zonesLoaded.value -> UiText.get("nav.error.areas_loading")
         _zoneStoreError.value != null -> UiText.get("nav.error.areas_unreadable", "reason" to _zoneStoreError.value)
         else -> null
     }
 
-    /** Applies [update] to the zones in force, then saves the result for the current map in the background. */
+    /**
+     * Applies [update] to the zones in force, then saves the result for the current map in the background.
+     * @param update change to apply
+     */
     private fun changeZones(update: (MapZones) -> MapZones) {
         val snapshot = synchronized(controller) {
             guard.updateZones(update(guard.zones))
@@ -401,7 +402,7 @@ class MapNavigation(
         val seq = synchronized(zoneRegistry) { ++zoneSaveSeq }
         scope.launch(Dispatchers.IO) {
             synchronized(zoneRegistry) {
-                if (seq < zoneWrittenSeq) return@synchronized // a newer change was written already
+                if (seq < zoneWrittenSeq) return@synchronized
                 runCatching { zoneRegistry.save(snapshot) }
                     .onSuccess {
                         zoneWrittenSeq = seq
@@ -417,19 +418,17 @@ class MapNavigation(
     }
 
     /**
-     * Loads the saved private areas of [map] into the guard. A missing file means none; an unreadable one blocks
-     * driving and editing ([zoneStoreError]) instead of silently driving as if nothing were private.
+     * Loads the saved private areas of [map] into the guard; an unreadable file blocks driving and editing.
+     * @param map map name
      */
     private fun loadZones(map: String) {
         val (seqBefore, mapBefore) = synchronized(controller) { zoneEditSeq to guard.zones.mapName }
         if (mapBefore.isNotBlank() && mapBefore != map) {
-            // Area names repeat across maps ("Bereich 1"): a permission for one map must not open the other's area.
             synchronized(controller) { guard.revokeAllZoneOverrides("map changed to $map") }
             refreshOverrides(handleEnded = false)
         }
         val loaded = synchronized(zoneRegistry) { runCatching { zoneRegistry.load(map) } }
         loaded.onSuccess { stored ->
-            // Areas named with the old German default "Bereich N" become "Area N" (owner 2026-10-19: English), and are saved so.
             val renamed = stored.zones.map { z ->
                 AREA_NUMBER.matchEntire(z.name.removePrefix("Privat: "))?.let { m -> z.copy(name = "Area ${m.groupValues[1]}") } ?: z
             }
@@ -439,7 +438,6 @@ class MapNavigation(
                     .onFailure { log.i(TAG, "renaming private areas could not be saved: $it") }
             }
             val applied = synchronized(controller) {
-                // An edit happened while the file was read: memory is newer than the file (its save is queued).
                 if (zoneEditSeq != seqBefore && guard.zones.mapName == map) return@synchronized false
                 guard.updateZones(zones)
                 _privateZones.value = zones.privateZones
@@ -475,7 +473,6 @@ class MapNavigation(
             val pose = _pose.value ?: return@launch log.i(TAG, "turn away skipped: no pose")
             if (controller.isNavigating) return@launch log.i(TAG, "turn away skipped: a new drive is running")
             if (lidarOff()) return@launch log.i(TAG, "turn away skipped: LIDAR is switched off")
-            // The answer may come long after the stop: if the robot has moved since, turning would be a different motion.
             if (stopPose != null && (stopPose.point.distanceTo(pose.point) > TURN_AWAY_MAX_MOVE_M ||
                     abs(Math.toDegrees(angleDiff(stopPose.theta, pose.theta))) > TURN_AWAY_MAX_TURN_DEG)) {
                 return@launch log.i(TAG, "turn away skipped: the robot moved since the stop")
@@ -499,13 +496,13 @@ class MapNavigation(
         }
     }
 
-    // ---- temporary permission to cross a private area ---------------------------------------
-
-    /** Zone name → expiry time (ms since epoch) of each active temporary permission, for display. */
     private val _activeOverrides = MutableStateFlow<Map<String, Long>>(emptyMap())
     val activeOverrides: StateFlow<Map<String, Long>> = _activeOverrides.asStateFlow()
 
-    /** Re-reads the active permissions from the guard (which also drops and audits expired ones). */
+    /**
+     * Re-reads the active permissions from the guard (which also drops and audits expired ones).
+     * @param handleEnded whether ended permissions are handled
+     */
     private fun refreshOverrides(handleEnded: Boolean = true) {
         val current = synchronized(controller) { guard.activeZoneOverrides().mapValues { it.value.expiresAt } }
         val before = _activeOverrides.value
@@ -543,13 +540,15 @@ class MapNavigation(
                     } else leaveArea(zoneName)
                 }
                 PrivacyOverridePrompt.Outcome.DENIED, PrivacyOverridePrompt.Outcome.EXPIRED -> leaveArea(zoneName)
-                // Replaced by another question or cancelled by STOP: the person decided something else.
                 PrivacyOverridePrompt.Outcome.SUPERSEDED, PrivacyOverridePrompt.Outcome.CANCELLED -> Unit
             }
         }
     }
 
-    /** Drives back to the last position outside [zoneName] (the exit rule lets a drive that starts inside leave it). */
+    /**
+     * Drives back to the last position outside [zoneName] (the exit rule lets a drive that starts inside leave it).
+     * @param zoneName area name
+     */
     private fun leaveArea(zoneName: String) {
         val outside = synchronized(lastOutside) { lastOutside[zoneName] }
         if (outside == null) {
@@ -563,7 +562,10 @@ class MapNavigation(
         }
     }
 
-    /** Ends the temporary permission for area [name] early. A drive currently inside that area is then stopped. */
+    /**
+     * Ends the temporary permission for area [name] early. A drive currently inside that area is then stopped.
+     * @param name area name
+     */
     fun revokeCrossingPermission(name: String) {
         synchronized(controller) { guard.revokeZoneOverride(name, revokedBy = "revoked on screen") }
         refreshOverrides()
@@ -581,7 +583,6 @@ class MapNavigation(
         val stopPose = _pose.value
         PrivacyOverridePrompt.ask(zone.name) { answer ->
             when (answer.outcome) {
-                // Not an answer of a person: no sentence, no turn, no drive.
                 PrivacyOverridePrompt.Outcome.SUPERSEDED, PrivacyOverridePrompt.Outcome.CANCELLED -> {
                     log.i(TAG, "question about \"${zone.name}\" closed without an answer (${answer.outcome})")
                     return@ask
@@ -592,7 +593,6 @@ class MapNavigation(
                     return@ask
                 }
                 PrivacyOverridePrompt.Outcome.DENIED -> {
-                    // An answer ends the announcement that may still be running, and the robot confirms the answer.
                     runCatching { tts.stop() }
                     speak(UiText.get("speech.privacy_denied", "area" to zone.name))
                     log.i(TAG, "crossing \"${zone.name}\" NOT allowed; robot stays stopped")
@@ -601,7 +601,6 @@ class MapNavigation(
                 }
                 PrivacyOverridePrompt.Outcome.ALLOWED -> {
                     val minutes = answer.minutes ?: return@ask
-                    // Grant first, and only then say it is allowed (an invalid duration used to be announced and not granted).
                     val granted = runCatching {
                         synchronized(controller) {
                             guard.grantZoneOverride(zone.name, OverrideReason.UserSummoned, minutes * 60_000L,
@@ -620,27 +619,48 @@ class MapNavigation(
         }
     }
 
-    /** "one minute" / "N minutes" for the spoken sentences. */
+    /**
+     * "one minute" / "N minutes" for the spoken sentences.
+     * @param minutes number of minutes
+     * @return the text
+     */
     private fun spokenMinutes(minutes: Int) =
         if (minutes == 1) UiText.get("speech.minutes_one") else UiText.get("speech.minutes_many", "minutes" to minutes)
 
-    /** Says [sentence] with the configured voice and logs it; a failure is only logged. */
+    /**
+     * Says [sentence] with the configured voice and logs it; a failure is only logged.
+     * @param sentence sentence to speak
+     */
     private fun speak(sentence: String) {
         log.i(TAG, "saying: \"$sentence\"")
         tts.speakConfigured(sentence, object : TtsListener {
+            /**
+             * Logs a failed sentence.
+             * @param failure reason for the failure
+             */
             override fun onFailed(failure: TtsFailure) = log.i(TAG, "not spoken: $failure")
         })
     }
 
-    /** Says the privacy stop sentence in German and logs it. */
+    /**
+     * Says the privacy stop sentence and logs it.
+     * @param reason reason for the log
+     */
     private fun announcePrivacyStop(reason: String) {
         log.i(TAG, "PRIVACY STOP ($reason), saying: \"$privacyStopSentence\"")
         tts.speakConfigured(privacyStopSentence, object : TtsListener {
+            /**
+             * Logs a failed sentence.
+             * @param failure reason for the failure
+             */
             override fun onFailed(failure: TtsFailure) = log.i(TAG, "announcement not spoken: $failure")
         })
     }
 
-    /** Sets the speed used by the next drive (a drive already running keeps its speed). */
+    /**
+     * Sets the speed used by the next drive (a drive already running keeps its speed).
+     * @param preset speed preset
+     */
     fun setSpeed(preset: SpeedPreset) {
         _speed.value = preset
         bridge.linearSpeed = preset.linear
@@ -648,7 +668,10 @@ class MapNavigation(
         log.i(TAG, "speed: ${preset.label}" + (preset.linear?.let { " (linear $it, angular ${preset.angular})" } ?: " (RobotOS default)"))
     }
 
-    /** Reloads the current map and the saved places, e.g. after a map change in the map tool. */
+    /**
+     * Reloads the current map and the saved places, e.g. after a map change in the map tool.
+     * @return the reload job
+     */
     fun reload() = requestReload()
 
     private val reloading = AtomicBoolean(false)
@@ -672,7 +695,10 @@ class MapNavigation(
         }
     }
 
-    /** Adds a point at [position] (from a tap on the map) and selects it. */
+    /**
+     * Adds a point at [position] (from a tap on the map) and selects it.
+     * @param position world position
+     */
     fun addPoint(position: Point2D) {
         if (!position.isFinite()) return log.i(TAG, "point ignored: position is not a number")
         customCounter++
@@ -682,7 +708,10 @@ class MapNavigation(
         log.i(TAG, "point ${point.name} added at ${fmt(position)} and selected")
     }
 
-    /** Makes [point] the drive target shown on the screen and sent with "Drive to". */
+    /**
+     * Makes [point] the drive target shown on the screen and sent with "Drive to".
+     * @param point target point
+     */
     fun select(point: MapPoint) {
         if (!point.position.isFinite()) return log.i(TAG, "selection ignored: position is not a number")
         _selected.value = point
@@ -781,17 +810,15 @@ class MapNavigation(
     }
 
     /**
-     * Starts a drive to [target] through the [NavigationController], after all checks (drive running, LIDAR, position, areas).
+     * Starts a drive to [target] after all checks.
+     * @param target target point
      * @return null if the drive was started, otherwise the reason it was refused (also spoken / shown).
      */
     private fun driveTo(target: MapPoint): String? {
-        // A second drive over a running one: if RobotOS rejected it, its failure cleared the controller's drive while the
-        // first one went on, and the in-motion privacy check and the position watchdog were off.
         if (synchronized(controller) { controller.isNavigating }) {
             log.i(TAG, "DRIVE REFUSED: a drive is already running; press STOP first")
             return "a drive is already running; stop it first"
         }
-        // A new drive makes an older crossing question meaningless.
         PrivacyOverridePrompt.cancel()
         if (lidarOff()) {
             _navState.value = "refused: LIDAR is switched off"
@@ -825,15 +852,19 @@ class MapNavigation(
         _navState.value = "driving to ${target.name}"
 
         val listener = object : NavigationListener {
-            /** The first outcome wins: after a privacy abort, RobotOS still reports its own "stopped" failure. */
             private val finished = AtomicBoolean(false)
 
+            /**
+             * Logs drive progress.
+             * @param event progress event
+             */
             override fun onProgress(event: NavEvent) {
                 if (finished.get()) return
                 log.i(TAG, "  ${target.name}: $event")
                 _navState.value = "${target.name}: $event"
             }
 
+            /** Ends the drive as arrived. */
             override fun onArrived() {
                 if (!finished.compareAndSet(false, true)) return
                 log.i(TAG, "ARRIVED at ${target.name}")
@@ -841,9 +872,10 @@ class MapNavigation(
                 _driving.value = false
             }
 
-            // Called with the controller lock held (from onPose / goTo): the announcement and the question run outside
-            // it, so STOP never waits for speech. The question first replaces an open one,
-            // whose callback then does nothing (SUPERSEDED) instead of cutting this announcement.
+            /**
+             * Ends the drive as failed.
+             * @param failure reason
+             */
             override fun onFailed(failure: NavFailure) {
                 if (!finished.compareAndSet(false, true)) return
                 _driving.value = false
@@ -880,11 +912,9 @@ class MapNavigation(
         return null
     }
 
-    /** Time of the last position read from RobotOS (elapsedRealtime); 0 = never. */
     @Volatile
     private var lastPoseAt = 0L
 
-    /** When the map was last looked for, and how many tries are already spent; see the retry in [pollLoop]. */
     private var lastMapCheckAt = 0L
     private var mapAttempts = 0
 
@@ -895,9 +925,11 @@ class MapNavigation(
         speak(positionUnknownSentence)
     }
 
-    /** Stops any navigation immediately. */
+    /**
+     * Stops any navigation immediately.
+     * @param reason reason for the log
+     */
     fun stop(reason: String) {
-        // STOP also closes an open crossing question: its later "yes" must not restart this drive.
         PrivacyOverridePrompt.cancel()
         runCatching { synchronized(controller) { controller.stop() } }
             .onFailure { log.i(TAG, "stopNavigation threw: $it") }
@@ -907,22 +939,15 @@ class MapNavigation(
         log.i(TAG, "STOP: $reason")
     }
 
-    // ---- internals ----------------------------------------------------------------
-
-    /** The map name could not be read at the last reload; the previous map and areas stay in force meanwhile. */
     @Volatile
     private var mapNameStale = false
 
-    /**
-     * Reads the active map name and the RobotOS places, then loads the map picture, the private areas and the saved locations of that map.
-     * An unreadable map name keeps what is loaded (or blocks driving if nothing is), because blank does not mean "no map".
-     */
+    /** Reloads the map name, RobotOS places, map picture, private areas and saved locations. */
     private fun reloadMapAndPlaces() {
         val api = RobotApi.getInstance()
         val name = runCatching { api.getMapName() }.getOrNull()
         if (name.isNullOrBlank()) {
-            // Unreadable is not "no map": RobotOS answers blank without SDK control or on a binder error. Replacing the
-            // areas with none would drive as if nothing were private.
+            // Unreadable is not "no map": keep the current areas instead of driving without any.
             mapNameStale = true
             if (guard.zones.mapName.isNotBlank()) {
                 log.i(TAG, "map name unreadable: keeping map \"${guard.zones.mapName}\" and its private areas until it can be read")
@@ -935,12 +960,10 @@ class MapNavigation(
         mapNameStale = false
         _mapName.value = name
         log.i(TAG, "current map: $name")
-        // Zones are bound to a map: coordinates from one map are meaningless on another. Loaded from storage every time.
         loadZones(name)
         loadMap(name)
 
         val poses = runCatching { api.getPlaceList() }.getOrNull().orEmpty()
-        // RobotOS answers in the map's language (German here); the map file has the other languages too (owner 2026-10-19: English).
         val english = englishPlaceNames(name)
         _places.value = poses.map {
             val shown = it.name?.let { n -> english[n] ?: n } ?: "(unnamed)"
@@ -948,7 +971,6 @@ class MapNavigation(
         }
         log.i(TAG, "saved places (${poses.size}): " + _places.value.joinToString { "${it.name} ${fmt(it.position)}" })
 
-        // RoboGuard's own named locations for this map, followed by any tapped points that already exist.
         val stored = runCatching { pointStore.load(name) }
             .onSuccess { _pointStoreError.value = null }
             .onFailure { e ->
@@ -977,7 +999,10 @@ class MapNavigation(
         out
     }.getOrElse { emptyMap() }
 
-    /** Loads and renders the map file of [name]; errors are logged and leave [rendered] empty. */
+    /**
+     * Loads and renders the map file of [name]; errors are logged and leave [rendered] empty.
+     * @param name map name
+     */
     private fun loadMap(name: String) {
         runCatching { RobotMapFile.load(name) }
             .onSuccess { map ->
@@ -1002,7 +1027,6 @@ class MapNavigation(
                 val pose = RobotPose(p.x.toDouble(), p.y.toDouble(), p.theta.toDouble(), PoseStatus.fromCode(p.status))
                 _pose.value = pose
                 lastPoseAt = SystemClock.elapsedRealtime()
-                // In-motion privacy enforcement: aborts a drive as soon as the robot is inside a private area.
                 synchronized(controller) { controller.onPose(pose) }
                 if (idleViolationZone != null && _privateZones.value.none { it.containsWithMargin(pose.point, guard.margin) }) {
                     idleViolationZone = null
@@ -1013,13 +1037,8 @@ class MapNavigation(
                     }
                 }
             }
-            // The phone's "steered from the phone" bar must also end when no phone asks any more.
             NavigationHub.expireRemoteControl()
             PrivacyOverridePrompt.expireIfOld()
-            // Waiting for a map: the service starts the navigation when RoboGuard starts, which at boot is before it has
-            // SDK control, so the map name is unreadable and the map stays empty (owner, 2026-09-24: the phone got no map
-            // when "Navigation and Map" had never been opened on the robot). Try again a few times, and stop once a map is
-            // there — or once it is clear that it will not work, so the log does not fill up for the rest of the run.
             if ((_rendered.value == null || mapNameStale) && mapAttempts < MAP_ATTEMPTS &&
                 SystemClock.elapsedRealtime() - lastMapCheckAt > MAP_RETRY_MS
             ) {
@@ -1032,13 +1051,11 @@ class MapNavigation(
                 }
             }
             if (tick % STATUS_EVERY_N_POLLS == 0) {
-                refreshOverrides() // expired permissions end here (and are logged)
+                refreshOverrides()
                 val localized = runCatching { api.isRobotEstimate() }.getOrNull()
                 if (localized != _localized.value) log.i(TAG, "localized: $localized")
                 _localized.value = localized
                 val sdkActive = runCatching { api.isApiConnectedService() && api.isActive() }.getOrDefault(false)
-                // The moment RoboGuard gets SDK control, the map name and the places become readable — so this is when to
-                // read them, rather than polling for it. Also picks up a map that was changed in the map tool meanwhile.
                 if (sdkActive && !_sdkActive.value) {
                     log.i(TAG, "SDK control gained: reading map and places")
                     mapAttempts = 0
@@ -1048,7 +1065,6 @@ class MapNavigation(
             }
             _driving.value = controller.isNavigating
             tick++
-            // Faster while driving: at 0.25 m/s the robot moves ~4 cm between checks instead of ~12 cm.
             delay(if (controller.isNavigating) POLL_NAVIGATING_MS else POLL_MS)
         }
     }
@@ -1060,7 +1076,7 @@ class MapNavigation(
             if (controller.isNavigating && SystemClock.elapsedRealtime() - lastPoseAt > POSE_TIMEOUT_MS) {
                 runCatching { bridge.stopNavigation() }
                 scope.launch(Dispatchers.IO) { stopForUnknownPosition() }
-                delay(POSE_TIMEOUT_MS) // one stop per gap, not one every check
+                delay(POSE_TIMEOUT_MS)
             }
         }
     }
@@ -1069,6 +1085,7 @@ class MapNavigation(
      * Renders the map cells within [bounds] into a bitmap; the top row is the highest y.
      * @param map parsed map file
      * @param bounds cell range to render
+     * @return the bitmap
      */
     private fun renderBitmap(map: RobotMapFile, bounds: CellBounds): Bitmap {
         val w = bounds.width
@@ -1086,6 +1103,7 @@ class MapNavigation(
     /**
      * Colour of one map cell: unknown grey, free white, occupied black, values in between in grey shades.
      * @param value cell value from the map file
+     * @return the colour
      */
     private fun colorFor(value: Int): Int = when {
         value == RobotMapFile.UNKNOWN -> 0xFFD0D0D0.toInt()
@@ -1097,13 +1115,25 @@ class MapNavigation(
         }
     }
 
-    /** Coordinates as "(x, y)" with two decimals, for the log. */
+    /**
+     * Coordinates as "(x, y)" with two decimals, for the log.
+     * @param p point
+     * @return the text
+     */
     private fun fmt(p: Point2D) = "(%.2f, %.2f)".format(p.x, p.y)
 
-    /** False if a coordinate is NaN or infinite (e.g. from a malformed phone command). */
+    /**
+     * Checks that both coordinates are finite.
+     * @return true if both are finite
+     */
     private fun Point2D.isFinite() = x.isFinite() && y.isFinite()
 
-    /** Smallest signed difference between two angles in radians. */
+    /**
+     * Smallest signed difference between two angles in radians.
+     * @param a first angle
+     * @param b second angle
+     * @return the difference in radians
+     */
     private fun angleDiff(a: Double, b: Double): Double {
         var d = (b - a) % (2 * PI)
         if (d > PI) d -= 2 * PI
@@ -1111,7 +1141,13 @@ class MapNavigation(
         return d
     }
 
-    /** A regular polygon approximating a circle, counter-clockwise. */
+    /**
+     * A regular polygon approximating a circle, counter-clockwise.
+     * @param center centre
+     * @param radius radius in metres
+     * @param segments number of corners
+     * @return the corners
+     */
     private fun circlePolygon(center: Point2D, radius: Double, segments: Int): List<Point2D> =
         (0 until segments).map { i ->
             val angle = 2 * PI * i / segments
@@ -1122,49 +1158,36 @@ class MapNavigation(
         const val TAG = "nav"
         const val POLL_MS = 500L
 
-        /** How often the position watchdog looks. */
         const val WATCHDOG_MS = 200L
 
-        /** How many privacy decisions the screen and the phone show. */
         const val AUDIT_SHOWN = 20
 
-        /** Turning away after a "no" is skipped when the robot has moved more than this since the stop. */
         const val TURN_AWAY_MAX_MOVE_M = 0.2
         const val TURN_AWAY_MAX_TURN_DEG = 15.0
 
-        /** How long the poll loop waits between tries while no map is loaded. */
         const val MAP_RETRY_MS = 15_000L
 
-        /** How many such tries before it gives up (gaining SDK control starts the count again). */
         const val MAP_ATTEMPTS = 6
         const val STATUS_EVERY_N_POLLS = 4
         const val MAP_MARGIN_CELLS = 20
         const val MAX_NAME_LENGTH = 40
 
-        /** Longest time without a robot position before a drive is stopped / refused (fail closed). */
         const val POSE_TIMEOUT_MS = 1_000L
 
-        /** Spoken when a drive is stopped or refused because the robot's position cannot be read (assets/texts/texts.json). */
         val positionUnknownSentence: String get() = UiText.get("speech.position_unknown")
 
-        /** Pose poll interval while a drive is running (privacy checks happen on each poll). */
         const val POLL_NAVIGATING_MS = 150L
 
-        /** Turning away after a privacy stop: wait until the robot is at rest; turns smaller than this are skipped. */
         const val TURN_AWAY_DELAY_MS = 800L
         const val MIN_TURN_DEG = 10.0
 
-        /** Radius of a private area created around a point; PrivacyGuard adds its margin on top. */
         const val ZONE_RADIUS_M = 1.0
         const val ZONE_SEGMENTS = 24
 
-        /** Finds N in "Area N" and in the older German "Bereich N" / "Privat: Bereich N", to continue the numbering. */
         val AREA_NUMBER = Regex("""(?:Area|Bereich) (\d+)""")
 
-        /** Spoken when a drive is refused or stopped because of a private area (assets/texts/texts.json). */
         val privacyStopSentence: String get() = UiText.get("speech.privacy_stop")
 
-        /** Cell values at or above this are drawn as walls. */
         const val OCCUPIED_VALUE = 8000
     }
 }

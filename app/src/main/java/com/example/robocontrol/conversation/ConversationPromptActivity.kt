@@ -41,10 +41,12 @@ import com.example.robocontrol.text.UiText
  * detection for a chosen time, or close.
  */
 class ConversationPromptActivity : ComponentActivity() {
-
+    /**
+     * Sets up the prompt.
+     * @param savedInstanceState saved state
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Screen texts come from assets/texts/texts.json (no-op if the service already loaded them).
         UiText.init(applicationContext)
         setFinishOnTouchOutside(false)
         setContent { MaterialTheme { Prompt() } }
@@ -52,6 +54,7 @@ class ConversationPromptActivity : ComponentActivity() {
         window.setLayout((resources.displayMetrics.widthPixels * 0.8).toInt(), WindowManager.LayoutParams.WRAP_CONTENT)
     }
 
+    /** Clears the open-prompt flag. */
     override fun onDestroy() {
         ConversationMonitor.promptClosed()
         super.onDestroy()
@@ -66,7 +69,6 @@ class ConversationPromptActivity : ComponentActivity() {
         val padding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
         val height = 44.dp
 
-        // The robot says the full sentence; the popup only needs a short title and the choices.
         Column(
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -76,8 +78,6 @@ class ConversationPromptActivity : ComponentActivity() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
-                            // The existing map screen, not a second one on top: a second instance left the first one's
-                            // debug view composed, and the test announcement kept running.
                             startActivity(Intent(this@ConversationPromptActivity, MapNavigationActivity::class.java)
                                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
                             finish()
@@ -147,14 +147,17 @@ class ConversationPromptActivity : ComponentActivity() {
         }
     }
 
-    /** A text kept on one line, for the small buttons. */
+    /**
+     * A text kept on one line, for the small buttons.
+     * @param text button text
+     * @param sizeSp font size in sp
+     */
     @Composable
     private fun OneLine(text: String, sizeSp: Int) {
         Text(text, fontSize = sizeSp.sp, maxLines = 1, softWrap = false)
     }
 
     private companion object {
-        /** Longest pause: one day. */
         const val MAX_MINUTES = 24 * 60
     }
 }

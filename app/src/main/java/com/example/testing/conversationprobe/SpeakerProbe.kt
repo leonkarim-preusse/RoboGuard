@@ -33,55 +33,83 @@ import kotlin.math.abs
  * @param scope scope for the detector's collector
  */
 class SpeakerProbe(private val context: Context, private val log: ProbeLog, private val scope: CoroutineScope) {
-
     private var detector: SpeakerChangeDetector? = null
     private var watchJob: Job? = null
 
     private val _snapshot = MutableStateFlow(ConversationSnapshot())
     val snapshot: StateFlow<ConversationSnapshot> = _snapshot.asStateFlow()
 
-    /** "microphone" or "synthetic demo" while running, else null. */
     private val _source = MutableStateFlow<String?>(null)
     val source: StateFlow<String?> = _source.asStateFlow()
 
     private val _busy = MutableStateFlow(false)
 
-    /** True while the fast synthetic self-test runs. */
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
     private val _config = MutableStateFlow(ChangeDetectorConfig())
 
-    /** Settings used by the next start; changed from the screen. Changing them while listening restarts listening. */
     val config: StateFlow<ChangeDetectorConfig> = _config.asStateFlow()
 
-    /** BIC penalty weight λ; a higher λ needs a clearer change. */
+    /**
+     * BIC penalty weight λ; a higher λ needs a clearer change.
+     * @param lambda penalty weight
+     */
     fun setLambda(lambda: Double) = changeConfig("λ", lambda.toString()) { it.copy(bicLambda = lambda) }
 
-    /** Length of each comparison window in 10 ms frames. */
+    /**
+     * Length of each comparison window in 10 ms frames.
+     * @param frames window length in frames
+     */
     fun setWindowFrames(frames: Int) = changeConfig("window", "%.1f s".format(frames / 100.0)) { it.copy(windowFrames = frames) }
 
-    /** Loudness gate: how far above the noise floor speech must be. */
+    /**
+     * Loudness gate: how far above the noise floor speech must be.
+     * @param db margin in dB
+     */
     fun setSpeechMargin(db: Double) = changeConfig("speech margin", "$db dB") { it.copy(speechMarginDb = db) }
 
-    /** Which rule turns changes into "more than one speaker" (count or evidence). */
+    /**
+     * Which rule turns changes into "more than one speaker" (count or evidence).
+     * @param rule decision rule
+     */
     fun setDecisionRule(rule: DecisionRule) = changeConfig("decision rule", rule.name) { it.copy(decisionRule = rule) }
 
-    /** Evidence rule: ratio r₀ a candidate must exceed to add evidence. */
+    /**
+     * Evidence rule: ratio r₀ a candidate must exceed to add evidence.
+     * @param r base ratio
+     */
     fun setEvidenceBaseRatio(r: Double) = changeConfig("evidence r₀", r.toString()) { it.copy(evidenceBaseRatio = r) }
 
-    /** Evidence rule: evidence needed for "more than one speaker". */
+    /**
+     * Evidence rule: evidence needed for "more than one speaker".
+     * @param t evidence threshold
+     */
     fun setEvidenceThreshold(t: Double) = changeConfig("evidence threshold", t.toString()) { it.copy(evidenceThreshold = t) }
 
-    /** Evidence rule: time after which the evidence has halved. */
+    /**
+     * Evidence rule: time after which the evidence has halved.
+     * @param ms half-life in milliseconds
+     */
     fun setEvidenceHalfLife(ms: Long) = changeConfig("evidence half-life", "${ms / 1000} s") { it.copy(evidenceHalfLifeMs = ms) }
 
-    /** Speech gate for the microphone (Silero or loudness). */
+    /**
+     * Speech gate for the microphone (Silero or loudness).
+     * @param gate speech gate
+     */
     fun setSpeechGate(gate: SpeechGate) = changeConfig("speech gate", gate.name) { it.copy(speechGate = gate) }
 
-    /** Silero probability at which speech starts. */
+    /**
+     * Silero probability at which speech starts.
+     * @param t start probability
+     */
     fun setSileroThreshold(t: Double) = changeConfig("Silero threshold", t.toString()) { it.copy(sileroThreshold = t) }
 
-    /** Applies one setting change to the config, logs it and restarts a running detector with it. */
+    /**
+     * Applies one setting change to the config, logs it and restarts a running detector with it.
+     * @param name setting name
+     * @param value new value for the log
+     * @param change applies the change
+     */
     private fun changeConfig(name: String, value: String, change: (ChangeDetectorConfig) -> ChangeDetectorConfig) {
         _config.value = change(_config.value)
         log.i(TAG, "setting: $name = $value")
@@ -99,7 +127,6 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
             return
         }
         start("microphone", AndroidMicSource(), _config.value)
-        // Switched off while the test runs: stop, like the product does.
         Sensors.get(context).addListener(micListener)
     }
 
@@ -110,14 +137,17 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
     /** Plays a synthetic scene in real time so the screen can be watched: 12 s one voice, 4 s pause, 24 s two voices alternating. */
     fun startSyntheticDemo() {
         val script = listOf(Segment(0, 12_000), Segment(null, 4_000)) + (0 until 8).map { Segment(it % 2, 3_000) }
-        // Synthetic voices are a buzz, not speech: Silero would reject them, so the demo tests change detection with loudness.
         start("synthetic demo", SyntheticVoicesSource(script, realtime = true), _config.value.copy(speechGate = SpeechGate.LOUDNESS))
     }
 
-    /** Starts a detector on [pcm] (microphone or synthetic voices) and logs everything it reports. */
+    /**
+     * Starts a detector on [pcm] (microphone or synthetic voices) and logs everything it reports.
+     * @param name name for the log
+     * @param pcm audio input
+     * @param config detector settings
+     */
     private fun start(name: String, pcm: PcmSource, config: ChangeDetectorConfig) {
         stop("restart")
-        // The background monitor would compete for the microphone: pause it while this test records.
         if (pcm is AndroidMicSource) ConversationMonitor.setProbeUsingMicrophone(true)
         log.section("Speaker change detection: $name")
         log.i(TAG, "speech gate: ${config.speechGate}" + if (config.speechGate == SpeechGate.SILERO) " (threshold ${config.sileroThreshold})" else " (margin ${config.speechMarginDb} dB)")
@@ -139,7 +169,6 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
                     lastError = s.error
                     log.i(TAG, "ERROR: ${s.error}")
                 }
-                // Both rules are logged whenever their verdict flips, so they can be compared afterwards.
                 if (s.running && s.multipleByCount != lastByCount) {
                     lastByCount = s.multipleByCount
                     log.i(TAG, "COUNT rule → ${if (s.multipleByCount) "MULTIPLE" else "not multiple"} at %.1f s (changes ${s.changesInWindow})".format(s.timeMs / 1000.0))
@@ -161,7 +190,10 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
         d.start()
     }
 
-    /** Stops the running detector, if any, and frees the microphone. */
+    /**
+     * Stops the running detector, if any, and frees the microphone.
+     * @param reason reason for the log
+     */
     fun stop(reason: String) {
         val d = detector
         if (d == null) {
@@ -169,8 +201,6 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
             return
         }
         detector = null
-        // Our own detector first, THEN hand the microphone back: the other way round the monitor opened it while this
-        // test still held it.
         d.stop()
         ConversationMonitor.setProbeUsingMicrophone(false)
         runCatching { Sensors.get(context).removeListener(micListener) }
@@ -181,7 +211,10 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
         _snapshot.value = _snapshot.value.copy(running = false)
     }
 
-    /** Logs one change candidate with KL2, ΔBIC and the λ it would have needed. */
+    /**
+     * Logs one change candidate with KL2, ΔBIC and the λ it would have needed.
+     * @param c candidate
+     */
     private fun logCandidate(c: ChangeCandidate) {
         log.i(TAG, "  candidate at %.2f s: KL2 %.1f, ΔBIC %.0f (gain %.0f vs penalty %.0f × λ; would need λ < %.2f) → %s".format(
             c.timeMs / 1000.0, c.kl2, c.deltaBic, c.bicGain, c.bicPenalty, if (c.bicPenalty > 0) c.bicGain / c.bicPenalty else 0.0,
@@ -211,9 +244,14 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
         }
     }
 
-    /** Runs one synthetic scene as fast as possible and checks whether the result matches [expectMultiple]. */
+    /**
+     * Runs one synthetic scene as fast as possible and checks whether the result matches [expectMultiple].
+     * @param name scene name
+     * @param script speaker segments
+     * @param expectMultiple expected decision
+     * @return true if the result matches
+     */
     private fun scene(name: String, script: List<Segment>, expectMultiple: Boolean): Boolean {
-        // Synthetic voices are not real speech (Silero rejects them): the self-test checks change detection with loudness.
         val config = _config.value.copy(speechGate = SpeechGate.LOUDNESS)
         val source = SyntheticVoicesSource(script, realtime = false)
         val accepted = mutableListOf<ChangeCandidate>()
@@ -232,7 +270,11 @@ class SpeakerProbe(private val context: Context, private val log: ProbeLog, priv
         return pass
     }
 
-    /** Tester's judgement of what the screen showed for [scenario]. */
+    /**
+     * Tester's judgement of what the screen showed for [scenario].
+     * @param scenario scenario name
+     * @param correct whether the screen was right
+     */
     fun verdict(scenario: String, correct: Boolean) {
         val s = _snapshot.value
         log.i(TAG, "VERDICT ${if (correct) "✔ correct" else "✘ wrong"}: $scenario (screen showed ${s.state}, changes in window ${s.changesInWindow}, total ${s.totalChanges})")

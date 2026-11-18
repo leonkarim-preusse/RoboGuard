@@ -9,24 +9,32 @@ import java.util.Locale
 
 /** Event log of the navigation: lines for the screen and Logcat (tag [LOGCAT_TAG]). Thread-safe. */
 class NavigationLog {
-
     private val start = SystemClock.elapsedRealtime()
 
     private val _lines = MutableStateFlow<List<String>>(emptyList())
 
-    /** Lines for the screen, newest last, capped at [MAX_SCREEN_LINES]. */
     val lines: StateFlow<List<String>> = _lines.asStateFlow()
 
-    /** Writes a visible separator. */
+    /**
+     * Writes a visible separator.
+     * @param title section title
+     */
     fun section(title: String) = write("==== $title ====")
 
-    /** Adds an info line with [tag] to the screen and to Logcat. */
+    /**
+     * Adds an info line with [tag] to the screen and to Logcat.
+     * @param tag log tag
+     * @param message text
+     */
     fun i(tag: String, message: String) = write("[$tag] $message")
 
     /** Empties the lines on the screen (Logcat keeps them). */
     fun clearScreen() { _lines.value = emptyList() }
 
-    /** Adds [line] with the seconds since start; the screen keeps only the newest [MAX_SCREEN_LINES]. */
+    /**
+     * Adds [line] with the seconds since start; the screen keeps only the newest [MAX_SCREEN_LINES].
+     * @param line text
+     */
     @Synchronized
     private fun write(line: String) {
         val t = "%7.2f".format(Locale.US, (SystemClock.elapsedRealtime() - start) / 1000.0)

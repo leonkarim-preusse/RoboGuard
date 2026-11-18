@@ -5,37 +5,30 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** Answer to "is one person talking, or more than one?". Not who, and not how many in total. */
+/** Decision of a conversation detector. */
 enum class ConversationState {
-    /** Nobody has spoken recently. */
     NO_SPEECH,
-    /** Speech is present, but not yet enough to decide. */
     LISTENING,
-    /** Speech without enough voice changes. */
     ONE_SPEAKER,
-    /** Enough voice changes recently: more than one person. */
     MULTIPLE_SPEAKERS
 }
-
-/** What a detector currently reports. Only levels, distances, counts and times; nothing that characterises a voice. */
 /**
  * One 10 ms frame of the debug timeline.
  * @property timeMs time since the detector started
  * @property levelDb level in dBFS
  * @property probability Silero speech probability; null without Silero
  * @property speech whether the gate counted the frame as speech
+ * @property silero whether Silero's half of the gate is on
+ * @property loud whether the level is above the floor
+ * @property robot whether the robot itself was speaking
  */
 data class AudioFrame(
     val timeMs: Long,
     val levelDb: Double,
     val probability: Double?,
-    /** What finally counted as speech (both halves of the gate, and not while the robot itself speaks). */
     val speech: Boolean,
-    /** Silero's half of the gate (with its hysteresis). */
     val silero: Boolean = false,
-    /** The loudness half: above the level floor. */
     val loud: Boolean = false,
-    /** The robot itself was speaking; its own voice never counts. */
     val robot: Boolean = false
 )
 
@@ -44,7 +37,11 @@ internal class DebugTimeline {
     private val frames = ArrayDeque<AudioFrame>()
     private val events = ArrayDeque<ConversationEvent>()
 
-    /** Adds one 10 ms frame while [enabled]; drops everything as soon as nobody watches. */
+    /**
+     * Adds one 10 ms frame while [enabled]; drops everything as soon as nobody watches.
+     * @param enabled whether the timeline is collected
+     * @param f frame to add
+     */
     fun frame(enabled: Boolean, f: AudioFrame) {
         if (!enabled) {
             if (frames.isNotEmpty() || events.isNotEmpty()) { frames.clear(); events.clear() }
@@ -55,18 +52,29 @@ internal class DebugTimeline {
         while (events.isNotEmpty() && f.timeMs - events.first().timeMs > FRAMES * 10L) events.removeFirst()
     }
 
-    /** Adds an event mark while [enabled]. */
+    /**
+     * Adds an event mark while [enabled].
+     * @param enabled whether the timeline is collected
+     * @param e event to add
+     */
     fun event(enabled: Boolean, e: ConversationEvent) {
         if (enabled) events.addLast(e)
     }
 
-    /** Copy of the frames for the snapshot; empty when not enabled. */
+    /**
+     * Copy of the frames for the snapshot; empty when not enabled.
+     * @param enabled whether the timeline is collected
+     * @return copy of the frames
+     */
     fun frames(enabled: Boolean): List<AudioFrame> = if (enabled) frames.toList() else emptyList()
-    /** Copy of the events for the snapshot; empty when not enabled. */
+    /**
+     * Copy of the events for the snapshot; empty when not enabled.
+     * @param enabled whether the timeline is collected
+     * @return copy of the events
+     */
     fun events(enabled: Boolean): List<ConversationEvent> = if (enabled) events.toList() else emptyList()
 
     private companion object {
-        /** 1500 × 10 ms = 15 s. */
         const val FRAMES = 1500
     }
 }
@@ -74,11 +82,55 @@ internal class DebugTimeline {
 /** Kinds of event marked on the debug timeline. */
 enum class ConversationEventKind { CHANGE, CANDIDATE_REJECTED, RESET, MULTIPLE }
 
-/** @property ratio BIC gain / penalty of a candidate (0 for resets and state flips) */
+/**
+ * Event marked on the debug timeline.
+ * @property timeMs audio time of the event
+ * @property kind kind of event
+ * @property ratio BIC gain / penalty of a candidate (0 for resets and state flips)
+ */
 data class ConversationEvent(val timeMs: Long, val kind: ConversationEventKind, val ratio: Double = 0.0)
 
 /**
- * State published by a detector every 100 ms: the decision, the live values and, while a debug screen is open, the timeline.
+ * State published by a detector every 100 ms.
+ * @property state current decision
+ * @property running whether the detector runs
+ * @property levelDb current level in dBFS
+ * @property noiseFloorDb current noise floor in dBFS
+ * @property speechNow whether someone is talking now
+ * @property speechProbability latest Silero probability
+ * @property speechGate speech gate in use
+ * @property speechSeconds speech collected in this conversation, in seconds
+ * @property lastKl2 latest KL2 value
+ * @property kl2Mean running KL2 mean
+ * @property changesInWindow changes in the decision window
+ * @property evidence current evidence
+ * @property multipleByCount decision of the count rule
+ * @property multipleByEvidence decision of the evidence rule
+ * @property decisionRule rule in use
+ * @property totalChanges changes since start
+ * @property timeline debug frames, empty unless a debug screen is open
+ * @property events debug events
+ * @property sileroThreshold Silero start threshold
+ * @property sileroRelease Silero end threshold
+ * @property levelFloorDb level floor of the gate
+ * @property kl2History recent KL2 values
+ * @property candidates recent change candidates
+ * @property timeMs audio time of the snapshot
+ * @property method detection method
+ * @property ownerSimilarity similarity of the last piece to the stored voice
+ * @property ownerThreshold threshold of the stored voice
+ * @property ownerMargin unclear band below the threshold
+ * @property ownerReadings recent similarity readings
+ * @property ownerPieces owner pieces in the window
+ * @property otherPieces other pieces in the window
+ * @property speechShare share of speech in the activity window
+ * @property speechShareNeeded share needed for a conversation
+ * @property windowFilled share of the activity window filled
+ * @property pairwiseMin result of the last pairwise comparison
+ * @property pairwiseReadings recent pairwise readings
+ * @property piecesHeld pieces held for comparison
+ * @property warning warning text, or null
+ * @property error error text, or null
  */
 data class ConversationSnapshot(
     val state: ConversationState = ConversationState.NO_SPEECH,
@@ -86,80 +138,50 @@ data class ConversationSnapshot(
     val levelDb: Double = Double.NEGATIVE_INFINITY,
     val noiseFloorDb: Double = Double.NEGATIVE_INFINITY,
     val speechNow: Boolean = false,
-    /** Latest Silero speech probability (0…1), or null when the loudness gate is used. */
     val speechProbability: Double? = null,
-    /** The speech gate actually in use (SILERO may have fallen back to LOUDNESS). */
     val speechGate: SpeechGate = SpeechGate.LOUDNESS,
     val speechSeconds: Double = 0.0,
     val lastKl2: Double = 0.0,
     val kl2Mean: Double = 0.0,
     val changesInWindow: Int = 0,
-    /** Current accumulated evidence (evidence rule), already decayed to [timeMs]. */
     val evidence: Double = 0.0,
-    /** What each rule says right now (only meaningful while someone talks). */
     val multipleByCount: Boolean = false,
     val multipleByEvidence: Boolean = false,
     val decisionRule: DecisionRule = DecisionRule.EVIDENCE,
     val totalChanges: Int = 0,
-    /** Last 15 s of frames, oldest first; empty unless [ConversationDetector.debugTimeline] is set. */
     val timeline: List<AudioFrame> = emptyList(),
-    /** Events in that same span (speaker changes, rejected candidates, conversation resets). */
     val events: List<ConversationEvent> = emptyList(),
-    /** Gate lines for the timeline: Silero starts at [sileroThreshold] and ends below [sileroRelease]; null = not used. */
     val sileroThreshold: Double? = null,
     val sileroRelease: Double? = null,
-    /** The level a frame had to beat (dBFS); null = no level gate. */
     val levelFloorDb: Double? = null,
-    /** Recent KL2 values, oldest first, for a live graph. */
     val kl2History: List<Double> = emptyList(),
-    /** Recent candidates, newest last (accepted = counted as a change). */
     val candidates: List<ChangeCandidate> = emptyList(),
-    /** Stream time (ms since start) of this snapshot. */
     val timeMs: Long = 0,
-    /** Which detector produced this snapshot, so the screens can say what they are showing. */
     val method: DetectionMethod = DetectionMethod.CHANGE,
-    /** Owner method: similarity of the last piece to the stored voice; null before the first piece. */
     val ownerSimilarity: Float? = null,
-    /** Owner method: threshold the last piece was judged against. */
     val ownerThreshold: Float = 0f,
-    /** Owner method: width of the unclear band below the threshold. */
     val ownerMargin: Float = 0f,
-    /** Owner method: last similarity readings, newest first. */
     val ownerReadings: List<Float> = emptyList(),
-    /** Owner method: pieces in the decision window that matched the owner. */
     val ownerPieces: Int = 0,
     val otherPieces: Int = 0,
-    /** Activity method: share of the window that carried speech (0…1), and the share it is compared against. */
     val speechShare: Double = 0.0,
     val speechShareNeeded: Double = 0.0,
-    /** Activity method: how much of the window has been filled yet (0…1), so the screen can say "still collecting". */
     val windowFilled: Double = 0.0,
-    /** Pairwise method: lowest similarity between two pieces in the window (low = two different voices). */
     val pairwiseMin: Float? = null,
-    /** Pairwise method: the last comparisons, newest first. */
     val pairwiseReadings: List<Float> = emptyList(),
-    /** Pairwise method: pieces currently held for comparison. */
     val piecesHeld: Int = 0,
-    /** Something the screen should show that does not stop the detector (e.g. Silero fell back to loudness). */
     val warning: String? = null,
-    /** Set when the detector stopped because of it; the monitor then restarts it. */
     val error: String? = null
 )
 
 /** How the detector decides between one and several speakers. */
 enum class DetectionMethod {
-    /** Detects changes of the speaker between adjacent moments ([SpeakerChangeDetector]). */
     CHANGE,
 
-    /** Compares each piece of speech with the stored owner voice ([OwnerVoiceDetector]). */
     OWNER,
 
-    /** Compares pieces of speech with each other; two sufficiently different pieces mean two speakers. */
     PAIRWISE,
 
-    /**
-     * Counts the share of speech in a time window; a share above [ConversationSettings.activityShare] counts as a conversation.
-     */
     ACTIVITY
 }
 
@@ -167,13 +189,15 @@ enum class DetectionMethod {
 interface ConversationDetector {
     val snapshot: StateFlow<ConversationSnapshot>
 
-    /** Whether the timeline and events are collected for the debug screen. */
     var debugTimeline: Boolean
 
     /** Starts the detector's thread; it opens the microphone itself. */
     fun start()
 
-    /** Stops and waits a moment for the thread; true if it really ended (the microphone is free again). */
+    /**
+     * Stops the detector and waits briefly for its thread.
+     * @return true if the thread ended and the microphone is free
+     */
     fun stop(): Boolean
 }
 
@@ -182,23 +206,17 @@ interface ConversationDetector {
  * Runs on its own thread; audio buffers are overwritten every 10 ms and zeroed on stop.
  * @param source audio input
  * @param config detection settings
+ * @property sileroFactory creates the Silero model; null for the loudness gate
  * @param robotSpeaking returns true while the robot itself is speaking; those frames are treated as silence
+ * @property onCandidate called for every change candidate
  */
 class SpeakerChangeDetector(
     private val source: PcmSource,
     private val config: ChangeDetectorConfig = ChangeDetectorConfig(),
-    /** Creates the Silero VAD when [ChangeDetectorConfig.speechGate] is SILERO; null = always the loudness gate. */
     private val sileroFactory: (() -> SileroVad)? = null,
-    /**
-     * Tells the detector when the robot itself is making a sound, so its own voice is not taken for a second speaker
-     * (see [RobotSpeaking]). Null — the default, used by the offline tests with synthetic audio — means it never is.
-     */
     private val robotSpeaking: ((audioTimeMs: Long) -> Boolean)? = null,
-    /** Called on the audio thread for every evaluated candidate (for logging / tests). Last, so it can be a trailing lambda. */
     private val onCandidate: (ChangeCandidate) -> Unit = {}
 ) : ConversationDetector {
-
-    /** Whether the timeline and events are collected for a debug screen. */
     @Volatile
     override var debugTimeline: Boolean = false
 
@@ -213,22 +231,26 @@ class SpeakerChangeDetector(
     @Volatile
     private var thread: Thread? = null
 
+    /** Starts the detection thread. */
     override fun start() {
         if (thread != null) return
         _snapshot.value = ConversationSnapshot(running = true)
         thread = Thread(::run, "SpeakerChangeDetector").also { it.start() }
     }
 
+    /**
+     * Stops the detection thread.
+     * @return true if the thread ended
+     */
     override fun stop(): Boolean {
         val t = thread ?: return true
         thread = null
         t.interrupt()
-        // Wait for the microphone to be released before the next detector opens it (see OwnerVoiceDetector.stop).
         runCatching { t.join(1_000) }
         return !t.isAlive
     }
 
-    /** Runs until the source ends or [stop] is called. Blocking; for offline tests call directly instead of [start]. */
+    /** Runs until the source ends or [stop] is called. */
     fun runBlocking() {
         _snapshot.value = ConversationSnapshot(running = true)
         run()
@@ -246,10 +268,14 @@ class SpeakerChangeDetector(
         val kl2History = ArrayDeque<Double>()
         val candidates = ArrayDeque<ChangeCandidate>()
         val acceptedTimes = ArrayDeque<Long>()
-        // Evidence rule state: value at evidenceAtMs (decays from there), and when it last crossed the threshold.
         var evidence = 0.0
         var evidenceAtMs = 0L
         var evidenceTriggeredAtMs = Long.MIN_VALUE / 2
+        /**
+         * Evidence decayed to time [t].
+         * @param t audio time in milliseconds
+         * @return the evidence at [t]
+         */
         fun evidenceAt(t: Long) = evidence * Math.pow(0.5, (t - evidenceAtMs).toDouble() / config.evidenceHalfLifeMs)
         var totalChanges = 0
         var samples = 0L
@@ -257,15 +283,12 @@ class SpeakerChangeDetector(
         var lastKl2Seen = Double.NaN
         var resetsSeen = 0
 
-        // The microphone first: an open error used to return after Silero was created, and its session leaked on every
-        // retry.
         val openError = source.open()
         if (openError != null) {
             _snapshot.value = ConversationSnapshot(running = false, error = openError)
             thread = null
             return
         }
-        // Silero VAD: 512-sample chunks (32 ms), filled from the 10 ms hops; the latest probability applies to the next frames.
         var vad: SileroVad? = null
         var gateError: String? = null
         if (config.speechGate == SpeechGate.SILERO) {
@@ -277,17 +300,13 @@ class SpeakerChangeDetector(
             }
             if (vad == null && gateError == null) gateError = "Silero VAD not configured, using loudness"
         }
-        // The robot's own voice would otherwise be a perfectly good "voice change" (see RobotSpeaking).
         var wasRobotTalking = false
         val vadChunk = ShortArray(vad?.chunkSize ?: 0)
         var vadFill = 0
-        // Load counters for the performance recording (numbers only, see AudioLoad).
         val load = AudioLoad(TAG, "change detection, window %.1f s, lambda %.1f, %s, gate %s, silero %.2f (hysteresis %.2f)".format(
             config.windowFrames / 100.0, config.bicLambda, config.decisionRule, config.speechGate,
             config.sileroThreshold, config.sileroHysteresis))
         var speechProbability: Double? = if (vad != null) 0.0 else null
-        // Audio analysis needs little CPU per 10 ms hop; background priority leaves the fast cores to calendar detection (owner,
-        // 2026-09-18: service work should be low intensity). AudioRecord's own buffering keeps capture running if a hop is late.
         runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
         try {
             while (!Thread.currentThread().isInterrupted) {
@@ -297,7 +316,6 @@ class SpeakerChangeDetector(
                     if (Thread.currentThread().isInterrupted) throw InterruptedException()
                     val n = source.read(readBuffer, hop - filled)
                     if (n < 0 || (n == 0 && ++emptyReads > 200)) {
-                        // The end of a synthetic feed is a normal end; a microphone that stops is not.
                         if (source is AndroidMicSource) _snapshot.value = _snapshot.value.copy(running = false, error = "microphone stopped delivering audio")
                         return
                     }
@@ -306,7 +324,6 @@ class SpeakerChangeDetector(
                     readBuffer.copyInto(hopBuffer, filled, 0, n)
                     filled += n
                 }
-                // Slide the 25 ms frame by 10 ms and append the new samples.
                 frame.copyInto(frame, 0, hop, frame.size)
                 for (i in 0 until hop) frame[frame.size - hop + i] = hopBuffer[i] / 32768.0
                 samples += hop
@@ -336,7 +353,6 @@ class SpeakerChangeDetector(
                     else "robot stopped speaking: listening again")
                     wasRobotTalking = robotTalking
                 }
-                // Passing it as silence keeps every gate and every window out of the robot's own voice.
                 val candidate = if (robotTalking) {
                     detector.onFrame(timeMs, Double.NEGATIVE_INFINITY, features, speechProbability?.let { 0.0 })
                 } else {
@@ -372,7 +388,6 @@ class SpeakerChangeDetector(
                 if (candidate != null) {
                     candidates.addLast(candidate)
                     if (candidates.size > CANDIDATES) candidates.removeFirst()
-                    // Each group of overlapping candidates counts once (see ChangeDetector.groupCandidates).
                     if (candidate.countsAsChange) {
                         acceptedTimes.addLast(candidate.timeMs)
                         totalChanges++
@@ -393,9 +408,7 @@ class SpeakerChangeDetector(
                 if (timeMs - lastPublishMs >= PUBLISH_MS) {
                     lastPublishMs = timeMs
                     val speechRecently = timeMs - detector.lastSpeechAtMs <= config.speechHoldMs
-                    // Silence wins: past changes keep counting for the decision, but nobody talking now is shown at once.
                     val multipleByCount = acceptedTimes.size >= config.minChangesForMultiple
-                    // Held for the decision window after the last crossing, like counted changes are.
                     val multipleByEvidence = timeMs - evidenceTriggeredAtMs <= config.decisionWindowMs
                     val multiple = if (config.decisionRule == DecisionRule.COUNT) multipleByCount else multipleByEvidence
                     val state = when {
@@ -438,12 +451,10 @@ class SpeakerChangeDetector(
                 }
             }
         } catch (_: InterruptedException) {
-            // stop() while a source was waiting: normal end
         } catch (e: Exception) {
             Log.e(TAG, "detector stopped: $e", e)
             _snapshot.value = _snapshot.value.copy(error = e.toString())
         } finally {
-            // Privacy: nothing of the audio or features survives the run.
             hopBuffer.fill(0)
             readBuffer.fill(0)
             vadChunk.fill(0)
@@ -463,7 +474,6 @@ class SpeakerChangeDetector(
         const val HISTORY = 300
         const val CANDIDATES = 30
 
-        /** Frames kept for the debug timeline (15 s). */
         const val TIMELINE_FRAMES = 1500
     }
 }

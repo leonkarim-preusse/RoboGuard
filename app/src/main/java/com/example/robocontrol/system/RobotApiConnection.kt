@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /** The single RobotApi connection of the process. All components connect through it; it is never disconnected. */
 object RobotApiConnection {
-
     private const val TAG = "RobotApiConnection"
 
     /** Where the one connection of the process stands. */
@@ -21,7 +20,6 @@ object RobotApiConnection {
 
     private val _connected = MutableStateFlow(false)
 
-    /** True while the process-wide RobotApi connection is up. */
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     /**
@@ -35,7 +33,6 @@ object RobotApiConnection {
         val startConnecting: Boolean
         synchronized(this) {
             if (listener != null && listener !in listeners) listeners += listener
-            // Connected by code outside this helper (e.g. a probe screen): adopt it instead of connecting again.
             if (state != State.CONNECTED && runCatching { RobotApi.getInstance().isApiConnectedService() }.getOrDefault(false)) {
                 state = State.CONNECTED
                 _connected.value = true
@@ -48,10 +45,11 @@ object RobotApiConnection {
             listener?.handleApiConnected()
             return
         }
-        if (!startConnecting) return // a connection is on its way; listener gets called then
+        if (!startConnecting) return
 
         Log.i(TAG, "connecting RobotApi (once for the whole app)")
         RobotApi.getInstance().connectServer(context.applicationContext, object : ApiListener {
+            /** Marks the connection as up and notifies the listeners. */
             override fun handleApiConnected() {
                 val snapshot = synchronized(this@RobotApiConnection) {
                     state = State.CONNECTED
@@ -62,6 +60,7 @@ object RobotApiConnection {
                 snapshot.forEach { runCatching { it.handleApiConnected() }.onFailure { e -> Log.e(TAG, "listener failed", e) } }
             }
 
+            /** Marks the connection as down and notifies the listeners. */
             override fun handleApiDisconnected() {
                 val snapshot = synchronized(this@RobotApiConnection) {
                     state = State.IDLE
@@ -72,6 +71,7 @@ object RobotApiConnection {
                 snapshot.forEach { runCatching { it.handleApiDisconnected() } }
             }
 
+            /** Notifies the listeners that the API is unavailable. */
             override fun handleApiDisabled() {
                 val snapshot = synchronized(this@RobotApiConnection) {
                     state = State.IDLE
@@ -84,7 +84,10 @@ object RobotApiConnection {
         })
     }
 
-    /** Stops passing connection events to [listener]. */
+    /**
+     * Stops passing connection events to [listener].
+     * @param listener listener to remove
+     */
     fun removeListener(listener: ApiListener) {
         synchronized(this) { listeners -= listener }
     }

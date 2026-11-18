@@ -8,13 +8,8 @@ import com.ainirobot.coreservice.client.ApiListener
 import com.ainirobot.coreservice.client.Definition
 import com.ainirobot.coreservice.client.robotsetting.RobotSettingApi
 
-/**
- * Makes RoboGuard the robot's default app via the RobotOS setting `boot_app_package_name`. RobotOS grants SDK control to
- * the default app whenever it is in the foreground, and starts it after boot. The previous value is saved so that
- * [restorePrevious] can undo the change.
- */
+/** Makes RoboGuard the robot's default app, which gives it SDK control in the foreground, and can undo it. */
 object DefaultAppSetting {
-
     const val TAG = "DefaultApp"
     private const val PREFS = "robocontrol_default_app"
     private const val KEY_PREVIOUS = "previous_boot_app"
@@ -23,15 +18,29 @@ object DefaultAppSetting {
 
     /** Outcome of [ensureRoboGuardIsDefault] / [restorePrevious]. */
     sealed interface Result {
-        /** The setting already named [value] (this app); nothing was written. */
+        /**
+         * The setting already named [value] (this app); nothing was written.
+         * @property value current value
+         */
         data class AlreadySet(val value: String) : Result
-        /** The setting was changed [from] the previous app [to] this one. */
+        /**
+         * The setting was changed [from] the previous app [to] this one.
+         * @property from previous value
+         * @property to new value
+         */
         data class Changed(val from: String, val to: String) : Result
-        /** Reading or writing the setting failed; [reason] says why. */
+        /**
+         * Reading or writing the setting failed; [reason] says why.
+         * @property reason error text
+         */
         data class Failed(val reason: String) : Result
     }
 
-    /** Sets `boot_app_package_name` to this app's package if it is not already. [onDone] runs on the main thread. */
+    /**
+     * Sets `boot_app_package_name` to this app's package if it is not already. [onDone] runs on the main thread.
+     * @param context Android context
+     * @param onDone receives the result on the main thread
+     */
     fun ensureRoboGuardIsDefault(context: Context, onDone: (Result) -> Unit = {}) {
         val app = context.applicationContext
         val target = app.packageName
@@ -42,14 +51,17 @@ object DefaultAppSetting {
 
             val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             if (!prefs.getBoolean(KEY_HAS_PREVIOUS, false)) {
-                // Keep only the value from before RoboGuard's first change, so a restore goes back to the original.
                 prefs.edit().putString(KEY_PREVIOUS, current).putBoolean(KEY_HAS_PREVIOUS, true).commit()
             }
             write(current, target)
         }
     }
 
-    /** Puts back the default app that was set before RoboGuard's first change (possibly none). */
+    /**
+     * Puts back the default app that was set before RoboGuard's first change (possibly none).
+     * @param context Android context
+     * @param onDone receives the result on the main thread
+     */
     fun restorePrevious(context: Context, onDone: (Result) -> Unit = {}) {
         val app = context.applicationContext
         val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -65,7 +77,12 @@ object DefaultAppSetting {
         }
     }
 
-    /** Writes [to] and reads it back: the SDK call returns nothing and swallows RemoteExceptions. */
+    /**
+     * Writes [to] and reads it back.
+     * @param from previous value
+     * @param to new value
+     * @return the result
+     */
     private fun write(from: String, to: String): Result {
         RobotSettingApi.getInstance().setRobotString(Definition.BOOT_APP_PACKAGE_NAME, to)
         val readBack = RobotSettingApi.getInstance().getRobotString(Definition.BOOT_APP_PACKAGE_NAME).orEmpty()
@@ -74,12 +91,18 @@ object DefaultAppSetting {
     }
 
     /**
-     * Runs [block] once RobotApi is connected (RobotSettingApi is served through RobotApi's connection), connecting
-     * first if nothing in the app has yet. Exceptions and a connection that does not come up end in [Result.Failed].
+     * Runs [block] once RobotApi is connected.
+     * @param context Android context
+     * @param onDone receives the result on the main thread
+     * @param block work that needs the connection
      */
     private fun withRobotApi(context: Context, onDone: (Result) -> Unit, block: () -> Result) {
         val main = Handler(Looper.getMainLooper())
         var finished = false
+        /**
+         * Delivers the result on the main thread.
+         * @param result the result
+         */
         fun finish(result: Result) {
             main.post {
                 if (finished) return@post
@@ -91,15 +114,18 @@ object DefaultAppSetting {
                 onDone(result)
             }
         }
+        /** Runs the block and delivers its result. */
         fun run() = finish(runCatching(block).getOrElse { Result.Failed("error: $it") })
 
-        // The app-wide connection (RobotApiConnection): never a second connectServer.
         RobotApiConnection.connect(context, object : ApiListener {
+            /** Runs the block once connected. */
             override fun handleApiConnected() {
                 RobotApiConnection.removeListener(this)
                 Thread(::run, "DefaultAppSetting").start()
             }
+            /** Reports a failure. */
             override fun handleApiDisconnected() {}
+            /** Reports a failure. */
             override fun handleApiDisabled() {
                 RobotApiConnection.removeListener(this)
                 finish(Result.Failed("RobotApi disabled (RoboGuard not in control?)"))

@@ -5,13 +5,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * Passes the question "may the robot temporarily cross this private area?" from [MapNavigation] to the popup
- * [PrivacyOverrideActivity] or the phone, and the answer back. At most one question is open; it ends with exactly one
- * [Outcome] (allowed, denied, superseded, cancelled or expired after [MAX_AGE_MS]).
- */
+/** Passes the crossing question to the popup or the phone and the answer back. At most one question is open. */
 object PrivacyOverridePrompt {
-
     /** How a crossing question ended. */
     enum class Outcome { ALLOWED, DENIED, SUPERSEDED, CANCELLED, EXPIRED }
 
@@ -28,6 +23,7 @@ object PrivacyOverridePrompt {
      * @property id identifier of the question
      * @property zoneName private area the robot would cross
      * @property createdAt time the question was asked (elapsedRealtime)
+     * @property onAnswer receives the answer
      */
     class Request internal constructor(
         val id: Long,
@@ -36,7 +32,6 @@ object PrivacyOverridePrompt {
         internal val onAnswer: (Answer) -> Unit
     )
 
-    /** A question older than this is closed without an answer. */
     const val MAX_AGE_MS = 90_000L
 
     private val _pending = MutableStateFlow<Request?>(null)
@@ -44,11 +39,15 @@ object PrivacyOverridePrompt {
 
     private var nextId = 0L
 
-    /** Id of the question a popup is already showing, so a recreated screen does not open a second one. */
     @Volatile
     var shownId = -1L
 
-    /** Opens a question; [onAnswer] gets exactly one [Answer]. Returns the request id. */
+    /**
+     * Opens a question; [onAnswer] gets exactly one [Answer]. Returns the request id.
+     * @param zoneName area name
+     * @param onAnswer receives the answer
+     * @return the request id
+     */
     fun ask(zoneName: String, onAnswer: (Answer) -> Unit): Long {
         val (replaced, request) = synchronized(this) {
             val old = _pending.value
@@ -61,15 +60,20 @@ object PrivacyOverridePrompt {
     }
 
     /**
-     * Answers question [id] (ignored if it is no longer open): [minutes] allowed, or null for "no".
-     * [answeredBy] is written into the audit log as the person who granted it.
+     * Answers question [id]; ignored if it is no longer open.
+     * @param id request id
+     * @param minutes allowed minutes, or null for no
+     * @param answeredBy who answered
      */
     fun answer(id: Long, minutes: Int?, answeredBy: String = "person at robot screen") {
         val request = take { it.id == id } ?: return
         request.onAnswer(if (minutes == null) Answer(Outcome.DENIED, answeredBy = answeredBy) else Answer(Outcome.ALLOWED, minutes, answeredBy))
     }
 
-    /** Closes question [id] if it is older than [MAX_AGE_MS]. */
+    /**
+     * Closes question [id] if it is older than [MAX_AGE_MS].
+     * @param now current time
+     */
     fun expireIfOld(now: Long = SystemClock.elapsedRealtime()) {
         val request = take { now - it.createdAt >= MAX_AGE_MS } ?: return
         request.onAnswer(Answer(Outcome.EXPIRED))
@@ -81,7 +85,11 @@ object PrivacyOverridePrompt {
         request.onAnswer(Answer(Outcome.CANCELLED))
     }
 
-    /** Removes and returns the open question if it meets [condition]; null otherwise. */
+    /**
+     * Removes and returns the open question if it meets [condition]; null otherwise.
+     * @param condition test for the open question
+     * @return the question, or null
+     */
     private fun take(condition: (Request) -> Boolean): Request? = synchronized(this) {
         val r = _pending.value?.takeIf(condition) ?: return null
         _pending.value = null

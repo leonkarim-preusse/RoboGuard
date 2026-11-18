@@ -4,13 +4,8 @@ import android.content.Context
 import android.util.Log
 import org.json.JSONObject
 
-/**
- * All texts shown on the robot's screen or spoken, loaded from `assets/texts/texts.json`. Each entry has a `text` and a
- * `note`; `meta.speechLanguage` selects the speech language. Placeholders are written as `{name}` and passed as pairs
- * to [get]. A missing key returns the key itself. Thread-safe.
- */
+/** All texts shown on the robot's screen or spoken, loaded from `assets/texts/texts.json`. Thread-safe. */
 object UiText {
-
     private const val TAG = "UiText"
     private const val ASSET_FILE = "texts/texts.json"
 
@@ -24,8 +19,8 @@ object UiText {
     private var appContext: Context? = null
 
     /**
-     * Loads the texts (idempotent). Call once at start-up, e.g. in the service's onCreate; screens and speech call [get]
-     * afterwards. Cheap enough for the main thread (one small JSON file).
+     * Loads the texts (idempotent).
+     * @param context Android context
      */
     @Synchronized
     fun init(context: Context) {
@@ -34,10 +29,8 @@ object UiText {
         reload()
     }
 
-    /** Voice for the spoken sentences, from `meta.speechLanguage`; German if the file does not say. */
     val speechLanguage: String get() = meta["speechLanguage"] ?: "de_DE"
 
-    /** Speaker of the spoken sentences (`meta.speechVoice`, e.g. "en-us-wavenet-c"); null = the robot's own setting. */
     val speechVoice: String? get() = meta["speechVoice"]?.takeIf { it.isNotBlank() }
 
     /** Re-reads the file (after an app update or for tests). */
@@ -65,6 +58,7 @@ object UiText {
      * Returns the text for [key] with the placeholders filled in.
      * @param key text key
      * @param placeholders name → value pairs, e.g. "location" to "Kitchen" for `{location}`
+     * @return the text
      */
     fun get(key: String, vararg placeholders: Pair<String, Any?>): String {
         val template = texts[key] ?: run {
@@ -77,9 +71,12 @@ object UiText {
         return result
     }
 
-    /** Like [get], but returns null for a missing key (for optional texts). */
+    /**
+     * Like [get], but returns null for a missing key (for optional texts).
+     * @param key text key
+     * @return the text, or null
+     */
     fun getOrNull(key: String): String? = texts[key]
 
-    /** All keys currently loaded, for tooling and tests. */
     val keys: Set<String> get() = texts.keys
 }

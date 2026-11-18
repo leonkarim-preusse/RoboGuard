@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw, ImageFont
 # Reference categorical palette (dataviz skill, light mode, fixed order) + neutral gray for "Other".
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7"]
 OTHER = "#9d9c96"
+KERNEL = "#d6d4ce"
 SURFACE = "#fcfcfb"
 TEXT = "#0b0b0b"
 TEXT2 = "#52514e"
@@ -437,10 +438,7 @@ def render(data, out_path):
             names = " · ".join(f"{n} ({colour_names[i % len(colour_names)]})" for i, n in enumerate(bands["names"][:4]))
             g.text((L, base + 3 * step + 6),
                    "strip: driving (blue) · avoiding an obstacle (orange) · in view: " + (names or "–") +
-                   " · robot speaking (grey) · speech share (green bars) · piece embedded (purple tick)",
-                   fill=TEXT2, font=fs)
-            g.text((L, base + 3 * step + 26),
-                   "vertical lines in the panels: object announced (orange) · conversation prompt (red)",
+                   " · robot speaking (grey) · speech share (green bars)",
                    fill=TEXT2, font=fs)
 
     y = top_y + 30
@@ -452,7 +450,7 @@ def render(data, out_path):
     frame(y, h, panels[0][0], ymax, " %", [v for v in range(0, int(ymax) + 1, 50)])
     stacked_area(y, h, thread_series, ymax, [c for _, c in THREAD_GROUPS])
     avgs = [sum(s[k] for _, s in thread_series) / max(len(thread_series), 1) for k in range(len(THREAD_GROUPS))]
-    legend(y, [(f"{n}  ({a:.0f} %)", c) for (n, c), a in zip(THREAD_GROUPS, avgs)], ["100 % = one core fully busy", "(average over the run in brackets)"])
+    legend(y, [(f"{n}  ({a:.0f} %)", c) for (n, c), a in zip(THREAD_GROUPS, avgs)])
     ribbon(y, h, labels=True)
     y += h + gap
 
@@ -460,9 +458,23 @@ def render(data, out_path):
     h = panels[1][1]
     shade(y, h)
     frame(y, h, panels[1][0], 800, " %", [0, 200, 400, 600, 800])
-    stacked_area(y, h, process_series, 800, [c for _, c in PROCESS_GROUPS])
-    pav = [sum(s[k] for _, s in process_series) / max(len(process_series), 1) for k in range(len(PROCESS_GROUPS))]
-    legend(y, [(f"{n}  ({a:.0f} %)", c) for (n, c), a in zip(PROCESS_GROUPS, pav)], ["800 % = all 8 cores busy", f"robot total ≈ {sum(pav):.0f} %"])
+    # The process sums miss kernel time (interrupts, drivers) and processes too short-lived to be sampled; /proc/stat counts
+    # them. The difference to the per-core total is drawn as its own top layer, so the panel shows the real load of the cores.
+    core_rows = data.get("cores", [])
+    groups = list(PROCESS_GROUPS)
+    if core_rows:
+        def core_total(t):
+            row = min(core_rows, key=lambda c: abs(c["t"] - t))
+            return sum(v for v in row["cores"].values() if v >= 0) if abs(row["t"] - t) <= 1.5 else None
+        extended = []
+        for t, sums in process_series:
+            total = core_total(t)
+            extended.append((t, sums + [max(0.0, total - sum(sums)) if total is not None else 0.0]))
+        process_series = extended
+        groups.append(("Kernel, interrupts, other", KERNEL))
+    stacked_area(y, h, process_series, 800, [c for _, c in groups])
+    pav = [sum(s[k] for _, s in process_series) / max(len(process_series), 1) for k in range(len(groups))]
+    legend(y, [(f"{n}  ({a:.0f} %)", c) for (n, c), a in zip(groups, pav)])
     ribbon(y, h, labels=False)
     y += h + gap
 
@@ -500,20 +512,7 @@ def render(data, out_path):
             if y0 - 1 > y1:  # 1 px gap between segments; a segment thinner than that is dropped
                 g.rectangle([x, y1, x + bar_w, y0 - 1], fill=color)
             base += v
-    pink = [w["pink"] for w in windows if "pink" in w]
-    extra = ["grey = everything that is not the", "gated search: whole-frame references,", "conversion, CPU contention"]
-    if pink:
-        n = len(pink)
-        extra += ["", f"with calendar in view ({n} windows), avg ms:",
-                  "keypoints %.0f · matching %.0f" % (sum(p["keypoints"] for p in pink) / n, sum(p["match"] for p in pink) / n),
-                  "homography %.0f · whole check %.0f" % (sum(p["homography"] for p in pink) / n, sum(p["avg"] for p in pink) / n)]
-    stages = [w["pinkStages"] for w in windows if "pinkStages" in w]
-    if stages:
-        k = len(stages)
-        extra += ["", "pink search, avg ms per check (all):",
-                  "colour image %.1f · colour ranges %.1f" % (sum(x[0] for x in stages) / k, sum(x[1] for x in stages) / k),
-                  "cleaning/grouping %.1f · shapes %.1f" % (sum(x[2] for x in stages) / k, sum(x[3] for x in stages) / k)]
-    legend(y, list(reversed(STEPS)), extra)
+    legend(y, list(reversed(STEPS)))
     ribbon(y, h, labels=False)
     y += h + gap
 

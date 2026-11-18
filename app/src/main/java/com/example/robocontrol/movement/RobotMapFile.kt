@@ -5,17 +5,20 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** A rectangle of map cells, inclusive on both ends. */
+/**
+ * A rectangle of map cells, inclusive on both ends.
+ * @property minCol first column
+ * @property maxCol last column
+ * @property minRow first row
+ * @property maxRow last row
+ */
 data class CellBounds(val minCol: Int, val maxCol: Int, val minRow: Int, val maxRow: Int) {
     val width: Int get() = maxCol - minCol + 1
     val height: Int get() = maxRow - minRow + 1
 }
 
 /**
- * A RobotOS navigation map read from `/sdcard/robot/map/<mapName>/navi_data/probabilitymap.data`: an int32
- * little-endian length followed by a protobuf message with resolution (field 1), width (2), height (3), origin x (4),
- * origin y (5) and the uint16 cell values (6). Row 0 is the lowest y. Cell values: 0 unknown, 1 free, higher = more
- * likely occupied.
+ * A RobotOS navigation map read from `navi_data/probabilitymap.data`. Row 0 is the lowest y.
  * @property mapName name of the map
  * @property resolution metres per cell
  * @property width width in cells
@@ -38,18 +41,33 @@ class RobotMapFile(
         require(cells.size == width * height) { "expected ${width * height} cells, got ${cells.size}" }
     }
 
-    /** Raw cell value, 0..65535. Row 0 is the lowest world y. */
+    /**
+     * Raw cell value, 0..65535. Row 0 is the lowest world y.
+     * @param col column
+     * @param row row
+     * @return the value
+     */
     fun cellValue(col: Int, row: Int): Int = cells[row * width + col].toInt() and 0xFFFF
 
-    /** Continuous cell coordinates (column, row) of a world position; the integer part is the cell. */
+    /**
+     * Continuous cell coordinates (column, row) of a world position; the integer part is the cell.
+     * @param p world position
+     * @return column and row
+     */
     fun toCell(p: Point2D): Pair<Double, Double> = Pair((p.x - originX) / resolution, (p.y - originY) / resolution)
 
-    /** World position of continuous cell coordinates. */
+    /**
+     * World position of continuous cell coordinates.
+     * @param col column
+     * @param row row
+     * @return the world position
+     */
     fun toWorld(col: Double, row: Double): Point2D = Point2D(originX + col * resolution, originY + row * resolution)
 
     /**
-     * The smallest rectangle containing every mapped (non-unknown) cell, grown by [margin] cells.
-     * Maps are mostly unknown space around the recorded area, so this is what is worth displaying.
+     * The smallest rectangle containing every mapped cell, grown by [margin] cells.
+     * @param margin margin in cells
+     * @return the bounds
      */
     fun knownBounds(margin: Int): CellBounds {
         var minCol = width
@@ -77,17 +95,30 @@ class RobotMapFile(
         const val UNKNOWN = 0
         const val FREE = 1
 
-        /** `/sdcard/robot/map/<mapName>/`. Reading it needs READ_EXTERNAL_STORAGE. */
+        /**
+         * `/sdcard/robot/map/<mapName>/`. Reading it needs READ_EXTERNAL_STORAGE.
+         * @param mapName map name
+         * @return the folder
+         */
         fun mapDirectory(mapName: String): File = File(Environment.getExternalStorageDirectory(), "robot/map/$mapName")
 
-        /** Loads [mapName]'s probability map. Throws if the file is missing, unreadable or not in the expected format. */
+        /**
+         * Loads [mapName]'s probability map. Throws if the file is missing, unreadable or not in the expected format.
+         * @param mapName map name
+         * @return the map
+         */
         fun load(mapName: String): RobotMapFile =
             parse(mapName, File(mapDirectory(mapName), "navi_data/probabilitymap.data").readBytes())
 
-        /** Parses the file format described on the class. Unknown protobuf fields are skipped. */
+        /**
+         * Parses the file format described on the class.
+         * @param mapName map name
+         * @param bytes file content
+         * @return the map
+         */
         fun parse(mapName: String, bytes: ByteArray): RobotMapFile {
             val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            buf.int // length prefix; not needed, the message is read until the end of the file
+            buf.int
 
             var resolution: Double? = null
             var width: Int? = null
@@ -125,7 +156,7 @@ class RobotMapFile(
                         buf.position(buf.position() + length)
                     }
                     WIRE_FIXED32 -> buf.position(buf.position() + 4)
-                    else -> break // trailing bytes that are not a field; everything needed has been read
+                    else -> break
                 }
             }
 
@@ -145,7 +176,11 @@ class RobotMapFile(
         private const val WIRE_LENGTH_DELIMITED = 2
         private const val WIRE_FIXED32 = 5
 
-        /** Reads one protobuf varint (7 bits per byte, low bits first) from [buf]. */
+        /**
+         * Reads one protobuf varint (7 bits per byte, low bits first) from [buf].
+         * @param buf buffer to read from
+         * @return the value
+         */
         private fun readVarint(buf: ByteBuffer): Long {
             var result = 0L
             var shift = 0

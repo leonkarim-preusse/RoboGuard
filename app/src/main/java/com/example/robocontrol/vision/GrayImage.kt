@@ -11,13 +11,15 @@ import org.opencv.core.Mat
  * @property pixels pixel values, row by row
  */
 class GrayImage(val width: Int, val height: Int, val pixels: ByteArray) {
-
     init {
         require(width > 0 && height > 0) { "invalid size ${width}x$height" }
         require(pixels.size == width * height) { "expected ${width * height} pixels, got ${pixels.size}" }
     }
 
-    /** Converts to an ARGB bitmap, e.g. to show a captured frame or a reference image on screen. */
+    /**
+     * Converts to an ARGB bitmap, e.g. to show a captured frame or a reference image on screen.
+     * @return the bitmap
+     */
     fun toBitmap(): Bitmap {
         val argb = IntArray(pixels.size) { i ->
             val v = pixels[i].toInt() and 0xFF
@@ -27,13 +29,23 @@ class GrayImage(val width: Int, val height: Int, val pixels: ByteArray) {
     }
 }
 
-/** A position in image pixel coordinates: x to the right, y downwards, origin top-left. */
+/**
+ * A position in image pixel coordinates: x to the right, y downwards, origin top-left.
+ * @property x x in pixels
+ * @property y y in pixels
+ */
 data class ImagePoint(val x: Double, val y: Double)
 
-/** Copies into a new single-channel OpenCV Mat. The caller must release() it. */
+/**
+ * Copies into a new single-channel OpenCV Mat. The caller must release() it.
+ * @return the Mat
+ */
 internal fun GrayImage.toMat(): Mat = Mat(height, width, CvType.CV_8UC1).also { it.put(0, 0, pixels) }
 
-/** Copies a single-channel 8-bit Mat into a [GrayImage]. The Mat is not released. */
+/**
+ * Copies a single-channel 8-bit Mat into a [GrayImage]. The Mat is not released.
+ * @return the image
+ */
 internal fun Mat.toGrayImage(): GrayImage {
     require(type() == CvType.CV_8UC1) { "expected CV_8UC1, got ${CvType.typeToString(type())}" }
     val bytes = ByteArray(rows() * cols())

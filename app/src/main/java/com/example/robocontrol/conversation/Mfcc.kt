@@ -11,19 +11,21 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Computes 12 mel-frequency cepstral coefficients (c1–c12) per audio frame: pre-emphasis, Hamming window, FFT power
- * spectrum, mel filter bank, logarithm and DCT-II. Not thread-safe.
+ * Computes 12 MFCCs (c1–c12) per audio frame.
  * @param sampleRate sample rate in Hz
  * @param frameLength frame length in samples
  * @param fftSize FFT length
  * @param melBands number of mel filters
+ * @property coefficients number of coefficients returned
+ * @property minHz lowest filter edge in Hz
+ * @property maxHz highest filter edge in Hz
+ * @property preEmphasis pre-emphasis factor
  */
 class Mfcc(
     val sampleRate: Int = 16_000,
-    val frameLength: Int = 400,      // 25 ms at 16 kHz
+    val frameLength: Int = 400,
     val fftSize: Int = 512,
     private val melBands: Int = 26,
-    /** Number of coefficients returned (c1 … c[coefficients]). */
     val coefficients: Int = 12,
     private val minHz: Double = 100.0,
     private val maxHz: Double = 7_600.0,
@@ -43,7 +45,9 @@ class Mfcc(
     }
 
     /**
-     * Computes the MFCCs of [frame] (samples scaled to −1…1, length [frameLength]) into [out] (length [coefficients]).
+     * Computes the MFCCs of [frame] into [out].
+     * @param frame samples (−1…1)
+     * @param out receives the coefficients
      * @return the frame's energy in dBFS (−∞ for digital silence), used for speech/silence decisions
      */
     fun compute(frame: DoubleArray, out: DoubleArray): Double {
@@ -81,8 +85,22 @@ class Mfcc(
         return if (meanSquare <= 0.0) Double.NEGATIVE_INFINITY else 10 * log10(meanSquare)
     }
 
+    /**
+     * Builds triangular filters, equally spaced on the mel scale.
+     * @return one filter per band
+     */
     private fun buildFilterBank(): Array<DoubleArray> {
+        /**
+         * Converts a frequency to mel.
+         * @param hz frequency in Hz
+         * @return the mel value
+         */
         fun hzToMel(hz: Double) = 2595.0 * log10(1 + hz / 700.0)
+        /**
+         * Converts mel to a frequency.
+         * @param mel mel value
+         * @return the frequency in Hz
+         */
         fun melToHz(mel: Double) = 700.0 * (10.0.pow(mel / 2595.0) - 1)
         val bins = fftSize / 2 + 1
         val lowMel = hzToMel(minHz)
@@ -105,7 +123,11 @@ class Mfcc(
     }
 
     private companion object {
-        /** In-place iterative radix-2 FFT. */
+        /**
+         * In-place iterative radix-2 FFT.
+         * @param re real parts
+         * @param im imaginary parts
+         */
         fun fft(re: DoubleArray, im: DoubleArray) {
             val n = re.size
             var j = 0
@@ -149,7 +171,11 @@ class Mfcc(
             }
         }
 
-        /** Root mean square of [x]. */
+        /**
+         * Root mean square of [x].
+         * @param x samples
+         * @return the RMS
+         */
         @Suppress("unused")
         fun rms(x: DoubleArray) = sqrt(x.sumOf { it * it } / x.size)
     }

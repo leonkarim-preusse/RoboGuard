@@ -9,14 +9,14 @@ import kotlin.math.hypot
 import kotlin.math.max
 
 /**
- * The map tool's map image `navi_data/map.pgm`, which also contains the no-go lines. Format: "P5\n<width> <height>\n255\n",
- * width × height bytes (row 0 = highest y), then 16 bytes: resolution (double), origin x and origin y (float), little
- * endian. Pixel values: 255 free, 150 unknown, 5 obstacle, 0 no-go line. Immutable.
+ * The map tool's map image `navi_data/map.pgm`, which also contains the no-go lines.
  * @property width width in pixels
  * @property height height in pixels
  * @property resolution metres per pixel
  * @property originX x of the map origin in metres
  * @property originY y of the map origin in metres
+ * @property pixels pixel values, row 0 = top
+ * @property extra trailing bytes with resolution and origin
  */
 class PgmMap(
     val width: Int,
@@ -32,21 +32,43 @@ class PgmMap(
         require(extra.size == EXTRA_BYTES) { "expected $EXTRA_BYTES trailing bytes, got ${extra.size}" }
     }
 
-    /** Whether pixel [px], [py] lies inside the picture. */
+    /**
+     * Whether pixel [px], [py] lies inside the picture.
+     * @param px column
+     * @param py row
+     * @return true if inside
+     */
     fun inBounds(px: Int, py: Int): Boolean = px in 0 until width && py in 0 until height
 
-    /** Pixel value at column [px], row [py] (row 0 = top). */
+    /**
+     * Pixel value at column [px], row [py] (row 0 = top).
+     * @param px column
+     * @param py row
+     * @return the value
+     */
     fun value(px: Int, py: Int): Int = pixels[py * width + px].toInt() and 0xFF
 
-    /** Continuous pixel coordinates of a world position, as the map tool computes them. */
+    /**
+     * Continuous pixel coordinates of a world position, as the map tool computes them.
+     * @param p world position
+     * @return column and row
+     */
     fun toPixel(p: Point2D): Pair<Double, Double> =
         Pair((p.x - originX) / resolution, height - (p.y - originY) / resolution)
 
-    /** World position of continuous pixel coordinates (inverse of [toPixel]). */
+    /**
+     * World position of continuous pixel coordinates (inverse of [toPixel]).
+     * @param px column
+     * @param py row
+     * @return the world position
+     */
     fun toWorld(px: Double, py: Double): Point2D =
         Point2D(originX + px * resolution, originY + (height - py) * resolution)
 
-    /** All pixels that are part of a no-go line, as (column, row). */
+    /**
+     * All pixels that are part of a no-go line, as (column, row).
+     * @return the pixels
+     */
     fun noGoPixels(): List<Pair<Int, Int>> {
         val result = ArrayList<Pair<Int, Int>>()
         for (py in 0 until height) for (px in 0 until width) {
@@ -73,6 +95,11 @@ class PgmMap(
         val nx = -dy / length
         val ny = dx / length
 
+        /**
+         * Extends the line from the midpoint until the first non-free pixel.
+         * @param sign direction, +1 or −1
+         * @return the end point
+         */
         fun extend(sign: Int): Point2D {
             val step = resolution / 2
             var t = 0.0
@@ -92,7 +119,13 @@ class PgmMap(
         return Pair(extend(+1), extend(-1))
     }
 
-    /** A copy with a no-go line from [from] to [to], [thicknessPx] pixels wide (square brush). */
+    /**
+     * A copy with a no-go line from [from] to [to], [thicknessPx] pixels wide (square brush).
+     * @param from line start
+     * @param to line end
+     * @param thicknessPx line width in pixels
+     * @return the new map
+     */
     fun withLine(from: Point2D, to: Point2D, thicknessPx: Int): PgmMap {
         val copy = pixels.copyOf()
         val (fx, fy) = toPixel(from)
@@ -108,7 +141,6 @@ class PgmMap(
         var err = ddx + ddy
         val lo = -(thicknessPx - 1) / 2
         val hi = thicknessPx / 2
-        // Bresenham over the pixel grid; every step stamps a thickness × thickness square.
         while (true) {
             for (ox in lo..hi) for (oy in lo..hi) {
                 val px = x0 + ox
@@ -123,13 +155,21 @@ class PgmMap(
         return PgmMap(width, height, resolution, originX, originY, copy, extra)
     }
 
-    /** Serialises in exactly the map tool's format ([MapUtils.saveRoverMapToPgm]): header, pixels, trailing bytes. */
+    /**
+     * Serialises in exactly the map tool's format ([MapUtils.saveRoverMapToPgm]): header, pixels, trailing bytes.
+     * @return the file content
+     */
     fun toBytes(): ByteArray {
         val header = "P5\n$width $height\n255\n".toByteArray(Charsets.US_ASCII)
         return header + pixels + extra
     }
 
-    /** Length in metres between two world points; convenience for logging. */
+    /**
+     * Length in metres between two world points; convenience for logging.
+     * @param a first point
+     * @param b second point
+     * @return the length in metres
+     */
     fun lengthOf(a: Point2D, b: Point2D): Double = max(0.0, hypot(b.x - a.x, b.y - a.y))
 
     companion object {
@@ -139,15 +179,31 @@ class PgmMap(
         const val VALUE_FREE = 255
         private const val EXTRA_BYTES = 16
 
-        /** The map.pgm file of [mapName] on the robot. */
+        /**
+         * The map.pgm file of [mapName] on the robot.
+         * @param mapName map name
+         * @return the file
+         */
         fun file(mapName: String): File = File(RobotMapFile.mapDirectory(mapName), "navi_data/map.pgm")
 
-        /** Reads and parses the map.pgm of [mapName]. */
+        /**
+         * Reads and parses the map.pgm of [mapName].
+         * @param mapName map name
+         * @return the map
+         */
         fun load(mapName: String): PgmMap = parse(file(mapName).readBytes())
 
-        /** Parses the format described on the class. Throws on anything unexpected, so a bad file is never rewritten. */
+        /**
+         * Parses the format described on the class.
+         * @param bytes file content
+         * @return the map
+         */
         fun parse(bytes: ByteArray): PgmMap {
             var pos = 0
+            /**
+             * Reads the next header token.
+             * @return the token
+             */
             fun token(): String {
                 while (pos < bytes.size && bytes[pos].toInt().toChar().isWhitespace()) pos++
                 val start = pos
@@ -158,7 +214,7 @@ class PgmMap(
             val width = token().toInt()
             val height = token().toInt()
             check(token() == "255") { "unexpected max value" }
-            pos++ // exactly one whitespace byte after the max value
+            pos++
             val pixelCount = width * height
             check(bytes.size - pos == pixelCount + EXTRA_BYTES) {
                 "unexpected size: ${bytes.size - pos} bytes after the header, expected ${pixelCount + EXTRA_BYTES}"

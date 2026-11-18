@@ -3,12 +3,20 @@ package com.example.robocontrol.movement
 import kotlin.math.sqrt
 
 /**
- * Geometry and map types without Android or SDK dependencies. Coordinates are in the RobotOS map frame: metres, theta in radians.
+ * Geometry. Coordinates are in the RobotOS map frame: metres, theta in radians.
  */
 
-/** A point in the map frame, in metres. */
+/**
+ * A point in the map frame, in metres.
+ * @property x x in metres
+ * @property y y in metres
+ */
 data class Point2D(val x: Double, val y: Double) {
-    /** Straight-line distance to [other] in metres. */
+    /**
+     * Straight-line distance to [other] in metres.
+     * @param other other point
+     * @return the distance in metres
+     */
     fun distanceTo(other: Point2D): Double {
         val dx = x - other.x
         val dy = y - other.y
@@ -31,13 +39,20 @@ enum class PoseStatus(val code: Int) {
         /**
          * Maps an SDK status code to the enum; unknown codes give [UNKNOWN].
          * @param code status code from the SDK
+         * @return the matching status
          */
         fun fromCode(code: Int): PoseStatus =
             entries.firstOrNull { it.code == code } ?: UNKNOWN
     }
 }
 
-/** The robot's pose as reported by STATUS_POSE. */
+/**
+ * The robot's pose as reported by STATUS_POSE.
+ * @property x x in metres
+ * @property y y in metres
+ * @property theta heading in radians
+ * @property status pose status
+ */
 data class RobotPose(
     val x: Double,
     val y: Double,
@@ -75,6 +90,7 @@ data class Zone(
     /**
      * Point-in-polygon test by ray casting; works for concave polygons.
      * @param p point in map coordinates
+     * @return true if the point is inside
      */
     fun contains(p: Point2D): Boolean {
         var inside = false
@@ -82,7 +98,6 @@ data class Zone(
         for (i in polygon.indices) {
             val a = polygon[i]
             val b = polygon[j]
-            // Does the edge (b -> a) straddle the horizontal ray at p.y?
             if ((a.y > p.y) != (b.y > p.y)) {
                 val t = (p.y - a.y) / (b.y - a.y)
                 val xCross = a.x + t * (b.x - a.x)
@@ -97,6 +112,7 @@ data class Zone(
      * Like [contains], with the polygon widened by [margin].
      * @param p point in map coordinates
      * @param margin widening in metres
+     * @return true if the point is inside the widened polygon
      */
     fun containsWithMargin(p: Point2D, margin: Double): Boolean {
         if (contains(p)) return true
@@ -104,7 +120,11 @@ data class Zone(
         return distanceToEdge(p) <= margin
     }
 
-    /** Shortest distance from [p] to the polygon boundary, in metres. */
+    /**
+     * Shortest distance from [p] to the polygon boundary, in metres.
+     * @param p point
+     * @return the distance in metres
+     */
     fun distanceToEdge(p: Point2D): Double {
         var best = Double.MAX_VALUE
         var j = polygon.size - 1
@@ -115,13 +135,22 @@ data class Zone(
         return best
     }
 
-    /** Arithmetic mean of the vertices — a usable fallback navigation target. */
+    /**
+     * Arithmetic mean of the vertices; used as a fallback navigation target.
+     * @return the centroid
+     */
     fun centroid(): Point2D = Point2D(
         polygon.sumOf { it.x } / polygon.size,
         polygon.sumOf { it.y } / polygon.size
     )
 
-    /** Shortest distance from [p] to the line segment from [a] to [b]. */
+    /**
+     * Shortest distance from [p] to the line segment from [a] to [b].
+     * @param p point
+     * @param a segment start
+     * @param b segment end
+     * @return the distance in metres
+     */
     private fun distancePointToSegment(p: Point2D, a: Point2D, b: Point2D): Double {
         val dx = b.x - a.x
         val dy = b.y - a.y
@@ -142,25 +171,47 @@ data class MapZones(
     val mapName: String,
     val zones: List<Zone> = emptyList()
 ) {
-    /** The first zone that contains [p], with [margin] metres added around each zone; null if none. */
+    /**
+     * The first zone that contains [p], with [margin] metres added around each zone; null if none.
+     * @param p point
+     * @param margin margin in metres
+     * @return the zone, or null
+     */
     fun zoneAt(p: Point2D, margin: Double = 0.0): Zone? =
         zones.firstOrNull { it.containsWithMargin(p, margin) }
 
-    /** Every zone containing [p] — zones may legitimately overlap (a nook inside a room). */
+    /**
+     * Every zone containing [p]; zones may overlap.
+     * @param p point
+     * @param margin margin in metres
+     * @return the zones
+     */
     fun zonesAt(p: Point2D, margin: Double = 0.0): List<Zone> =
         zones.filter { it.containsWithMargin(p, margin) }
 
-    /** The zone with this [name] (case-insensitive), or null. */
+    /**
+     * The zone with this [name] (case-insensitive), or null.
+     * @param name zone name
+     * @return the zone, or null
+     */
     fun byName(name: String): Zone? =
         zones.firstOrNull { it.name.equals(name, ignoreCase = true) }
 
     val privateZones: List<Zone> get() = zones.filter { it.isPrivate }
 
-    /** A copy with [zone] added; a zone with the same name is replaced. */
+    /**
+     * A copy with [zone] added; a zone with the same name is replaced.
+     * @param zone zone to add
+     * @return the new set
+     */
     fun withZone(zone: Zone): MapZones =
         copy(zones = zones.filterNot { it.name.equals(zone.name, true) } + zone)
 
-    /** A copy without the zone called [name]. */
+    /**
+     * A copy without the zone called [name].
+     * @param name zone name
+     * @return the new set
+     */
     fun withoutZone(name: String): MapZones =
         copy(zones = zones.filterNot { it.name.equals(name, true) })
 }

@@ -10,27 +10,33 @@ import com.example.robocontrol.sensorcontrol.Sensors
 import kotlin.math.max
 import kotlin.math.sqrt
 
-/** What the enrolment screen shows. */
+/**
+ * What the enrolment screen shows.
+ * @property phase current phase
+ * @property speechSeconds speech collected, in seconds
+ * @property pieces pieces embedded
+ * @property speechProbability current Silero probability
+ * @property levelDb current level in dBFS
+ * @property similarity test similarity to the stored voice
+ * @property isOwner whether the test reading was above the threshold
+ * @property readings recent test readings
+ * @property message status message
+ * @property error error message
+ * @property mode purpose of the run
+ * @property rawSimilarity similarity before centring
+ */
 data class EnrolmentState(
     val phase: Phase = Phase.IDLE,
-    /** Seconds of SPEECH collected so far (silence does not count). */
     val speechSeconds: Double = 0.0,
-    /** Pieces of speech that produced an embedding. */
     val pieces: Int = 0,
-    /** Silero's current speech probability, so the person sees that the robot hears them. */
     val speechProbability: Double = 0.0,
     val levelDb: Double = Double.NEGATIVE_INFINITY,
-    /** In [Phase.TESTING]: how close the voice just heard is to the stored one. */
     val similarity: Float? = null,
-    /** In [Phase.TESTING]: whether that was above the stored threshold. */
     val isOwner: Boolean? = null,
-    /** In [Phase.TESTING]: the last readings, newest first, so a short test can be read as a whole. */
     val readings: List<Float> = emptyList(),
     val message: String? = null,
     val error: String? = null,
-    /** What the current run is for. */
     val mode: VoiceEnrolment.Mode = VoiceEnrolment.Mode.ENROL,
-    /** In [Phase.TESTING] with a stored cohort: the raw similarity before centring, for comparison. */
     val rawSimilarity: Float? = null
 ) {
     /** What the enrolment is doing right now. */
@@ -38,21 +44,16 @@ data class EnrolmentState(
 }
 
 /**
- * Records a voice template (or the cohort mean) and tests a stored voice. Speech is gated and cut into pieces like in
- * the detectors; each piece becomes an embedding. Recording ends after [TARGET_SECONDS] of speech, the embeddings are
- * averaged and stored encrypted in [OwnerVoiceprintStore]. In test mode each piece is only compared with the stored
- * voice. Audio buffers are zeroed after use.
+ * Records a voice template or the cohort mean, and tests a stored voice. Audio buffers are zeroed after use.
  * @param context used for the microphone, the models and the store
  */
 class VoiceEnrolment(private val context: Context) {
-
     private val _state = MutableStateFlow(EnrolmentState())
     val state: StateFlow<EnrolmentState> = _state.asStateFlow()
 
     @Volatile
     private var thread: Thread? = null
 
-    /** Set by [cancel]; the run then ends without saving. */
     @Volatile
     private var cancelled = false
 
@@ -69,17 +70,20 @@ class VoiceEnrolment(private val context: Context) {
         start(Mode.ENROL, OwnerVoiceprintStore.get(context).safeName(profile))
     }
 
-    /** Listens and reports how close each piece of speech is to the stored template. */
+    /** Starts a test of the stored voice. */
     fun startTest() = start(Mode.TEST, null)
 
-    /** Records other voices and stores only their mean as the cohort. */
+    /** Starts a cohort recording. */
     fun startCohort() = start(Mode.COHORT, null)
 
-    /** Starts a run in its own thread unless one is running or the microphone is switched off in the settings. */
+    /**
+     * Starts a run in its own thread unless one is running or the microphone is switched off in the settings.
+     * @param mode purpose of the run
+     * @param profile voice name for an enrolment, or null
+     */
     @Synchronized
     private fun start(mode: Mode, profile: String?) {
         if (thread != null) return
-        // The only part of RoboGuard that STORES something derived from a voice must respect "microphone off".
         if (microphoneSwitchedOff()) {
             _state.value = EnrolmentState(phase = EnrolmentState.Phase.ERROR, error = "the microphone is switched off in the privacy settings")
             return
@@ -99,8 +103,6 @@ class VoiceEnrolment(private val context: Context) {
         )
         val previous = lastThread
         thread = Thread({
-            // A run of an earlier screen may still be inside its last embedding: let it finish and give the microphone
-            // back first, so its release cannot hand the microphone to the monitor while this run records.
             runCatching { previous?.join(5_000) }
             run(mode, stored, profile)
         }, "VoiceEnrolment").apply {
@@ -126,16 +128,26 @@ class VoiceEnrolment(private val context: Context) {
         thread = null
     }
 
-    /** Whether the privacy settings switch the microphone off. */
+    /**
+     * Whether the privacy settings switch the microphone off.
+     * @return true if the microphone is switched off
+     */
     private fun microphoneSwitchedOff(): Boolean = Sensors.get(context).getSensors().entries
         .firstOrNull { it.key.equals("microphone", ignoreCase = true) }?.value == false
 
-    /** Pieces a worker handed back: an embedding (ENROL, COHORT) or the two similarities (TEST). */
+    /**
+     * Pieces a worker handed back: an embedding (ENROL, COHORT) or the two similarities (TEST).
+     * @property embedding embedding, or null in a test
+     * @property similarity centred similarity
+     * @property raw raw similarity
+     */
     private class Reading(val embedding: FloatArray?, val similarity: Float, val raw: Float)
 
     /**
-     * The recording thread: reads the microphone, cuts pieces like the detectors do, embeds them and, at the end,
-     * stores the voice / the cohort or reports the test readings. Every buffer is zeroed before it returns.
+     * Recording thread: reads the microphone, embeds the pieces and stores or compares the result.
+     * @param mode purpose of the run
+     * @param stored stored voice for a test, or null
+     * @param profile voice name, or null
      */
     private fun run(mode: Mode, stored: Voiceprint?, profile: String?) {
         val testing = mode == Mode.TEST
@@ -147,21 +159,17 @@ class VoiceEnrolment(private val context: Context) {
         val chunk = ShortArray(512)
         var chunkFill = 0
         var probability = 0.0
-        // Gate and assembly exactly as the detector has them set right now, through the SAME code (SpeechPieces.kt).
         val audio = ConversationMonitor.audioSettings()
         val gate = SpeechGateState(audio)
         val pieces = PieceAssembler(audio)
-        // The robot's own voice must not end up in a template or a cohort.
         val speaking = RobotSpeaking(context)
         var speechSamples = 0L
         var samples = 0L
         val startedWall = android.os.SystemClock.elapsedRealtime()
         var worstAudioClock = 1.0
-        // The cohort mean of other voices, if one was recorded: subtracted from both sides when comparing.
         val cohort = if (mode == Mode.TEST) OwnerVoiceprintStore.get(context).loadCohort() else null
         var worker: EmbeddingWorker<Reading>? = null
         var lease: ConversationMonitor.MicLease? = null
-        // "Microphone off" while recording ends the run and keeps nothing.
         val micListener = SensorChangeListener { name, enabled ->
             if (name.equals("microphone", ignoreCase = true) && !enabled) {
                 Log.i(TAG, "microphone switched off in the privacy settings: run cancelled")
@@ -179,10 +187,8 @@ class VoiceEnrolment(private val context: Context) {
                 return
             }
             if (audio.gateMode != SpeechGateMode.LEVEL_ONLY) vad = SileroVad(context)
-            // Like the detectors: audio not read in time is lost, and a template from a lossy recording is worse.
             runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
             worker = EmbeddingWorker(context, "VoiceEnrolmentEmbed",
-                // Enrolment and cohort must not lose pieces; a test drops them like the detector does.
                 capacity = if (testing) 1 else 8,
                 compute = { embedding, _ ->
                     if (testing) Reading(null, stored!!.similarityTo(embedding, cohort), stored.similarityTo(embedding))
@@ -191,8 +197,6 @@ class VoiceEnrolment(private val context: Context) {
                 discard = { it.embedding?.fill(0f) },
                 onEnd = { stored?.zero(); cohort?.fill(0f) })
             Log.i(TAG, if (testing) "trying the stored voice (threshold %.2f)".format(stored!!.info.threshold) else "recording ($mode)")
-            // Which gate and which assembly produced this template — the number it is compared against later only means
-            // something for pieces cut the same way.
             Log.i(TAG, "gate: %s, silero %.2f (release %.2f), level floor %.0f dBFS, pieces %s".format(
                 audio.gateMode, audio.speechThreshold, audio.sileroRelease, audio.minLevelDb, audio.assemblyText()))
             var lastReport = 0L
@@ -200,7 +204,6 @@ class VoiceEnrolment(private val context: Context) {
             var targetReached = false
             val startedMs = android.os.SystemClock.elapsedRealtime()
             while (!Thread.currentThread().isInterrupted) {
-                // A test is a tool, not a recording that runs all day: it ends by itself after a while.
                 if (testing && android.os.SystemClock.elapsedRealtime() - startedMs > MAX_TEST_MS) {
                     Log.i(TAG, "test ended after ${MAX_TEST_MS / 60_000} minutes")
                     break
@@ -231,7 +234,6 @@ class VoiceEnrolment(private val context: Context) {
                         if (!worker.offer(piece)) Log.w(TAG, "embedding still busy: piece dropped")
                     }
                     val now = android.os.SystemClock.elapsedRealtime()
-                    // ~10 updates a second are enough for a progress bar (it used to publish every 10 ms).
                     if (now - lastPublish >= 100) {
                         lastPublish = now
                         _state.value = _state.value.copy(
@@ -242,7 +244,6 @@ class VoiceEnrolment(private val context: Context) {
                     }
                     if (now - lastReport >= 2_000) {
                         lastReport = now
-                        // Audio time per wall-clock time: below 1, the buffer ran over and speech was lost.
                         val audioClock = timeMs.toDouble() / maxOf(now - startedWall, 1L)
                         if (timeMs > 4_000) worstAudioClock = minOf(worstAudioClock, audioClock)
                         Log.i(TAG, "mic: speech p %.2f, level %.0f dB, speech %.1f s, collected %.1f s, audio/clock %.2f%s"
@@ -251,7 +252,6 @@ class VoiceEnrolment(private val context: Context) {
                     }
                     val target = if (mode == Mode.COHORT) COHORT_TARGET_SECONDS else TARGET_SECONDS
                     if (!testing && speechSamples >= target * 16_000) {
-                        // The pieces still being collected count too; then wait for the worker to finish them.
                         for (piece in pieces.flush()) if (!worker.offer(piece)) Log.w(TAG, "piece dropped at the end")
                         targetReached = true
                     }
@@ -291,7 +291,6 @@ class VoiceEnrolment(private val context: Context) {
                 }
             }
         } catch (_: InterruptedException) {
-            // stop() or cancel(): a normal end
         } catch (e: Exception) {
             Log.e(TAG, "enrolment stopped", e)
             _state.value = _state.value.copy(phase = EnrolmentState.Phase.ERROR, error = e.message ?: e.toString())
@@ -303,11 +302,7 @@ class VoiceEnrolment(private val context: Context) {
             pieces.clear()
             runCatching { vad?.close() }
             runCatching { source.close() }
-            // The worker finishes its current run, closes the model and erases the stored voice and the cohort itself.
             worker?.stop()
-            // A cohort run is normally ended by hand when the recording has played: keep what was collected — unless it
-            // was cancelled (screen left, microphone switched off). This has to happen BEFORE the pieces are zeroed and
-            // before the microphone is handed back, so the restarted detector loads the new cohort.
             if (!finished && !cancelled && mode == Mode.COHORT && _state.value.phase == EnrolmentState.Phase.RECORDING &&
                 embeddings.size >= MIN_PIECES) {
                 finish(mode, embeddings, speechSamples / 16_000.0, profile)
@@ -339,7 +334,6 @@ class VoiceEnrolment(private val context: Context) {
                 )
                 return
             }
-            // No outlier filtering here: the point of the cohort is that it covers MANY different voices.
             val mean = centroid(embeddings)
             val error = OwnerVoiceprintStore.get(context).saveCohort(mean, embeddings.size)
             mean.fill(0f)
@@ -363,15 +357,16 @@ class VoiceEnrolment(private val context: Context) {
         }
         val store = OwnerVoiceprintStore.get(context)
         val cohort = store.loadCohort()
-        // Leave-one-out: each piece is scored against the average of the OTHER pieces, on the scale the detector uses.
-        // Scoring a piece against an average that contains it flattered every score by ~0.14, and the old raw 0.45
-        // outlier filter never removed anything because any voice reads 0.67–0.93 raw on this robot.
+        /**
+         * Scores each piece against the mean of the other pieces.
+         * @param pieces embeddings
+         * @return one score per piece
+         */
         fun leaveOneOut(pieces: List<FloatArray>): List<Float> = pieces.indices.map { i ->
             val others = centroid(pieces.filterIndexed { j, _ -> j != i })
             Voiceprint.centredSimilarity(others, pieces[i], cohort).also { others.fill(0f) }
         }
         val scores = leaveOneOut(embeddings)
-        // Relative outlier rule: further below the median than 3 median absolute deviations.
         val median = scores.sorted()[scores.size / 2]
         val mad = scores.map { kotlin.math.abs(it - median) }.sorted()[scores.size / 2]
         val keepIdx = scores.indices.filter { scores[it] >= median - 3 * mad }
@@ -386,8 +381,6 @@ class VoiceEnrolment(private val context: Context) {
         val sd = sqrt(similarities.sumOf { (it - mean).toDouble() * (it - mean) } / similarities.size).toFloat()
         val worst = similarities.min()
         val suggested = max(OwnerVoiceprintStore.MIN_THRESHOLD, mean - 2 * sd)
-        // An existing voice keeps its threshold (it was set by hand from measured readings); the computed one is only
-        // offered next to it. A new voice starts with the computed one.
         store.setActiveProfile(profile ?: OwnerVoiceprintStore.DEFAULT_PROFILE)
         val existing = store.info.value
         val threshold = existing?.threshold ?: suggested
@@ -420,7 +413,11 @@ class VoiceEnrolment(private val context: Context) {
         }
     }
 
-    /** Element-wise mean of [embeddings] (not normalised). */
+    /**
+     * Element-wise mean of [embeddings] (not normalised).
+     * @param embeddings vectors
+     * @return the mean
+     */
     private fun centroid(embeddings: List<FloatArray>): FloatArray {
         val sum = FloatArray(embeddings.first().size)
         for (e in embeddings) for (i in sum.indices) sum[i] += e[i]
@@ -431,28 +428,20 @@ class VoiceEnrolment(private val context: Context) {
     companion object {
         private const val TAG = "VoiceEnrolment"
 
-        /** Speech per embedded piece. Shorter pieces give unstable vectors. */
         const val PIECE_SECONDS = 3.0
 
-        /** Speech to collect before the template is built. */
         const val TARGET_SECONDS = 30.0
 
-        /** Speech to collect for the cohort of other voices; a run can also be ended by hand earlier. */
         const val COHORT_TARGET_SECONDS = 180.0
 
-        /** Pieces needed for a usable template. */
         private const val MIN_PIECES = 4
 
-        /** Readings kept for the screen while trying the voice. */
         private const val READINGS_KEPT = 8
 
-        /** "Try the voice" ends by itself after this long. */
         private const val MAX_TEST_MS = 10 * 60_000L
 
-        /** Below this audio/clock ratio, audio was lost during a recording (logged). */
         private const val MIN_AUDIO_CLOCK = 0.98
 
-        /** The run of the previous screen instance, which a new run waits for (see start). */
         @Volatile
         private var lastThread: Thread? = null
     }

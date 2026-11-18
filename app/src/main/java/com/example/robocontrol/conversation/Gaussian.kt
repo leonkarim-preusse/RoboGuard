@@ -9,18 +9,22 @@ import kotlin.math.ln
  * @property count number of frames the Gaussian was fitted to
  * @property mean mean vector
  * @property covariance covariance matrix, row by row
+ * @property cholesky Cholesky factor of the covariance
+ * @property logDet log-determinant of the covariance
  */
 class Gaussian private constructor(
     val dim: Int,
     val count: Int,
     val mean: DoubleArray,
-    /** Row-major d×d covariance (maximum likelihood, plus [REGULARIZATION] on the diagonal). */
     val covariance: DoubleArray,
-    /** Lower Cholesky factor of [covariance], row-major. */
     private val cholesky: DoubleArray,
     val logDet: Double
 ) {
-    /** Solves covariance · x = b (b is not modified). */
+    /**
+     * Solves covariance · x = b (b is not modified).
+     * @param b right-hand side
+     * @return the solution x
+     */
     fun solve(b: DoubleArray): DoubleArray {
         val y = DoubleArray(dim)
         for (i in 0 until dim) {
@@ -37,7 +41,11 @@ class Gaussian private constructor(
         return x
     }
 
-    /** tr(this⁻¹ · other.covariance). */
+    /**
+     * tr(this⁻¹ · other.covariance).
+     * @param other the second Gaussian
+     * @return the trace
+     */
     private fun traceInverseTimes(other: Gaussian): Double {
         var trace = 0.0
         val column = DoubleArray(dim)
@@ -108,8 +116,10 @@ class Gaussian private constructor(
         }
 
         /**
-         * Symmetric Kullback-Leibler divergence between two Gaussians:
-         * ½·tr(Σa⁻¹Σb + Σb⁻¹Σa − 2I) + ½·(μa−μb)ᵀ(Σa⁻¹ + Σb⁻¹)(μa−μb). 0 = identical; grows with difference.
+         * Symmetric Kullback-Leibler divergence between two Gaussians.
+         * @param a first Gaussian
+         * @param b second Gaussian
+         * @return the divergence
          */
         fun kl2(a: Gaussian, b: Gaussian): Double {
             val d = a.dim
@@ -122,21 +132,32 @@ class Gaussian private constructor(
         }
 
         /**
-         * ΔBIC of "one Gaussian for both blocks" against "one Gaussian per block":
-         * ½·(N·log|Σ| − N₁·log|Σ₁| − N₂·log|Σ₂|) − λ·½·(d + ½·d·(d+1))·log N. Positive values indicate a change.
+         * ΔBIC of one Gaussian for both blocks against one per block.
          * @param whole Gaussian of both blocks together
          * @param first Gaussian of the first block
          * @param second Gaussian of the second block
          * @param lambda penalty weight
+         * @return ΔBIC; positive means a change
          */
         fun deltaBic(whole: Gaussian, first: Gaussian, second: Gaussian, lambda: Double): Double =
             bicGain(whole, first, second) - lambda * bicPenalty(whole.dim, whole.count)
 
-        /** The likelihood part of ΔBIC (independent of λ). */
+        /**
+         * The likelihood part of ΔBIC (independent of λ).
+         * @param whole Gaussian of both blocks
+         * @param first Gaussian of the first block
+         * @param second Gaussian of the second block
+         * @return the likelihood part
+         */
         fun bicGain(whole: Gaussian, first: Gaussian, second: Gaussian): Double =
             0.5 * (whole.count * whole.logDet - first.count * first.logDet - second.count * second.logDet)
 
-        /** The model-size penalty of ΔBIC for λ = 1: ½·(d + ½·d·(d+1))·log N. */
+        /**
+         * The model-size penalty of ΔBIC for λ = 1.
+         * @param dim feature dimension
+         * @param count number of frames
+         * @return the penalty
+         */
         fun bicPenalty(dim: Int, count: Int): Double {
             val d = dim.toDouble()
             return 0.5 * (d + 0.5 * d * (d + 1)) * ln(count.toDouble())

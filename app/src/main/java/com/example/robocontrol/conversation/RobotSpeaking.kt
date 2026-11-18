@@ -8,26 +8,27 @@ import android.os.HandlerThread
 import android.os.SystemClock
 
 /**
- * Tells whether the robot itself was playing sound when a piece of audio was recorded, so the detectors can ignore it.
- * Playback start and end times come from [AudioManager.registerAudioPlaybackCallback].
+ * Tells whether the robot itself was playing sound when audio was recorded, so the detectors can ignore it.
  * @param context used to reach the audio service
  * @param tailMs time after the end of playback that still counts as speaking
  */
 class RobotSpeaking(context: Context, private val tailMs: Long = 500) {
-
     init {
         Playback.start(context.applicationContext)
     }
 
-    /** Smallest "wall clock minus audio time" seen: when the stream started, i.e. how audio time maps to wall time. */
     private var streamStartAt = Long.MAX_VALUE
 
-    /** True while the robot plays something, and for [tailMs] afterwards — right now. */
+    /**
+     * True while the robot plays something, and for [tailMs] afterwards.
+     * @return true while the robot plays sound
+     */
     fun active(): Boolean = Playback.activeAt(SystemClock.elapsedRealtime(), tailMs)
 
     /**
      * Whether the robot was speaking when the hop ending at [audioTimeMs] was captured.
      * @param audioTimeMs position in the audio stream, in milliseconds
+     * @return true if the robot was playing at that time
      */
     fun active(audioTimeMs: Long): Boolean {
         val now = SystemClock.elapsedRealtime()
@@ -44,7 +45,10 @@ class RobotSpeaking(context: Context, private val tailMs: Long = 500) {
         private var next = 0
         private lateinit var audio: AudioManager
 
-        /** Registers the playback callback once per process; until then [activeAt] answers false. */
+        /**
+         * Registers the playback callback once per process; until then [activeAt] answers false.
+         * @param context used to reach the audio service
+         */
         @Synchronized
         fun start(context: Context) {
             if (started) return
@@ -54,13 +58,20 @@ class RobotSpeaking(context: Context, private val tailMs: Long = 500) {
             val thread = HandlerThread("RobotSpeaking").apply { isDaemon = true; start() }
             update(runCatching { manager.activePlaybackConfigurations.isNotEmpty() }.getOrDefault(false))
             manager.registerAudioPlaybackCallback(object : AudioManager.AudioPlaybackCallback() {
+                /**
+                 * Records playback changes.
+                 * @param configs active playback configurations
+                 */
                 override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
                     update(!configs.isNullOrEmpty())
                 }
             }, Handler(thread.looper))
         }
 
-        /** Records the start and the end of a playback episode. */
+        /**
+         * Records the start and the end of a playback episode.
+         * @param playing whether something is playing now
+         */
         @Synchronized
         private fun update(playing: Boolean) {
             val now = SystemClock.elapsedRealtime()
@@ -73,7 +84,12 @@ class RobotSpeaking(context: Context, private val tailMs: Long = 500) {
             }
         }
 
-        /** Whether the robot was playing sound at time [t] (elapsedRealtime), including [tailMs] of echo after each end. */
+        /**
+         * Whether the robot was playing sound at time [t] (elapsedRealtime), including [tailMs] of echo after each end.
+         * @param t time (elapsedRealtime)
+         * @param tailMs echo time after each end
+         * @return true if the robot was playing at [t]
+         */
         @Synchronized
         fun activeAt(t: Long, tailMs: Long): Boolean {
             if (!started) return false

@@ -10,7 +10,6 @@ import kotlin.math.max
  * @param settings settings line repeated in the log
  */
 internal class AudioLoad(private val tag: String, private val settings: String = "") {
-
     private var windowStartMs = -1L
     private var frames = 0
     private var speechFrames = 0
@@ -61,27 +60,36 @@ internal class AudioLoad(private val tag: String, private val settings: String =
         }
     }
 
-    /** One voice-activity chunk took [nanos] ns. */
+    /**
+     * One voice-activity chunk took [nanos] ns.
+     * @param nanos duration in nanoseconds
+     */
     fun vad(nanos: Long) {
         vadNs += nanos
         vadChunks++
     }
 
-    /** One piece of speech was turned into an embedding in [nanos] ns. */
+    /**
+     * One piece of speech was turned into an embedding in [nanos] ns.
+     * @param nanos duration in nanoseconds
+     */
     fun piece(nanos: Long) {
         pieces++
         embedNs += nanos
     }
 
-    /** Per-frame analysis that is not the gate and not an embedding (the change detector's MFCC and window statistics). */
+    /**
+     * Records one per-frame analysis step outside the gate and the embedding.
+     * @param nanos duration in nanoseconds
+     */
     fun analysis(nanos: Long) {
         analysisNs += nanos
         analysisFrames++
     }
 
     /**
-     * Logs one summary when [WINDOW_MS] of audio have passed. [timeMs] is the detector's own audio clock (samples read),
-     * so the windows follow the microphone rather than the wall clock.
+     * Logs one summary when [WINDOW_MS] of audio have passed.
+     * @param timeMs audio time of the detector in milliseconds
      */
     fun tick(timeMs: Long) {
         if (windowStartMs < 0) {
@@ -90,8 +98,6 @@ internal class AudioLoad(private val tag: String, private val settings: String =
             return
         }
         if (timeMs - windowStartMs < WINDOW_MS) return
-        // The settings are repeated now and then, so a recording that starts after the detector still knows what it was
-        // running with (performance/record.py clears the log when it starts).
         if (settings.isNotEmpty() && timeMs - lastSettingsMs >= SETTINGS_EVERY_MS) {
             lastSettingsMs = timeMs
             Log.i(tag, "settings: $settings")
@@ -113,8 +119,6 @@ internal class AudioLoad(private val tag: String, private val settings: String =
             if (frames > 0) loudFrames * 100 / frames else 0,
             if (probFrames > 0) probSum / probFrames else 0.0,
             maxProb,
-            // Audio time per wall-clock time: below 1 means the microphone is producing faster than this thread reads it,
-            // i.e. the AudioRecord buffer is running over and speech is being LOST.
             (timeMs - windowStartMs).toDouble() / max(System.currentTimeMillis() - windowStartWallMs, 1L)))
         windowStartMs = timeMs
         windowStartWallMs = System.currentTimeMillis()
@@ -125,10 +129,8 @@ internal class AudioLoad(private val tag: String, private val settings: String =
     }
 
     companion object {
-        /** Same window as the calendar detection's summary, so both lines line up in the graphs. */
         const val WINDOW_MS = 2000L
 
-        /** How often the settings line is repeated into the log. */
         const val SETTINGS_EVERY_MS = 30_000L
     }
 }

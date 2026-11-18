@@ -56,7 +56,12 @@ import kotlinx.coroutines.withContext
  */
 data class MapPoint(val name: String, val position: Point2D, val saved: Boolean, val persistent: Boolean = false)
 
-/** The map prepared for display: [bitmap] shows exactly the cells in [bounds], with the top row = highest world y. */
+/**
+ * The map prepared for display: [bitmap] shows exactly the cells in [bounds], with the top row = highest world y.
+ * @property map map file
+ * @property bitmap rendered cells
+ * @property bounds cells shown
+ */
 class RenderedMap(val map: RobotMapFile, val bitmap: Bitmap, val bounds: CellBounds)
 
 /**
@@ -72,9 +77,7 @@ enum class SpeedPreset(val label: String, val linear: Double?, val angular: Doub
 }
 
 /**
- * Model of the movement test screen: shows the active map with the robot's position and places, adds points by
- * tapping the map, drives to a selected point through [NavigationController], and manages test-only private areas
- * and the no-go line test. Needs SDK control.
+ * Model of the movement test screen.
  * @param context any context; only the application context is kept
  * @param log log of the test screen
  * @param scope scope for background work
@@ -88,8 +91,6 @@ class MovementProbe(
     private val bridge = OrionStarBridge(context)
     private val pointStore = SavedPointStore(context)
 
-    // ---- privacy areas: every drive goes through NavigationController, which checks the target before starting
-    //      and aborts when a pose from the poll loop lies inside a private zone (plus PrivacyGuard's margin).
     private val guard = PrivacyGuard(MapZones(mapName = ""))
     private val controller = NavigationController(bridge, guard)
     private val tts = OrionStarTts(context)
@@ -97,10 +98,8 @@ class MovementProbe(
     private val _privateZones = MutableStateFlow<List<Zone>>(emptyList())
     val privateZones: StateFlow<List<Zone>> = _privateZones.asStateFlow()
 
-    /** Margin PrivacyGuard adds around every private zone, in metres (shown on the map as an outer ring). */
     val privacyMargin: Double get() = guard.margin
 
-    /** Name of the zone the robot was last found standing in while idle, to log each entry only once. */
     private var idleViolationZone: String? = null
 
     init {
@@ -116,7 +115,6 @@ class MovementProbe(
     private var noGoReqId = NO_GO_REQ_ID_START
     private val noGoWriter = NoGoLineWriter(context, log = { log.i(TAG, it) }, reqIdSource = { ++noGoReqId })
 
-    /** The map tool's image of the current map, including its no-go lines; null if it could not be read. */
     private val _pgm = MutableStateFlow<PgmMap?>(null)
     val pgm: StateFlow<PgmMap?> = _pgm.asStateFlow()
 
@@ -126,11 +124,9 @@ class MovementProbe(
     private val _lineB = MutableStateFlow<MapPoint?>(null)
     val lineB: StateFlow<MapPoint?> = _lineB.asStateFlow()
 
-    /** The previewed no-go line (end points in map coordinates), not yet written. */
     private val _lineCandidate = MutableStateFlow<Pair<Point2D, Point2D>?>(null)
     val lineCandidate: StateFlow<Pair<Point2D, Point2D>?> = _lineCandidate.asStateFlow()
 
-    /** True once RoboGuard has saved the original map image of the current map, i.e. a restore is possible. */
     private val _hasMapBackup = MutableStateFlow(false)
     val hasMapBackup: StateFlow<Boolean> = _hasMapBackup.asStateFlow()
 
@@ -143,7 +139,6 @@ class MovementProbe(
     private val _pose = MutableStateFlow<RobotPose?>(null)
     val pose: StateFlow<RobotPose?> = _pose.asStateFlow()
 
-    /** null until first read. */
     private val _localized = MutableStateFlow<Boolean?>(null)
     val localized: StateFlow<Boolean?> = _localized.asStateFlow()
 
@@ -165,14 +160,17 @@ class MovementProbe(
     private val _speed = MutableStateFlow(SpeedPreset.SLOW)
     val speed: StateFlow<SpeedPreset> = _speed.asStateFlow()
 
-    /** Latest raw `navi_speed` status from RobotOS (device state, format undocumented). */
     private val _measuredSpeed = MutableStateFlow<String?>(null)
     val measuredSpeed: StateFlow<String?> = _measuredSpeed.asStateFlow()
 
     private var lastSpeedLogAt = 0L
 
-    /** Logs the measured speed while driving, at most once per [SPEED_LOG_INTERVAL_MS]. */
     private val speedStatus = object : StatusListener() {
+        /**
+         * Updates the measured speed.
+         * @param type status type
+         * @param value status value
+         */
         override fun onStatusUpdate(type: String?, value: String?) {
             _measuredSpeed.value = value
             val now = SystemClock.elapsedRealtime()
@@ -212,8 +210,6 @@ class MovementProbe(
         runCatching { tts.disconnect() }
     }
 
-    // ---- privacy areas ------------------------------------------------------------------
-
     /** Creates a circular private area around the selected point; kept in memory only. */
     fun makeSelectedAreaPrivate() {
         val point = _selected.value ?: return log.i(TAG, "select a point first")
@@ -231,15 +227,15 @@ class MovementProbe(
             "plus ${guard.margin} m margin → the robot stops about %.1f m from the centre".format(ZONE_RADIUS_M + guard.margin))
     }
 
-    // ---- drawing a private area by hand ----------------------------------------------------
-
-    /** Corners of the area being drawn, in world coordinates; null when not in drawing mode. */
     private val _drawingVertices = MutableStateFlow<List<Point2D>?>(null)
     val drawingVertices: StateFlow<List<Point2D>?> = _drawingVertices.asStateFlow()
 
     private var drawnAreaCounter = 0
 
-    /** A tap on the map: adds a corner while drawing an area, otherwise adds a temporary point. */
+    /**
+     * A tap on the map: adds a corner while drawing an area, otherwise adds a temporary point.
+     * @param position tapped position
+     */
     fun handleMapTap(position: Point2D) {
         val corners = _drawingVertices.value
         if (corners == null) {
@@ -318,15 +314,25 @@ class MovementProbe(
         }
     }
 
-    /** Says the privacy stop sentence in German and logs it. */
+    /**
+     * Says the privacy stop sentence and logs it.
+     * @param reason reason for the log
+     */
     private fun announcePrivacyStop(reason: String) {
         log.i(TAG, "PRIVACY STOP ($reason), saying: \"$PRIVACY_STOP_SENTENCE\"")
         tts.speakGerman(PRIVACY_STOP_SENTENCE, object : TtsListener {
+            /**
+             * Logs a failed sentence.
+             * @param failure reason for the failure
+             */
             override fun onFailed(failure: TtsFailure) = log.i(TAG, "announcement not spoken: $failure")
         })
     }
 
-    /** Sets the speed used by the next drive (a drive already running keeps its speed). */
+    /**
+     * Sets the speed used by the next drive (a drive already running keeps its speed).
+     * @param preset speed preset
+     */
     fun setSpeed(preset: SpeedPreset) {
         _speed.value = preset
         bridge.linearSpeed = preset.linear
@@ -339,7 +345,10 @@ class MovementProbe(
         scope.launch(Dispatchers.IO) { reloadMapAndPlaces() }
     }
 
-    /** Adds a point at [position] (from a tap on the map) and selects it. */
+    /**
+     * Adds a point at [position] (from a tap on the map) and selects it.
+     * @param position world position
+     */
     fun addPoint(position: Point2D) {
         customCounter++
         val point = MapPoint("P$customCounter", position, saved = false)
@@ -348,7 +357,10 @@ class MovementProbe(
         log.i(TAG, "point ${point.name} added at ${fmt(position)} and selected")
     }
 
-    /** Makes [point] the drive target. */
+    /**
+     * Makes [point] the drive target.
+     * @param point target point
+     */
     fun select(point: MapPoint) {
         _selected.value = point
         log.i(TAG, "selected ${point.name} ${fmt(point.position)}")
@@ -416,7 +428,6 @@ class MovementProbe(
     /** Drives to the selected point by its coordinates through [NavigationController]. */
     fun driveToSelected() {
         val target = _selected.value ?: return log.i(TAG, "select a point first: tap the map or a list entry")
-        // LIDAR off in the privacy settings: no obstacle detection and no localization, so no drive.
         val lidarOff = runCatching {
             com.example.robocontrol.sensorcontrol.Sensors.get(appContext).getSensors().entries
                 .firstOrNull { it.key.equals("lidar", ignoreCase = true) }?.value == false
@@ -432,16 +443,20 @@ class MovementProbe(
         _navState.value = "driving to ${target.name}"
 
         val listener = object : NavigationListener {
-            /** The first outcome wins: after a privacy abort, RobotOS still reports its own "stopped" failure. */
             @Volatile
             private var finished = false
 
+            /**
+             * Logs drive progress.
+             * @param event progress event
+             */
             override fun onProgress(event: NavEvent) {
                 if (finished) return
                 log.i(TAG, "  ${target.name}: $event")
                 _navState.value = "${target.name}: $event"
             }
 
+            /** Logs the arrival. */
             override fun onArrived() {
                 if (finished) return
                 finished = true
@@ -449,6 +464,10 @@ class MovementProbe(
                 _navState.value = "arrived at ${target.name}"
             }
 
+            /**
+             * Logs the failure.
+             * @param failure reason
+             */
             override fun onFailed(failure: NavFailure) {
                 if (finished) return
                 finished = true
@@ -478,9 +497,10 @@ class MovementProbe(
             }
     }
 
-    // ---- no-go line test ---------------------------------------------------------------
-
-    /** Uses the selected point as end A ([isA]) or B of the line to block. */
+    /**
+     * Uses the selected point as end A ([isA]) or B of the line to block.
+     * @param isA true for end A
+     */
     fun setLineEnd(isA: Boolean) {
         val point = _selected.value ?: return log.i(TAG, "select a point first")
         if (isA) _lineA.value = point else _lineB.value = point
@@ -527,7 +547,10 @@ class MovementProbe(
         )
     }
 
-    /** Restores the map image as it was before RoboGuard's first change and reloads the map. */
+    /**
+     * Restores the map image as it was before RoboGuard's first change and reloads the map.
+     * @return a message for the tester
+     */
     suspend fun restoreOriginalMap(): String = withContext(Dispatchers.IO) {
         val map = _mapName.value ?: return@withContext "No map is active on the robot."
         if (!_sdkActive.value) return@withContext "No SDK control: start this screen from the robot's home launcher icon."
@@ -541,7 +564,10 @@ class MovementProbe(
         )
     }
 
-    /** Stops any navigation immediately. */
+    /**
+     * Stops any navigation immediately.
+     * @param reason reason for the log
+     */
     fun stop(reason: String) {
         runCatching { synchronized(controller) { controller.stop() } }
             .onFailure { log.i(TAG, "stopNavigation threw: $it") }
@@ -549,14 +575,11 @@ class MovementProbe(
         log.i(TAG, "STOP: $reason")
     }
 
-    // ---- internals ----------------------------------------------------------------
-
     /** Reads the active map name and the RobotOS places, then loads the map picture. */
     private fun reloadMapAndPlaces() {
         val api = RobotApi.getInstance()
         val name = runCatching { api.getMapName() }.getOrNull()
         _mapName.value = name
-        // Zones are bound to a map: coordinates from one map are meaningless on another.
         if (guard.zones.mapName != (name ?: "")) {
             synchronized(controller) {
                 guard.updateZones(MapZones(name ?: ""))
@@ -574,8 +597,6 @@ class MovementProbe(
         _places.value = poses.map { MapPoint(it.name ?: "(unnamed)", Point2D(it.x.toDouble(), it.y.toDouble()), saved = true) }
         log.i(TAG, "saved places (${poses.size}): " + _places.value.joinToString { "${it.name} ${fmt(it.position)}" })
 
-        // RoboGuard's own named locations for this map, followed by any tapped points that already exist.
-        // Unreadable stored locations are only logged here; saving refuses to overwrite them (load fails first).
         val stored = if (name.isNullOrBlank()) emptyList() else runCatching { pointStore.load(name) }
             .onFailure { log.i(TAG, "saved locations UNREADABLE: $it / ${it.cause}") }
             .getOrDefault(emptyList())
@@ -584,7 +605,10 @@ class MovementProbe(
         log.i(TAG, "my locations (${stored.size}): " + stored.joinToString { "${it.name} ${fmt(it.position)}" })
     }
 
-    /** Loads and renders the map file of [name]; errors are logged. */
+    /**
+     * Loads and renders the map file of [name]; errors are logged.
+     * @param name map name
+     */
     private fun loadMap(name: String) {
         runCatching { RobotMapFile.load(name) }
             .onSuccess { map ->
@@ -616,7 +640,6 @@ class MovementProbe(
             runCatching { api.getCurrentPose() }.getOrNull()?.let { p ->
                 val pose = RobotPose(p.x.toDouble(), p.y.toDouble(), p.theta.toDouble(), PoseStatus.fromCode(p.status))
                 _pose.value = pose
-                // In-motion privacy enforcement: aborts a drive as soon as the robot is inside a private area.
                 synchronized(controller) { controller.onPose(pose) }
                 if (idleViolationZone != null && _privateZones.value.none { it.containsWithMargin(pose.point, guard.margin) }) {
                     idleViolationZone = null
@@ -629,7 +652,6 @@ class MovementProbe(
                 _sdkActive.value = runCatching { api.isApiConnectedService() && api.isActive() }.getOrDefault(false)
             }
             tick++
-            // Faster while driving: at 0.25 m/s the robot moves ~4 cm between checks instead of ~12 cm.
             delay(if (controller.isNavigating) POLL_NAVIGATING_MS else POLL_MS)
         }
     }
@@ -638,6 +660,7 @@ class MovementProbe(
      * Renders the map cells within [bounds] into a bitmap; the top row is the highest y.
      * @param map parsed map file
      * @param bounds cell range to render
+     * @return the bitmap
      */
     private fun renderBitmap(map: RobotMapFile, bounds: CellBounds): Bitmap {
         val w = bounds.width
@@ -655,6 +678,7 @@ class MovementProbe(
     /**
      * Colour of one map cell: unknown grey, free white, occupied black, values in between in grey shades.
      * @param value cell value from the map file
+     * @return the colour
      */
     private fun colorFor(value: Int): Int = when {
         value == RobotMapFile.UNKNOWN -> 0xFFD0D0D0.toInt()
@@ -666,10 +690,20 @@ class MovementProbe(
         }
     }
 
-    /** Coordinates as "(x, y)" with two decimals, for the log. */
+    /**
+     * Coordinates as "(x, y)" with two decimals, for the log.
+     * @param p point
+     * @return the text
+     */
     private fun fmt(p: Point2D) = "(%.2f, %.2f)".format(p.x, p.y)
 
-    /** A regular polygon approximating a circle, counter-clockwise. */
+    /**
+     * A regular polygon approximating a circle, counter-clockwise.
+     * @param center centre
+     * @param radius radius in metres
+     * @param segments number of corners
+     * @return the corners
+     */
     private fun circlePolygon(center: Point2D, radius: Double, segments: Int): List<Point2D> =
         (0 until segments).map { i ->
             val angle = 2 * PI * i / segments
@@ -684,24 +718,18 @@ class MovementProbe(
         const val SPEED_LOG_INTERVAL_MS = 1_000L
         const val MAX_NAME_LENGTH = 40
 
-        /** Request ids for map-edit SDK calls, apart from other components' ranges. */
         const val NO_GO_REQ_ID_START = 40_000
 
-        /** Pose poll interval while a drive is running (privacy checks happen on each poll). */
         const val POLL_NAVIGATING_MS = 150L
 
-        /** Turning away after a privacy stop: wait until the robot is at rest; turns smaller than this are skipped. */
         const val TURN_AWAY_DELAY_MS = 800L
         const val MIN_TURN_DEG = 10.0
 
-        /** Radius of a private area created around a point; PrivacyGuard adds its margin on top. */
         const val ZONE_RADIUS_M = 1.0
         const val ZONE_SEGMENTS = 24
 
-        /** Sentence spoken when a drive is refused or stopped because of a private area. */
         const val PRIVACY_STOP_SENTENCE = "Weg führt durch privaten Bereich. Ich halte an und fahre nicht weiter."
 
-        /** Cell values at or above this are drawn as walls. */
         const val OCCUPIED_VALUE = 8000
     }
 }

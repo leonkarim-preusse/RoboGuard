@@ -84,24 +84,22 @@ import kotlin.math.sin
  * drive controls and the debug views. User interface for [MapNavigation].
  */
 class MapNavigationActivity : ComponentActivity() {
-
     private lateinit var log: NavigationLog
     private lateinit var probe: MapNavigation
     private var started = false
 
+    /**
+     * Sets up the navigation screen.
+     * @param savedInstanceState saved state
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Screen texts come from assets/texts/texts.json (no-op if the service already loaded them).
         UiText.init(applicationContext)
         DebugMode.init(this)
-        // The navigation runs in the service (NavigationHub), so the phone app sees the same state and a drive does not
-        // stop when this screen closes. Started here as well in case the service is not up yet.
-        // Not while RoboGuard is disabled: then this screen uses its own navigation, which ends with the screen.
         if (!AppDisabled.isDisabled(this)) NavigationHub.start(applicationContext)
         log = NavigationHub.log
         probe = NavigationHub.current ?: MapNavigation(applicationContext, log, lifecycleScope).also { it.start() }
 
-        // Plain MaterialTheme: robocontrol must not depend on roboguard's theme.
         setContent {
             MaterialTheme {
                 NavigationScreen()
@@ -109,26 +107,24 @@ class MapNavigationActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Leaving the screen no longer stops the robot: the navigation belongs to the service and the phone app may be steering.
-     * Stopping is the person's decision (STOP here or on the phone) or the privacy rules'.
-     */
+    /** Leaves the navigation running; it belongs to the service. */
     override fun onStop() {
         super.onStop()
     }
 
-    /** Counts requests to show the map again (e.g. "Leave room" from a prompt while a debug view is open). */
     private val backToMap = androidx.compose.runtime.mutableIntStateOf(0)
 
+    /**
+     * Shows the map again when the screen is reopened.
+     * @param intent new intent
+     */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Reached again through CLEAR_TOP|SINGLE_TOP (e.g. "Leave room"): show the map, not a debug view that may still
-        // be open on this instance.
         backToMap.intValue++
     }
 
+    /** Stops the fallback navigation if this screen owns it. */
     override fun onDestroy() {
-        // The navigation keeps running in the service; only an unshared fallback instance would need shutting down.
         if (NavigationHub.current == null) probe.shutdown()
         super.onDestroy()
     }
@@ -137,7 +133,7 @@ class MapNavigationActivity : ComponentActivity() {
     private fun goHome() {
         startActivity(
             Intent().setClassName(this, "com.example.roboguard.MainActivity")
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
         )
         finish()
     }
@@ -152,7 +148,11 @@ class MapNavigationActivity : ComponentActivity() {
         probe.reload()
     }
 
-    /** "yes" / "NO" / "?" for the localization state, from the text file. */
+    /**
+     * "yes" / "NO" / "?" for the localization state, from the text file.
+     * @param localized localization state
+     * @return the text
+     */
     private fun localizedText(localized: Boolean?) = UiText.get(
         when (localized) { true -> "nav.label.yes"; false -> "nav.label.no"; null -> "nav.label.unknown" }
     )
@@ -196,7 +196,6 @@ class MapNavigationActivity : ComponentActivity() {
             )
         }
         val driving by probe.driving.collectAsState()
-        // Off while a drive runs: STOP first.
         val canDrive = selected != null && zonesLoaded && zoneStoreError == null && !driving
         var confirmClearAreas by remember { mutableStateOf(false) }
         if (confirmClearAreas) {
@@ -219,7 +218,6 @@ class MapNavigationActivity : ComponentActivity() {
             )
         }
 
-        // ---- private areas: name dialog, delete confirmation, permission popup
         val activeOverrides by probe.activeOverrides.collectAsState()
         var nameAreaFor by remember { mutableStateOf<AreaKind?>(null) }
         nameAreaFor?.let { kind ->
@@ -240,9 +238,7 @@ class MapNavigationActivity : ComponentActivity() {
                 dismissButton = { TextButton(onClick = { confirmDeleteArea = null }) { Text(UiText.get("nav.button.cancel")) } }
             )
         }
-        // A drive stopped at a private area asks on the screen: open the popup once per question.
         LaunchedEffect(Unit) {
-            // The shown id lives in PrivacyOverridePrompt, so a recreated activity does not open a second popup.
             PrivacyOverridePrompt.pending.collect { request ->
                 if (request != null && request.id != PrivacyOverridePrompt.shownId) {
                     PrivacyOverridePrompt.shownId = request.id
@@ -251,9 +247,7 @@ class MapNavigationActivity : ComponentActivity() {
             }
         }
 
-        // Saving the current position is only possible while the robot knows where it is.
         val canSavePosition = localized == true && pose != null && mapName != null
-        // Close the dialog if localization is lost while it is open.
         LaunchedEffect(canSavePosition) {
             if (!canSavePosition) showSaveDialog = false
         }
@@ -261,7 +255,6 @@ class MapNavigationActivity : ComponentActivity() {
             SaveLocationDialog(onDismiss = { showSaveDialog = false })
         }
 
-        // The map is read from /sdcard/robot/map: READ_EXTERNAL_STORAGE is a runtime permission.
         val storagePermissions = arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         val requestStorage = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
             log.i("nav", "storage permission: $granted")
@@ -282,16 +275,12 @@ class MapNavigationActivity : ComponentActivity() {
 
         val drawingVertices by probe.drawingVertices.collectAsState()
         var mapFullscreen by remember { mutableStateOf(false) }
-        // Hidden debug mode (tap the header 7 times, see DebugMode): status lines, event log, speed and the test screens.
         val showDebug by DebugMode.enabled.collectAsState()
-        // Zoom/pan of the full-screen map; starts at the whole map again whenever a new map is loaded.
         val mapView = remember(rendered) { MapViewState() }
 
-        // Debug: camera stream of the calendar detection, shown in place of this screen (same activity, so driving continues).
         var cameraView by rememberSaveable { mutableStateOf(false) }
         var speakerView by rememberSaveable { mutableStateOf(false) }
         var voiceView by rememberSaveable { mutableStateOf(false) }
-        // STOP is only active while the robot moves: a drive, or turning away after a privacy stop (owner, 2026-10-19).
         val drivingNow by probe.driving.collectAsState()
         val turningNow by probe.turning.collectAsState()
         val moving = drivingNow || turningNow
@@ -335,9 +324,7 @@ class MapNavigationActivity : ComponentActivity() {
         }
 
         if (mapFullscreen) {
-            // Full screen: a control bar ABOVE the map, so nothing covers the map itself.
             Column(Modifier.fillMaxSize().padding(8.dp)) {
-                // STOP and Exit come first so they are always on screen; the rest scrolls sideways if it does not fit.
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically,
@@ -405,7 +392,6 @@ class MapNavigationActivity : ComponentActivity() {
         }
 
         Column(Modifier.fillMaxSize().padding(12.dp)) {
-        // ---- top row: Home (green) on the left, STOP in the middle, Drive on the far right
         Row(
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -429,10 +415,7 @@ class MapNavigationActivity : ComponentActivity() {
             ) { Text(selected?.let { UiText.get("nav.button.drive_to", "location" to it.name) } ?: UiText.get("nav.button.drive_to_none"), maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
         Row(Modifier.fillMaxWidth().weight(1f)) {
-            // ---- left: status banners pinned at the top, everything else scrolls below
             Column(modifier = Modifier.width(340.dp).fillMaxHeight()) {
-            // Always visible (not debug): someone is steering this robot from the phone app. The thesis asks for visible
-            // state — a person standing next to the robot should see that the commands come from another room.
             remoteControl?.let { client ->
                 Text(
                     UiText.get("nav.label.remote_control", "client" to client),
@@ -442,7 +425,6 @@ class MapNavigationActivity : ComponentActivity() {
                 )
                 Spacer(Modifier.height(6.dp))
             }
-            // Always visible (not debug): problems with the saved private areas.
             storageMessage?.let { message ->
                 Text(
                     message,
@@ -456,7 +438,6 @@ class MapNavigationActivity : ComponentActivity() {
                 modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Status lines and the speed choice are debug information.
                 if (showDebug) {
                     Text(UiText.get("nav.label.map", "map" to (mapName ?: UiText.get("nav.label.unknown"))))
                     Text(UiText.get("nav.label.sdk_control", "state" to UiText.get(if (sdkActive) "nav.label.sdk_yes" else "nav.label.sdk_no")))
@@ -480,7 +461,6 @@ class MapNavigationActivity : ComponentActivity() {
                     Text(UiText.get("nav.label.measured_speed", "speed" to (measuredSpeed ?: UiText.get("nav.label.unknown"))), fontSize = 13.sp)
                 }
 
-
                 Text(UiText.get("nav.label.privacy_areas"), fontWeight = FontWeight.Bold)
                 if (privateZones.isEmpty()) Text(UiText.get("nav.label.no_areas"), fontSize = 13.sp)
                 privateZones.forEach { zone ->
@@ -494,14 +474,12 @@ class MapNavigationActivity : ComponentActivity() {
                             }
                         }
                         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            // Delete: removes the area (after confirmation). Red text, plain button.
                             OutlinedButton(
                                 enabled = zonesLoaded && zoneStoreError == null,
                                 onClick = { confirmDeleteArea = zone.name },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                                 modifier = Modifier.height(32.dp)
                             ) { Text(UiText.get("nav.button.delete"), fontSize = 13.sp, color = Color(0xFFD32F2F)) }
-                            // ✕: only while crossing is temporarily allowed; ends that permission now.
                             if (expiresAt != null) {
                                 OutlinedButton(
                                     onClick = { probe.revokeCrossingPermission(zone.name) },
@@ -546,15 +524,12 @@ class MapNavigationActivity : ComponentActivity() {
                     }
                 }
 
-                // Always shown, directly above the debug switch.
                 Button(enabled = canSavePosition && pointStoreError == null, onClick = { showSaveDialog = true }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
                     Text(UiText.get(if (canSavePosition) "nav.button.save_position" else "nav.button.save_position_blocked"))
                 }
                 OutlinedButton(onClick = { probe.reload() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.reload_map")) }
-                // At the bottom (owner, 2026-10-19).
                 OutlinedButton(onClick = { probe.clearCustomPoints() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.clear_points")) }
 
-                // Debug mode is switched on by tapping the start screen's header 7 times; this switch only turns it off again.
                 if (showDebug) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
                         Switch(checked = true, onCheckedChange = { if (!it) DebugMode.set(this@MapNavigationActivity, false) })
@@ -566,21 +541,18 @@ class MapNavigationActivity : ComponentActivity() {
                     Button(onClick = { voiceView = true }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.teach_voice")) }
                     OutlinedButton(onClick = { log.clearScreen() }, modifier = Modifier.fillMaxWidth()) { Text(UiText.get("nav.button.clear_log")) }
 
-                    // Every grant, refusal, entry and expiry: an override nobody can inspect is what the thesis objects to.
                     val audit by probe.audit.collectAsState()
                     if (audit.isNotEmpty()) {
                         Text(UiText.get("nav.label.audit"), fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
                         audit.takeLast(8).asReversed().forEach { Text(it, fontSize = 12.sp) }
                     }
 
-                    // Switches the whole app off: no autostart, no service, no camera stream, no microphone.
                     var appDisabled by remember { mutableStateOf(AppDisabled.isDisabled(this@MapNavigationActivity)) }
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
                         Switch(checked = appDisabled, onCheckedChange = {
                             appDisabled = it
                             probe.stop("RoboGuard " + if (it) "disabled" else "enabled")
                             AppDisabled.setDisabled(this@MapNavigationActivity, it)
-                            // Off: close every RoboGuard screen. On: rebuild this one on the service's navigation.
                             if (it) finishAffinity() else recreate()
                         })
                         Spacer(Modifier.width(8.dp))
@@ -593,9 +565,7 @@ class MapNavigationActivity : ComponentActivity() {
 
             Spacer(Modifier.width(16.dp))
 
-            // ---- right: map above log
             Column(Modifier.weight(1f).fillMaxHeight()) {
-                // Preview of the whole map; a tap opens the full-screen map, where points can be set and zoomed.
                 MapCanvas(
                     rendered, pose, places, custom, selected, privateZones, probe.privacyMargin, null,
                     viewState = null,
@@ -616,6 +586,7 @@ class MapNavigationActivity : ComponentActivity() {
     /**
      * Asks for a name and saves the robot's current position under it. Stays open with a message if saving is
      * refused (empty or duplicate name, robot not localized at the moment of saving).
+     * @param onDismiss called when the dialog closes
      */
     @Composable
     private fun SaveLocationDialog(onDismiss: () -> Unit) {
@@ -660,7 +631,11 @@ class MapNavigationActivity : ComponentActivity() {
     /** Which kind of private area the name dialog creates. */
     private enum class AreaKind { CIRCLE, DRAWN }
 
-    /** Asks for the name of a new private area (default "Bereich N"); stays open with a message if it is refused. */
+    /**
+     * Asks for the name of a new private area.
+     * @param kind kind of area
+     * @param onDismiss called when the dialog closes
+     */
     @Composable
     private fun AreaNameDialog(kind: AreaKind, onDismiss: () -> Unit) {
         var name by remember { mutableStateOf(probe.nextAreaName()) }
@@ -693,7 +668,11 @@ class MapNavigationActivity : ComponentActivity() {
         )
     }
 
-    /** One place or location in the lists; the selected one is drawn filled. */
+    /**
+     * One place or location in the lists; the selected one is drawn filled.
+     * @param point place or location
+     * @param isSelected whether it is selected
+     */
     @Composable
     private fun PointButton(point: MapPoint, isSelected: Boolean) {
         val label = point.name
@@ -706,8 +685,6 @@ class MapNavigationActivity : ComponentActivity() {
 
     /**
      * Draws the map with places, points, private areas, the selection and the robot.
-     * Without [viewState] it shows the whole map and a tap calls [onPreviewTap]; with [viewState] taps add points or area
-     * corners and pinch or double tap zooms.
      * @param rendered the rendered map; null while loading
      * @param pose robot position
      * @param places RobotOS places and saved locations
@@ -716,6 +693,9 @@ class MapNavigationActivity : ComponentActivity() {
      * @param privateZones private areas
      * @param privacyMargin margin around private areas, in metres
      * @param drawingVertices corners of the area being drawn; null when not drawing
+     * @param viewState zoom state in full screen, or null for the preview
+     * @param onPreviewTap called on a tap in the preview
+     * @param modifier layout modifier
      */
     @Composable
     private fun MapCanvas(
@@ -740,6 +720,12 @@ class MapNavigationActivity : ComponentActivity() {
         val image = remember(rendered) { rendered.bitmap.asImageBitmap() }
         val labelPaint = remember { android.graphics.Paint().apply { textSize = 26f; isAntiAlias = true } }
 
+        /**
+         * Transform for the current canvas size and zoom.
+         * @param width canvas width
+         * @param height canvas height
+         * @return the transform
+         */
         fun transformFor(width: Float, height: Float): MapTransform {
             val base = fit(rendered, width, height)
             val zoom = viewState?.zoom ?: 1f
@@ -747,7 +733,14 @@ class MapNavigationActivity : ComponentActivity() {
             return MapTransform(rendered, base.scale * zoom, base.offsetX + pan.x, base.offsetY + pan.y)
         }
 
-        /** Changes the zoom by [factor], keeping the map point under [focus] where it is on screen. */
+        /**
+         * Changes the zoom by [factor], keeping the map point under [focus] where it is on screen.
+         * @param state zoom state
+         * @param focus screen position to keep
+         * @param factor zoom factor
+         * @param width canvas width
+         * @param height canvas height
+         */
         fun zoomAround(state: MapViewState, focus: Offset, factor: Float, width: Float, height: Float) {
             val base = fit(rendered, width, height)
             val newZoom = (state.zoom * factor).coerceIn(1f, MAX_ZOOM)
@@ -767,8 +760,6 @@ class MapNavigationActivity : ComponentActivity() {
             Modifier
                 .pointerInput(rendered, viewState) {
                     detectTapGestures(
-                        // Single tap adds a point; double tap zooms in ×2 at that spot, and back to the whole map after MAX_ZOOM.
-                        // MapNavigation decides: a corner while drawing a private area, otherwise a temporary point.
                         onTap = { tap ->
                             transformFor(size.width.toFloat(), size.height.toFloat()).toWorld(tap.x, tap.y)?.let { probe.handleMapTap(it) }
                         },
@@ -779,7 +770,6 @@ class MapNavigationActivity : ComponentActivity() {
                     )
                 }
                 .pointerInput(rendered, viewState) {
-                    // Two fingers: pinch to zoom, drag to move the zoomed map.
                     detectTransformGestures { centroid, panChange, zoomChange, _ ->
                         if (zoomChange != 1f) zoomAround(viewState, centroid, zoomChange, size.width.toFloat(), size.height.toFloat())
                         if (viewState.zoom > 1f) viewState.pan += panChange
@@ -799,6 +789,11 @@ class MapNavigationActivity : ComponentActivity() {
                 filterQuality = FilterQuality.None
             )
 
+            /**
+             * Draws one place marker.
+             * @param point place or location
+             * @param color marker colour
+             */
             fun marker(point: MapPoint, color: Color) {
                 val center = t.toScreen(point.position)
                 drawCircle(color, POINT_RADIUS_PX, center)
@@ -809,10 +804,7 @@ class MapNavigationActivity : ComponentActivity() {
             places.forEach { marker(it, Color(0xFF1565C0)) }
             custom.forEach { marker(it, if (it.persistent) Color(0xFF6A1B9A) else Color(0xFFEF6C00)) }
 
-            // Private areas: filled polygon, plus the band where PrivacyGuard's margin already stops the robot. The band is the
-            // outline stroked with twice the margin and cut to the outside, i.e. exactly the enforced region (the earlier
-            // circle around the corners was metres too big for long drawn areas). Even-odd
-            // filling matches the ray-casting containment test for self-crossing outlines.
+            // Even-odd filling matches the ray-casting containment test.
             privateZones.forEach { zone ->
                 val path = Path().apply {
                     fillType = PathFillType.EvenOdd
@@ -826,7 +818,6 @@ class MapNavigationActivity : ComponentActivity() {
                 drawPath(path, Color(0xFFD50000), style = Stroke(width = 3f))
             }
 
-            // The private area being drawn: filled once it has 3 corners, closing edge dashed, corners as dots.
             drawingVertices?.let { corners ->
                 val screen = corners.map { t.toScreen(it) }
                 if (screen.size >= 3) {
@@ -856,7 +847,6 @@ class MapNavigationActivity : ComponentActivity() {
             }
         }
 
-            // Preview only: a small hint in the corner. The full-screen map has its controls in a bar above it.
             if (viewState == null) {
                 Text(
                     UiText.get("nav.label.map_hint"),
@@ -879,18 +869,32 @@ class MapNavigationActivity : ComponentActivity() {
         }
     }
 
-    /** Converts between screen pixels and world metres for the map drawn centred and scaled to fit. */
+    /**
+     * Converts between screen pixels and world metres for the map drawn centred and scaled to fit.
+     * @property rendered rendered map
+     * @property scale pixels per map pixel
+     * @property offsetX horizontal offset
+     * @property offsetY vertical offset
+     */
     private class MapTransform(val rendered: RenderedMap, val scale: Float, val offsetX: Float, val offsetY: Float) {
-
-        /** Map coordinates to screen pixels. */
+        /**
+         * Map coordinates to screen pixels.
+         * @param p world position
+         * @return the screen position
+         */
         fun toScreen(p: Point2D): Offset {
             val (col, row) = rendered.map.toCell(p)
             val bx = col - rendered.bounds.minCol
-            val by = rendered.bounds.maxRow + 1 - row // bitmap row 0 = top edge of the highest cell row
+            val by = rendered.bounds.maxRow + 1 - row
             return Offset((offsetX + bx * scale).toFloat(), (offsetY + by * scale).toFloat())
         }
 
-        /** World position of a screen pixel, or null if it lies outside the drawn map. */
+        /**
+         * World position of a screen pixel, or null if it lies outside the drawn map.
+         * @param sx screen x
+         * @param sy screen y
+         * @return the world position, or null
+         */
         fun toWorld(sx: Float, sy: Float): Point2D? {
             val bx = (sx - offsetX) / scale
             val by = (sy - offsetY) / scale
@@ -899,7 +903,13 @@ class MapNavigationActivity : ComponentActivity() {
         }
     }
 
-    /** The transform that fits the whole map picture into a [width] x [height] canvas, centred. */
+    /**
+     * The transform that fits the whole map picture into a [width] x [height] canvas, centred.
+     * @param rendered rendered map
+     * @param width canvas width
+     * @param height canvas height
+     * @return the transform
+     */
     private fun fit(rendered: RenderedMap, width: Float, height: Float): MapTransform {
         val bw = rendered.bitmap.width.toFloat()
         val bh = rendered.bitmap.height.toFloat()
@@ -910,14 +920,11 @@ class MapNavigationActivity : ComponentActivity() {
     private companion object {
         const val POINT_RADIUS_PX = 12f
 
-        /** Height of the buttons in the full-screen bar. */
         val FULLSCREEN_BUTTON_HEIGHT = 40.dp
         val FULLSCREEN_BUTTON_PADDING = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
 
-        /** Largest map zoom factor; a double tap at this zoom returns to the whole map. */
         const val MAX_ZOOM = 8f
 
-        /** Radius of the robot's footprint in metres. */
         const val ROBOT_RADIUS_M = 0.205
     }
 }

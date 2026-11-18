@@ -13,7 +13,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
-/** Languages this class can speak. Codes come from the SDK's own [LangParamsEnum]. */
+/**
+ * Languages this class can speak. Codes come from the SDK's own [LangParamsEnum].
+ * @property sdk language entry of the OrionStar SDK
+ */
 enum class TtsLanguage(internal val sdk: LangParamsEnum) {
     ENGLISH(LangParamsEnum.EN_US),
     GERMAN(LangParamsEnum.DE_DE)
@@ -27,7 +30,10 @@ sealed interface TtsFailure {
     /** Empty or whitespace-only text. */
     data object EmptyText : TtsFailure
 
-    /** Longer than [OrionStarTts.MAX_TEXT_LENGTH]; the speech service does not accept it. */
+    /**
+     * Longer than [OrionStarTts.MAX_TEXT_LENGTH]; the speech service does not accept it.
+     * @property length length of the rejected text
+     */
     data class TooLong(val length: Int) : TtsFailure
 
     /** The SDK refuses text that parses as JSON (checked in the jar: `SkillApi.isInvalidTtsText`). */
@@ -46,7 +52,10 @@ interface TtsListener {
     fun onStarted() {}
     /** Called when the sentence was spoken completely. */
     fun onFinished() {}
-    /** Called when the sentence could not be spoken; [failure] says why. */
+    /**
+     * Called when the sentence could not be spoken; [failure] says why.
+     * @param failure reason for the failure
+     */
     fun onFailed(failure: TtsFailure) {}
 }
 
@@ -56,28 +65,28 @@ interface TtsListener {
  * @param context used to connect to the speech service
  */
 class OrionStarTts(private val context: Context) {
-
     private val skillApi = SkillApi()
 
     private val _connected = MutableStateFlow(false)
 
-    /** True once the speech service connection is up; [speak] fails with NotConnected before that. */
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     /**
-     * Connects to the speech service. Call once, e.g. in `onCreate`. Returns immediately;
-     * watch [connected], or pass [onReady], which runs on the SDK thread once connected.
+     * Connects to the speech service; returns immediately.
+     * @param onReady called once the connection is up
      */
     fun connect(onReady: () -> Unit = {}) {
         skillApi.connectApi(context, object : ApiListener {
+            /** Marks the service as connected. */
             override fun handleApiConnected() {
                 _connected.value = true
                 onReady()
             }
 
+            /** Marks the service as disconnected. */
             override fun handleApiDisconnected() { _connected.value = false }
 
-            // Typically: the app is not in the foreground, or lacks the OrionStar permission.
+            /** Marks the service as unavailable. */
             override fun handleApiDisabled() { _connected.value = false }
         })
     }
@@ -89,21 +98,33 @@ class OrionStarTts(private val context: Context) {
         _connected.value = false
     }
 
-    /** Speaks an English sentence. See [speak]. */
+    /**
+     * Speaks an English sentence. See [speak].
+     * @param text sentence to speak
+     * @param listener receives start, end and failure; may be null
+     * @return true if the sentence was handed to the speech service
+     */
     fun speakEnglish(text: String, listener: TtsListener? = null): Boolean =
         speak(text, TtsLanguage.ENGLISH, listener)
 
     /** Speaks a German sentence. See [speak]. */
     /**
-     * Speaks [text] in the language the text file selects (`meta.languages.<current>.speechLanguage`), so switching the
-     * language in `assets/texts/texts.json` also switches the voice.
+     * Speaks [text] in the language set in texts.json.
+     * @param text sentence to speak
+     * @param listener receives start, end and failure; may be null
+     * @return true if the sentence was handed to the speech service
      */
     fun speakConfigured(text: String, listener: TtsListener? = null): Boolean =
         speak(text, if (com.example.robocontrol.text.UiText.speechLanguage.startsWith("en")) TtsLanguage.ENGLISH else TtsLanguage.GERMAN,
             listener, voice = com.example.robocontrol.text.UiText.speechVoice
                 ?: TtsVoices.voiceFor(context, com.example.robocontrol.text.UiText.speechLanguage))
 
-    /** Speaks [text] with the German voice. Kept for the test screens; product sentences use [speakConfigured]. */
+    /**
+     * Speaks [text] with the German voice.
+     * @param text sentence to speak
+     * @param listener receives start, end and failure; may be null
+     * @return true if the sentence was handed to the speech service
+     */
     fun speakGerman(text: String, listener: TtsListener? = null): Boolean =
         speak(text, TtsLanguage.GERMAN, listener)
 
@@ -123,9 +144,7 @@ class OrionStarTts(private val context: Context) {
         }
 
         val params = hashMapOf(TTSParams.SPEECHLANGUAGE to language.sdk.codeName)
-        // The language alone does not change the voice: the speech service keeps the robot-wide speaker (a German WaveNet
-        // voice here, "de-de-wavenet-c") and only told it the text is English (robot log 2026-10-19). The speaker is set per
-        // sentence as well, so the robot-wide setting stays untouched.
+        // The language alone does not change the voice, so the speaker is set per sentence.
         if (!voice.isNullOrBlank()) params[TTSParams.SPEAKERROLE] = voice
         val entity = TTSEntity(text).apply { ttsParams = params }
 
@@ -144,7 +163,12 @@ class OrionStarTts(private val context: Context) {
         suspendCancellableCoroutine { cont ->
             cont.invokeOnCancellation { stop() }
             speak(text, language, object : TtsListener {
+                /** Completes the wait successfully. */
                 override fun onFinished() { if (cont.isActive) cont.resume(null) }
+                /**
+                 * Completes the wait with a failure.
+                 * @param failure reason for the failure
+                 */
                 override fun onFailed(failure: TtsFailure) { if (cont.isActive) cont.resume(failure) }
             })
         }
@@ -164,7 +188,11 @@ class OrionStarTts(private val context: Context) {
         return runCatching { skillApi.getSpokemanListByLanguage(language.sdk.codeName) }.getOrNull()
     }
 
-    /** Checks done here so the caller gets a precise reason instead of the SDK's bare onError. */
+    /**
+     * Checks [text] before it is sent to the SDK.
+     * @param text sentence to check
+     * @return the reason it cannot be spoken, or null if it is valid
+     */
     private fun validate(text: String): TtsFailure? = when {
         !_connected.value -> TtsFailure.NotConnected
         text.isBlank() -> TtsFailure.EmptyText
@@ -173,16 +201,23 @@ class OrionStarTts(private val context: Context) {
         else -> null
     }
 
-    /** Adapts the SDK's [TextListener] to [TtsListener]. */
+    /**
+     * Adapts the SDK's [TextListener] to [TtsListener].
+     * @param listener listener to forward to; may be null
+     * @return the SDK listener
+     */
     private fun textListener(listener: TtsListener?) = object : TextListener() {
+        /** Forwards the start of speech. */
         override fun onStart() { listener?.onStarted() }
+        /** Forwards the end of speech. */
         override fun onComplete() { listener?.onFinished() }
+        /** Forwards an interruption. */
         override fun onStop() { listener?.onFailed(TtsFailure.Interrupted) }
+        /** Forwards an error. */
         override fun onError() { listener?.onFailed(TtsFailure.SpeechService) }
     }
 
     companion object {
-        /** Maximum text length accepted by `SkillApi.playText`. */
         const val MAX_TEXT_LENGTH = 1000
     }
 }

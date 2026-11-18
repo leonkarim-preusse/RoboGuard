@@ -13,17 +13,13 @@ import kotlinx.coroutines.flow.asStateFlow
  * switches it off. Saved in SharedPreferences.
  */
 object DebugMode {
-
     private const val PREFS = "robocontrol_debug_mode"
     private const val KEY = "enabled"
 
-    /** Taps in a row needed to switch debug mode on. */
     const val TAPS_NEEDED = 7
 
-    /** A pause longer than this starts the count again. */
     private const val TAP_GAP_MS = 1_500L
 
-    /** The countdown toast appears from this tap on, so a single accidental tap shows nothing. */
     private const val COUNTDOWN_FROM = 3
 
     private val _enabled = MutableStateFlow(false)
@@ -35,14 +31,20 @@ object DebugMode {
     private var lastTapAt = 0L
     private var toast: Toast? = null
 
-    /** Reads the stored state once (idempotent). Call before showing a screen that depends on it. */
+    /**
+     * Reads the stored state once (idempotent). Call before showing a screen that depends on it.
+     * @param context Android context
+     */
     fun init(context: Context) {
         if (loaded) return
         _enabled.value = prefs(context).getBoolean(KEY, false)
         loaded = true
     }
 
-    /** One tap on a header. Call on the main thread. */
+    /**
+     * One tap on a header. Call on the main thread.
+     * @param context Android context
+     */
     fun tapHeader(context: Context) {
         init(context)
         if (_enabled.value) {
@@ -74,9 +76,12 @@ object DebugMode {
         loaded = true
     }
 
-    /** Shows [text] as a toast, replacing the previous one. */
+    /**
+     * Shows [text] as a toast, replacing the previous one.
+     * @param context Android context
+     * @param text toast text
+     */
     private fun show(context: Context, text: String) {
-        // Replace the previous toast so fast taps do not queue up a row of them.
         toast?.cancel()
         toast = Toast.makeText(context.applicationContext, text, Toast.LENGTH_SHORT).also { it.show() }
     }
@@ -84,6 +89,7 @@ object DebugMode {
     /**
      * The preferences that hold the debug mode.
      * @param context any context
+     * @return the preferences
      */
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }

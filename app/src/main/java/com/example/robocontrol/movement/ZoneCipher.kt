@@ -8,14 +8,21 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/**
- * Encrypts and decrypts stored zone files. [associated] is authenticated but not encrypted: [ZoneRegistry] passes the
- * file name, so a file copied over another map's file fails to decrypt instead of loading the wrong areas.
- */
+/** Encrypts and decrypts stored zone files; [associated] binds a file to its name. */
 interface ZoneCipher {
-    /** Encrypts [plain]; [associated] is authenticated but not stored, so decrypting needs the same bytes. */
+    /**
+     * Encrypts [plain]; [associated] is authenticated but not stored, so decrypting needs the same bytes.
+     * @param plain data to encrypt
+     * @param associated associated data
+     * @return the encrypted bytes
+     */
     fun encrypt(plain: ByteArray, associated: ByteArray): ByteArray
-    /** Decrypts [data]; throws if the data or [associated] do not match. */
+    /**
+     * Decrypts [data]; throws if the data or [associated] do not match.
+     * @param data encrypted bytes
+     * @param associated associated data
+     * @return the decrypted bytes
+     */
     fun decrypt(data: ByteArray, associated: ByteArray): ByteArray
 }
 
@@ -25,16 +32,27 @@ interface ZoneCipher {
  * @param alias Keystore alias of the key
  */
 class KeystoreZoneCipher(private val alias: String = DEFAULT_ALIAS) : ZoneCipher {
-
+    /**
+     * Encrypts with AES-GCM.
+     * @param plain data to encrypt
+     * @param associated associated data
+     * @return header, IV and ciphertext
+     */
     override fun encrypt(plain: ByteArray, associated: ByteArray): ByteArray {
         val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, key()) // the Keystore generates a random IV
+        cipher.init(Cipher.ENCRYPT_MODE, key())
         cipher.updateAAD(associated)
         val iv = cipher.iv
         check(iv.size == IV_BYTES) { "unexpected IV length ${iv.size}" }
         return MAGIC + iv + cipher.doFinal(plain)
     }
 
+    /**
+     * Decrypts with AES-GCM.
+     * @param data encrypted bytes
+     * @param associated associated data
+     * @return the decrypted bytes
+     */
     override fun decrypt(data: ByteArray, associated: ByteArray): ByteArray {
         require(data.size > MAGIC.size + IV_BYTES && data.copyOfRange(0, MAGIC.size).contentEquals(MAGIC)) {
             "not an encrypted zone file"
@@ -46,7 +64,10 @@ class KeystoreZoneCipher(private val alias: String = DEFAULT_ALIAS) : ZoneCipher
         return cipher.doFinal(data, MAGIC.size + IV_BYTES, data.size - MAGIC.size - IV_BYTES)
     }
 
-    /** The AES key from the Android Keystore; created on first use. */
+    /**
+     * The AES key from the Android Keystore; created on first use.
+     * @return the key
+     */
     @Synchronized
     private fun key(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }

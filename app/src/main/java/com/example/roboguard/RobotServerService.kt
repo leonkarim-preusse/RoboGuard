@@ -356,9 +356,7 @@ class RobotServerService : Service() {
                             }
                         }
 
-                        // The "Navigation and Map" screen for the phone app. Same authentication as every other route:
-                        // secureGet/securePost -> requireClientAuth (client id + HMAC over the payload). The server binds
-                        // 0.0.0.0 like all its routes, so these are reachable from the robot's own network and no further.
+                        // The "Navigation and Map" screen for the phone app.
                         secureGet("/nav/state", applicationContext) {
                             call.respondText(navigationStateJson(), ContentType.Application.Json)
                         }

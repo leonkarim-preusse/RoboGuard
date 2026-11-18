@@ -15,7 +15,12 @@ object TtsVoices {
     @Volatile
     private var cache: Map<String, String> = emptyMap()
 
-    /** The speaker for [language] ("en_US"): the list's default for that language, else its first; null if there is none. */
+    /**
+     * Finds the speaker for [language] in the speech service's voice list.
+     * @param context used to query the voice list
+     * @param language language code, e.g. "en_US"
+     * @return the default or first voice for that language, or null
+     */
     fun voiceFor(context: Context, language: String): String? {
         val key = normalise(language)
         cache[key]?.let { return it }
@@ -48,6 +53,10 @@ object TtsVoices {
         return found
     }
 
-    /** "en-US" and "en_us" both become "en_us", so language codes can be compared. */
+    /**
+     * Normalises a language code, e.g. "en-US" to "en_us".
+     * @param code language code
+     * @return the normalised code
+     */
     private fun normalise(code: String) = code.replace('-', '_').lowercase()
 }

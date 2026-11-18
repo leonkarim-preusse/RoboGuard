@@ -29,12 +29,14 @@ import com.example.robocontrol.text.UiText
  * pauses calendar announcements for [CalendarDetectionSettings.POPUP_COOLDOWN_MS].
  */
 class CalendarPromptActivity : ComponentActivity() {
-
     private var choice = CalendarMonitor.PopupChoice.DISMISS
 
+    /**
+     * Sets up the popup.
+     * @param savedInstanceState saved state
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Screen texts come from assets/texts/texts.json (no-op if the service already loaded them).
         UiText.init(applicationContext)
         setFinishOnTouchOutside(false)
         setContent { MaterialTheme { Prompt() } }
@@ -42,12 +44,16 @@ class CalendarPromptActivity : ComponentActivity() {
         window.setLayout((resources.displayMetrics.widthPixels * 0.8).toInt(), WindowManager.LayoutParams.WRAP_CONTENT)
     }
 
+    /** Reports a dismissal if no choice was made. */
     override fun onDestroy() {
         if (isFinishing) CalendarMonitor.popupClosed(choice)
         super.onDestroy()
     }
 
-    /** Remembers what was chosen and closes the popup. */
+    /**
+     * Remembers what was chosen and closes the popup.
+     * @param chosen chosen option
+     */
     private fun close(chosen: CalendarMonitor.PopupChoice) {
         choice = chosen
         finish()
@@ -58,7 +64,6 @@ class CalendarPromptActivity : ComponentActivity() {
     private fun Prompt() {
         val padding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
         val height = 44.dp
-        // The robot asks the question aloud; the popup only needs a short title and the choices.
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(UiText.get("calendar_popup.title"), fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -82,7 +87,10 @@ class CalendarPromptActivity : ComponentActivity() {
         }
     }
 
-    /** A text kept on one line, for the small buttons. */
+    /**
+     * A text kept on one line, for the small buttons.
+     * @param text button text
+     */
     @Composable
     private fun OneLine(text: String) {
         Text(text, fontSize = 15.sp, maxLines = 1, softWrap = false)

@@ -52,9 +52,17 @@ import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
 
-/** Drawing layers of the camera debug view. */
+/**
+ * Drawing layers of the camera debug view.
+ * @property keypoints draw keypoints
+ * @property inliers draw inliers
+ * @property boxes draw boxes
+ * @property pinkMask draw the pink mask
+ * @property pinkBounds draw pink bounds
+ * @property searchArea draw search areas
+ * @property darkenOutside darken outside the search areas
+ */
 private data class CameraLayers(
-    // Owner (2026-09-18): only the bounding box by default; the others cost drawing and detection time and can be switched on.
     val keypoints: Boolean = false,
     val inliers: Boolean = false,
     val boxes: Boolean = true,
@@ -63,12 +71,15 @@ private data class CameraLayers(
     val searchArea: Boolean = false,
     val darkenOutside: Boolean = false
 ) {
-    /** Layers that need drawing data from the detection (keypoint positions, pink mask). */
     val needsDetails: Boolean get() = keypoints || pinkMask
 }
 
 private val REFERENCE_COLORS = listOf(Color(0xFFFFEB3B), Color(0xFF00E5FF), Color(0xFFFF4081), Color(0xFF76FF03), Color(0xFF448AFF), Color(0xFFE040FB))
-/** The colour of a reference image on the view, fixed by its name. */
+/**
+ * The colour of a reference image on the view, fixed by its name.
+ * @param name reference name
+ * @return the colour
+ */
 private fun colorFor(name: String) = REFERENCE_COLORS[Math.floorMod(name.hashCode(), REFERENCE_COLORS.size)]
 private val SEARCH_ORANGE = Color(0xFFFF9100)
 
@@ -92,8 +103,6 @@ fun CalendarCameraScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
     LaunchedEffect(layers.needsDetails) { CalendarMonitor.drawDetailsWanted = layers.needsDetails }
     DisposableEffect(Unit) { onDispose { CalendarMonitor.drawDetailsWanted = false } }
     var showNumbers by rememberSaveable { mutableStateOf(true) }
-    // Live preview ~10 fps from the monitor's latest frame (kept low: every shown frame is converted and drawn on the UI
-    // thread); overlays come from the latest detection pass.
     var frame by remember { mutableStateOf<CameraFrame?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -120,7 +129,6 @@ fun CalendarCameraScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
             Text(UiText.get("camera_view.speak_heading", "sentence" to CalendarMonitor.sentence), fontSize = 13.sp)
             ToggleRow(UiText.get("camera_view.every_detection") to everyDetection,
                 UiText.get("camera_view.two_in_a_row", "seconds" to CalendarMonitor.COOLDOWN_MS / 1000) to !everyDetection) { i -> CalendarMonitor.setAnnounceEveryDetection(i == 0) }
-            // Inlier requirement of the calendar monitor (saved; applies from the next pass).
             Text(UiText.get("camera_view.inliers_required", "required" to minInliers,
                 "confirm" to (minInliers - CalendarDetectionSettings.CONFIRM_INLIER_DROP).coerceAtLeast(CalendarDetectionSettings.MIN_INLIERS_LOWEST)),
                 fontWeight = FontWeight.Bold, fontSize = 14.sp)
@@ -178,7 +186,12 @@ fun CalendarCameraScreen(onBack: () -> Unit, topControls: @Composable () -> Unit
     }
 }
 
-/** Two switches side by side; [onToggle] gets 0 for the left one, 1 for the right one. */
+/**
+ * Two switches side by side; [onToggle] gets 0 for the left one, 1 for the right one.
+ * @param a left label and state
+ * @param b right label and state
+ * @param onToggle receives 0 for left, 1 for right
+ */
 @Composable
 private fun ToggleRow(a: Pair<String, Boolean>, b: Pair<String, Boolean>, onToggle: (Int) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -190,7 +203,12 @@ private fun ToggleRow(a: Pair<String, Boolean>, b: Pair<String, Boolean>, onTogg
     }
 }
 
-/** The camera picture with the layers chosen on the screen (boxes, outlines, keypoints, inliers, pink mask, search areas). */
+/**
+ * The camera picture with the chosen layers.
+ * @param frame camera frame
+ * @param snapshot latest detection data, or null
+ * @param layers layers to draw
+ */
 @Composable
 private fun CameraCanvas(frame: CameraFrame, snapshot: CalendarMonitor.DebugSnapshot?, layers: CameraLayers) {
     val image = frame.preview.asImageBitmap()
@@ -201,6 +219,12 @@ private fun CameraCanvas(frame: CameraFrame, snapshot: CalendarMonitor.DebugSnap
         val dh = image.height * scale
         val left = (size.width - dw) / 2
         val top = (size.height - dh) / 2
+        /**
+         * Maps frame coordinates to the canvas.
+         * @param x frame x
+         * @param y frame y
+         * @return the canvas position
+         */
         fun p(x: Double, y: Double) = Offset(left + x.toFloat() * scale, top + y.toFloat() * scale)
         drawImage(image, srcOffset = IntOffset.Zero, srcSize = IntSize(image.width, image.height),
             dstOffset = IntOffset(left.toInt(), top.toInt()), dstSize = IntSize(dw.toInt(), dh.toInt()))

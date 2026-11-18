@@ -76,23 +76,22 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 
-/**
- * Test screen for [MovementProbe] ("RG Movement Test"): map with the robot, places and points, drive controls, private
- * areas and the no-go line test. Must be started from the robot's launcher to get SDK control.
- */
+/** Test screen for [MovementProbe]. */
 class MovementProbeActivity : ComponentActivity() {
-
     private lateinit var log: ProbeLog
     private lateinit var probe: MovementProbe
     private var started = false
 
+    /**
+     * Sets up the movement test screen.
+     * @param savedInstanceState saved state
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         log = ProbeLog(applicationContext)
         probe = MovementProbe(applicationContext, log, lifecycleScope)
         log.i("probe", "log file: ${log.filePath}")
 
-        // Plain MaterialTheme: robocontrol must not depend on roboguard's theme.
         setContent {
             MaterialTheme {
                 ProbeScreen()
@@ -106,6 +105,7 @@ class MovementProbeActivity : ComponentActivity() {
         super.onStop()
     }
 
+    /** Stops a running drive. */
     override fun onDestroy() {
         probe.shutdown()
         super.onDestroy()
@@ -163,9 +163,7 @@ class MovementProbeActivity : ComponentActivity() {
             )
         }
 
-        // Saving the current position is only possible while the robot knows where it is.
         val canSavePosition = localized == true && pose != null && mapName != null
-        // Close the dialog if localization is lost while it is open.
         LaunchedEffect(canSavePosition) {
             if (!canSavePosition) showSaveDialog = false
         }
@@ -173,8 +171,6 @@ class MovementProbeActivity : ComponentActivity() {
             SaveLocationDialog(onDismiss = { showSaveDialog = false })
         }
 
-        // The map is read from /sdcard/robot/map (READ_EXTERNAL_STORAGE) and no-go lines are written there
-        // (WRITE_EXTERNAL_STORAGE); both are runtime permissions.
         val storagePermissions = arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
         val requestStorage = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
             log.i("probe", "storage permissions: $granted")
@@ -195,13 +191,10 @@ class MovementProbeActivity : ComponentActivity() {
 
         val drawingVertices by probe.drawingVertices.collectAsState()
         var mapFullscreen by remember { mutableStateOf(false) }
-        // Zoom/pan of the full-screen map; starts at the whole map again whenever a new map is loaded.
         val mapView = remember(rendered) { MapViewState() }
 
         if (mapFullscreen) {
-            // Full screen: a control bar ABOVE the map, so nothing covers the map itself.
             Column(Modifier.fillMaxSize().padding(8.dp)) {
-                // STOP and Exit come first so they are always on screen; the rest scrolls sideways if it does not fit.
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically,
@@ -263,7 +256,6 @@ class MovementProbeActivity : ComponentActivity() {
         }
 
         Row(Modifier.fillMaxSize().padding(12.dp)) {
-            // ---- left: controls, status, points
             Column(
                 modifier = Modifier.width(340.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -364,9 +356,7 @@ class MovementProbeActivity : ComponentActivity() {
 
             Spacer(Modifier.width(16.dp))
 
-            // ---- right: map above log
             Column(Modifier.weight(1f).fillMaxHeight()) {
-                // Preview of the whole map; a tap opens the full-screen map, where points can be set and zoomed.
                 MapCanvas(
                     rendered, pose, places, custom, selected, pgm, lineCandidate, privateZones, probe.privacyMargin, null,
                     viewState = null,
@@ -384,6 +374,7 @@ class MovementProbeActivity : ComponentActivity() {
     /**
      * Asks for a name and saves the robot's current position under it. Stays open with a message if saving is
      * refused (empty or duplicate name, robot not localized at the moment of saving).
+     * @param onDismiss called when the dialog closes
      */
     @Composable
     private fun SaveLocationDialog(onDismiss: () -> Unit) {
@@ -426,8 +417,12 @@ class MovementProbeActivity : ComponentActivity() {
     }
 
     /**
-     * Asks before an action that changes the robot, runs it on confirm and shows its result in place,
-     * so the tester sees whether it worked before closing.
+     * Asks before an action that changes the robot and shows its result.
+     * @param title dialog title
+     * @param text question
+     * @param confirmLabel confirm button text
+     * @param onConfirm action, returns the result text
+     * @param onDismiss called when the dialog closes
      */
     @Composable
     private fun ConfirmDialog(
@@ -468,7 +463,11 @@ class MovementProbeActivity : ComponentActivity() {
         )
     }
 
-    /** One place or point in the lists, with its coordinates. */
+    /**
+     * One place or point in the lists, with its coordinates.
+     * @param point place or point
+     * @param isSelected whether it is selected
+     */
     @Composable
     private fun PointButton(point: MapPoint, isSelected: Boolean) {
         val label = "${point.name}  (%.2f, %.2f)".format(point.position.x, point.position.y)
@@ -480,8 +479,20 @@ class MovementProbeActivity : ComponentActivity() {
     }
 
     /**
-     * Draws the map with places, points, private areas, the selection and the robot. Without [viewState] it shows the
-     * whole map and a tap calls [onPreviewTap]; with [viewState] taps add points or area corners and pinch or double tap zooms.
+     * Draws the map with places, points, private areas, the selection and the robot.
+     * @param rendered rendered map, or null
+     * @param pose robot pose, or null
+     * @param places RobotOS places and saved locations
+     * @param custom temporary points
+     * @param selected selected point, or null
+     * @param pgm map image with no-go lines, or null
+     * @param lineCandidate previewed no-go line, or null
+     * @param privateZones private areas
+     * @param privacyMargin margin in metres
+     * @param drawingVertices corners of the area being drawn, or null
+     * @param viewState zoom state in full screen, or null
+     * @param onPreviewTap called on a tap in the preview
+     * @param modifier layout modifier
      */
     @Composable
     private fun MapCanvas(
@@ -509,6 +520,12 @@ class MovementProbeActivity : ComponentActivity() {
         val noGoPixels = remember(pgm) { pgm?.noGoPixels().orEmpty() }
         val labelPaint = remember { android.graphics.Paint().apply { textSize = 26f; isAntiAlias = true } }
 
+        /**
+         * Transform for the current canvas size and zoom.
+         * @param width canvas width
+         * @param height canvas height
+         * @return the transform
+         */
         fun transformFor(width: Float, height: Float): MapTransform {
             val base = fit(rendered, width, height)
             val zoom = viewState?.zoom ?: 1f
@@ -516,7 +533,14 @@ class MovementProbeActivity : ComponentActivity() {
             return MapTransform(rendered, base.scale * zoom, base.offsetX + pan.x, base.offsetY + pan.y)
         }
 
-        /** Changes the zoom by [factor], keeping the map point under [focus] where it is on screen. */
+        /**
+         * Changes the zoom by [factor], keeping the map point under [focus] where it is on screen.
+         * @param state zoom state
+         * @param focus screen position to keep
+         * @param factor zoom factor
+         * @param width canvas width
+         * @param height canvas height
+         */
         fun zoomAround(state: MapViewState, focus: Offset, factor: Float, width: Float, height: Float) {
             val base = fit(rendered, width, height)
             val newZoom = (state.zoom * factor).coerceIn(1f, MAX_ZOOM)
@@ -536,8 +560,6 @@ class MovementProbeActivity : ComponentActivity() {
             Modifier
                 .pointerInput(rendered, viewState) {
                     detectTapGestures(
-                        // Single tap adds a point; double tap zooms in ×2 at that spot, and back to the whole map after MAX_ZOOM.
-                        // MovementProbe decides: a corner while drawing a private area, otherwise a temporary point.
                         onTap = { tap ->
                             transformFor(size.width.toFloat(), size.height.toFloat()).toWorld(tap.x, tap.y)?.let { probe.handleMapTap(it) }
                         },
@@ -548,7 +570,6 @@ class MovementProbeActivity : ComponentActivity() {
                     )
                 }
                 .pointerInput(rendered, viewState) {
-                    // Two fingers: pinch to zoom, drag to move the zoomed map.
                     detectTransformGestures { centroid, panChange, zoomChange, _ ->
                         if (zoomChange != 1f) zoomAround(viewState, centroid, zoomChange, size.width.toFloat(), size.height.toFloat())
                         if (viewState.zoom > 1f) viewState.pan += panChange
@@ -568,6 +589,11 @@ class MovementProbeActivity : ComponentActivity() {
                 filterQuality = FilterQuality.None
             )
 
+            /**
+             * Draws one place marker.
+             * @param point place or point
+             * @param color marker colour
+             */
             fun marker(point: MapPoint, color: Color) {
                 val center = t.toScreen(point.position)
                 drawCircle(color, POINT_RADIUS_PX, center)
@@ -578,8 +604,6 @@ class MovementProbeActivity : ComponentActivity() {
             places.forEach { marker(it, Color(0xFF1565C0)) }
             custom.forEach { marker(it, if (it.persistent) Color(0xFF6A1B9A) else Color(0xFFEF6C00)) }
 
-            // Private areas: filled polygon, plus the band where PrivacyGuard's margin already stops the robot (outline stroked
-            // with twice the margin, cut to the outside = exactly the enforced region; same as MapNavigationActivity).
             privateZones.forEach { zone ->
                 val path = Path().apply {
                     fillType = androidx.compose.ui.graphics.PathFillType.EvenOdd
@@ -597,7 +621,6 @@ class MovementProbeActivity : ComponentActivity() {
                 drawPath(path, Color(0xFFD50000), style = Stroke(width = 3f))
             }
 
-            // The private area being drawn: filled once it has 3 corners, closing edge dashed, corners as dots.
             drawingVertices?.let { corners ->
                 val screen = corners.map { t.toScreen(it) }
                 if (screen.size >= 3) {
@@ -617,7 +640,6 @@ class MovementProbeActivity : ComponentActivity() {
                 screen.forEach { drawCircle(Color(0xFFD50000), 10f, it) }
             }
 
-            // No-go lines from the map tool's image (blue), placed via their world coordinates.
             pgm?.let { g ->
                 val cell = (g.resolution / rendered.map.resolution * t.scale).toFloat().coerceAtLeast(2f)
                 noGoPixels.forEach { (px, py) ->
@@ -625,7 +647,6 @@ class MovementProbeActivity : ComponentActivity() {
                     drawRect(Color(0xFF1E88E5), topLeft = Offset(c.x - cell / 2, c.y - cell / 2), size = Size(cell, cell))
                 }
             }
-            // The previewed, not yet written line (red).
             lineCandidate?.let { (from, to) ->
                 drawLine(Color(0xFFD50000), t.toScreen(from), t.toScreen(to), strokeWidth = 8f)
             }
@@ -640,7 +661,6 @@ class MovementProbeActivity : ComponentActivity() {
             }
         }
 
-            // Preview only: a small hint in the corner. The full-screen map has its controls in a bar above it.
             if (viewState == null) {
                 Text(
                     "Tap to enlarge",
@@ -663,18 +683,32 @@ class MovementProbeActivity : ComponentActivity() {
         }
     }
 
-    /** Converts between screen pixels and world metres for the map drawn centred and scaled to fit. */
+    /**
+     * Converts between screen pixels and world metres for the map drawn centred and scaled to fit.
+     * @property rendered rendered map
+     * @property scale pixels per map pixel
+     * @property offsetX horizontal offset
+     * @property offsetY vertical offset
+     */
     private class MapTransform(val rendered: RenderedMap, val scale: Float, val offsetX: Float, val offsetY: Float) {
-
-        /** Map coordinates to screen pixels. */
+        /**
+         * Map coordinates to screen pixels.
+         * @param p world position
+         * @return the screen position
+         */
         fun toScreen(p: Point2D): Offset {
             val (col, row) = rendered.map.toCell(p)
             val bx = col - rendered.bounds.minCol
-            val by = rendered.bounds.maxRow + 1 - row // bitmap row 0 = top edge of the highest cell row
+            val by = rendered.bounds.maxRow + 1 - row
             return Offset((offsetX + bx * scale).toFloat(), (offsetY + by * scale).toFloat())
         }
 
-        /** World position of a screen pixel, or null if it lies outside the drawn map. */
+        /**
+         * World position of a screen pixel, or null if it lies outside the drawn map.
+         * @param sx screen x
+         * @param sy screen y
+         * @return the world position, or null
+         */
         fun toWorld(sx: Float, sy: Float): Point2D? {
             val bx = (sx - offsetX) / scale
             val by = (sy - offsetY) / scale
@@ -683,7 +717,13 @@ class MovementProbeActivity : ComponentActivity() {
         }
     }
 
-    /** The transform that fits the whole map picture into a [width] x [height] canvas, centred. */
+    /**
+     * The transform that fits the whole map picture into a [width] x [height] canvas, centred.
+     * @param rendered rendered map
+     * @param width canvas width
+     * @param height canvas height
+     * @return the transform
+     */
     private fun fit(rendered: RenderedMap, width: Float, height: Float): MapTransform {
         val bw = rendered.bitmap.width.toFloat()
         val bh = rendered.bitmap.height.toFloat()
@@ -694,10 +734,8 @@ class MovementProbeActivity : ComponentActivity() {
     private companion object {
         const val POINT_RADIUS_PX = 12f
 
-        /** Largest map zoom factor; a double tap at this zoom returns to the whole map. */
         const val MAX_ZOOM = 8f
 
-        /** Radius of the robot's footprint in metres. */
         const val ROBOT_RADIUS_M = 0.205
     }
 }

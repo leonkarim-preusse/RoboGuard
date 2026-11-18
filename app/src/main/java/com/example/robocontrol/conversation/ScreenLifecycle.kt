@@ -20,7 +20,9 @@ fun WhileVisible(onStart: () -> Unit, onStop: () -> Unit) {
     val stop by rememberUpdatedState(onStop)
     DisposableEffect(owner) {
         var started = false
+        /** Calls onStart once. */
         fun begin() { if (!started) { started = true; start() } }
+        /** Calls onStop once. */
         fun end() { if (started) { started = false; stop() } }
         val observer = LifecycleEventObserver { _, event ->
             when (event) {

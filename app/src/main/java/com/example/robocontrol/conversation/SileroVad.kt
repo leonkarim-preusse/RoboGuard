@@ -8,14 +8,11 @@ import java.nio.FloatBuffer
 import java.nio.LongBuffer
 
 /**
- * Speech probability per 32 ms chunk with the Silero VAD model (v4, `assets/silero/silero_vad.onnx`), run locally with
- * ONNX Runtime. Keeps a recurrent state across chunks; [reset] clears it. Not thread-safe; call [close] when done.
+ * Speech probability per 32 ms chunk with the local Silero VAD model. Not thread-safe; call [close] when done.
  * @param context used to load the model from the assets
  * @param sampleRate sample rate in Hz
  */
 class SileroVad(context: Context, val sampleRate: Int = 16_000) : AutoCloseable {
-
-    /** Samples per call to [probability]. */
     val chunkSize = CHUNK_16K
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
@@ -36,7 +33,11 @@ class SileroVad(context: Context, val sampleRate: Int = 16_000) : AutoCloseable 
         session = env.createSession(model, options)
     }
 
-    /** Speech probability (0…1) of [samples] (16-bit PCM, exactly [chunkSize] samples). Updates the recurrent state. */
+    /**
+     * Speech probability (0…1) of [samples] (16-bit PCM, exactly [chunkSize] samples). Updates the recurrent state.
+     * @param samples 16-bit PCM chunk
+     * @return the speech probability
+     */
     fun probability(samples: ShortArray): Float {
         require(samples.size == chunkSize)
         for (i in 0 until chunkSize) input[i] = samples[i] / 32768f
@@ -65,6 +66,7 @@ class SileroVad(context: Context, val sampleRate: Int = 16_000) : AutoCloseable 
         c.fill(0f)
     }
 
+    /** Closes the model session. */
     override fun close() {
         reset()
         input.fill(0f)
@@ -72,7 +74,11 @@ class SileroVad(context: Context, val sampleRate: Int = 16_000) : AutoCloseable 
         options.close()
     }
 
-    /** Copies the model's recurrent state output into [target] for the next chunk. */
+    /**
+     * Copies the model's recurrent state output into [target] for the next chunk.
+     * @param value state tensor returned by the model
+     * @param target receives the state
+     */
     private fun copyState(value: Any, target: FloatArray) {
         @Suppress("UNCHECKED_CAST")
         val state = value as Array<Array<FloatArray>>

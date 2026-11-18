@@ -7,11 +7,8 @@ import kotlinx.coroutines.flow.StateFlow
  * on the robot and by [FakeRobotBridge] for tests.
  */
 interface RobotBridge {
-
-    /** Live pose stream. Null until the robot reports its first pose. */
     val pose: StateFlow<RobotPose?>
 
-    /** True once the SDK's connection callback has fired. */
     val connected: StateFlow<Boolean>
 
     /** Opens the connection to the robot's SDK; [connected] turns true once it is up. */
@@ -22,45 +19,80 @@ interface RobotBridge {
     /**
      * Whether the robot knows where it is on the current map.
      * Navigation fails with ERROR_NOT_ESTIMATE if this is false.
+     * @param callback receives the answer
      */
     fun isLocalized(callback: (Boolean) -> Unit)
 
-    /** Seed the robot's position when it is not localized. */
+    /**
+     * Seed the robot's position when it is not localized.
+     * @param x x in metres
+     * @param y y in metres
+     * @param theta heading in radians
+     * @param callback receives true on success
+     */
     fun setPoseEstimate(x: Double, y: Double, theta: Double, callback: (Boolean) -> Unit)
 
-    /** Asks for the name of the map RobotOS currently uses; null if it cannot be read. */
+    /**
+     * Asks for the name of the map RobotOS currently uses; null if it cannot be read.
+     * @param callback receives the name, or null
+     */
     fun currentMapName(callback: (String?) -> Unit)
     /**
      * Switches RobotOS to another map. The robot has to be localised again afterwards.
+     * @param mapName map name
      * @param callback true if RobotOS accepted the switch.
      */
     fun switchMap(mapName: String, callback: (Boolean) -> Unit)
 
-    /** Named single points stored by RobotOS against the active map. */
+    /**
+     * Named single points stored by RobotOS against the active map.
+     * @param callback receives the names
+     */
     fun listPlaces(callback: (List<String>) -> Unit)
-    /** Saves the robot's current position as a RobotOS place on the active map. */
+    /**
+     * Saves the robot's current position as a RobotOS place on the active map.
+     * @param placeName name of the place
+     * @param callback receives true on success
+     */
     fun saveCurrentPositionAs(placeName: String, callback: (Boolean) -> Unit)
-    /** Removes a RobotOS place. May not be supported by the SDK (removeLocation is a no-op), then reports false. */
+    /**
+     * Removes a RobotOS place. May not be supported by the SDK (removeLocation is a no-op), then reports false.
+     * @param placeName name of the place
+     * @param callback receives true on success
+     */
     fun removePlace(placeName: String, callback: (Boolean) -> Unit)
-    /** Looks up the coordinates of a RobotOS place; null if it does not exist. */
+    /**
+     * Looks up the coordinates of a RobotOS place; null if it does not exist.
+     * @param placeName name of the place
+     * @param callback receives the position, or null
+     */
     fun locationOf(placeName: String, callback: (Point2D?) -> Unit)
 
-    /** Starts a drive to a RobotOS place by its name. Progress and outcome arrive at [listener]. */
+    /**
+     * Starts a drive to a RobotOS place by its name. Progress and outcome arrive at [listener].
+     * @param placeName name of the place
+     * @param listener receives progress and outcome
+     */
     fun navigateTo(placeName: String, listener: NavigationListener)
-    /** Starts a drive to map coordinates. Progress and outcome arrive at [listener]. */
+    /**
+     * Starts a drive to map coordinates. Progress and outcome arrive at [listener].
+     * @param target target position
+     * @param listener receives progress and outcome
+     */
     fun navigateTo(target: Point2D, listener: NavigationListener)
 
     /** Stops a running navigation (the SDK's `stopNavigation`; `stopMove` does not stop navigation). */
     fun stopNavigation()
 
     /**
-     * Turns on the spot by [angleRad] (positive = counter-clockwise, i.e. increasing theta), e.g. to face away from a
-     * private area after a stop. No forward or backward motion. Implementations must stop this in [stopNavigation] too.
+     * Turns on the spot by [angleRad].
+     * @param angleRad angle in radians, positive = counter-clockwise
+     * @param callback receives true on success
      */
     fun turnInPlace(angleRad: Double, callback: (Boolean) -> Unit)
 }
 
-/** Progress reported while navigating. Mirrors the RobotOS status codes we care about. */
+/** Progress reported while navigating. Mirrors the relevant RobotOS status codes. */
 sealed interface NavEvent {
     /** The robot has started to move towards the target. */
     data object Started : NavEvent
@@ -72,7 +104,11 @@ sealed interface NavEvent {
     data object OutsideMap : NavEvent
     /** The robot waits because another robot blocks the way. */
     data object WaitingForOtherRobot : NavEvent
-    /** Any other status code of the SDK, passed through unchanged. */
+    /**
+     * Any other status code of the SDK, passed through unchanged.
+     * @property statusCode status code
+     * @property data status data
+     */
     data class Other(val statusCode: Int, val data: String?) : NavEvent
 }
 
@@ -89,15 +125,25 @@ sealed interface NavFailure {
     /** The drive took longer than the allowed time. */
     data object TimedOut : NavFailure
 
-    /** Refused by [PrivacyGuard] before any motion happened. */
+    /**
+     * Refused by [PrivacyGuard] before any motion happened.
+     * @property zone zone
+     */
     data class BlockedByPrivacy(val zone: Zone) : NavFailure
 
-    /** Aborted mid-route because the robot entered a private zone. */
+    /**
+     * Aborted mid-route because the robot entered a private zone.
+     * @property zone zone
+     */
     data class AbortedOnPrivateZoneEntry(val zone: Zone) : NavFailure
 
     /** The drive was stopped on purpose (STOP button, a new drive, or a privacy stop). */
     data object CancelledByCaller : NavFailure
-    /** An SDK error code that has no own type here. */
+    /**
+     * An SDK error code that has no own type here.
+     * @property code error code
+     * @property message error text
+     */
     data class Sdk(val code: Int, val message: String?) : NavFailure
 }
 
@@ -105,10 +151,16 @@ sealed interface NavFailure {
 interface NavigationListener {
     /** Called once the robot starts to move. */
     fun onStarted() {}
-    /** Called for every status change during the drive. */
+    /**
+     * Called for every status change during the drive.
+     * @param event progress event
+     */
     fun onProgress(event: NavEvent) {}
     /** Called when the robot reached the target. */
     fun onArrived() {}
-    /** Called when the drive ended without reaching the target. */
+    /**
+     * Called when the drive ended without reaching the target.
+     * @param failure reason
+     */
     fun onFailed(failure: NavFailure) {}
 }

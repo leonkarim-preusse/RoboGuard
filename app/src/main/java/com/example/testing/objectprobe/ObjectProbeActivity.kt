@@ -77,13 +77,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.max
 import kotlin.math.min
 
-/**
- * Test screen for ORB object detection ("RG Object Test"). Shows the camera stream and runs [ORB] on the latest
- * frame against the reference images, drawing detected outlines, boxes, keypoints and pink areas. Frames are kept in
- * memory only.
- */
+/** Test screen for ORB object detection on the camera stream. */
 class ObjectProbeActivity : ComponentActivity() {
-
     private lateinit var log: ProbeLog
     private val camera = CameraStream()
     private var orb: ORB? = null
@@ -91,10 +86,6 @@ class ObjectProbeActivity : ComponentActivity() {
     private val frame = MutableStateFlow<CameraFrame?>(null)
     private val matches = MutableStateFlow<List<ObjectMatch>>(emptyList())
 
-    /**
-     * Boxes on screen: the detections of the latest pass (full frame, merged with the latest tile pass). They stay drawn until
-     * the next pass has been computed; a pass without detection removes them.
-     */
     private val boxes = MutableStateFlow<List<ObjectMatch>>(emptyList())
     private val status = MutableStateFlow("loading references…")
     private val running = MutableStateFlow(false)
@@ -102,16 +93,12 @@ class ObjectProbeActivity : ComponentActivity() {
     private val stats = MutableStateFlow("")
     private val brightness = MutableStateFlow("")
     private val contrastBoost = MutableStateFlow(false)
-    /** ORB settings used by the test; start values from [CalendarDetectionSettings]. */
     private val orbSettings = MutableStateFlow(CalendarDetectionSettings.orb)
 
-    /** B: additionally search enlarged, overlapping tiles about once per second (for small, distant objects). */
     private val tilesOn = MutableStateFlow(true)
 
-    /** E: a box appears only if the object was detected in enough of the last passes (CalendarDetectionSettings, now 3 of 4). */
     private val consistencyOn = MutableStateFlow(true)
 
-    /** If true, ORB searches only in areas around pink marker pixels. */
     private val markerOn = MutableStateFlow(true)
     private val markerMargin = MutableStateFlow(CalendarDetectionSettings.MARKER_MARGIN_PX)
     private val markerSaturation = MutableStateFlow(com.example.robocontrol.vision.DetectionSettings.pink.minSaturation)
@@ -120,27 +107,25 @@ class ObjectProbeActivity : ComponentActivity() {
     private val markerWhiteInside = MutableStateFlow(com.example.robocontrol.vision.DetectionSettings.pink.requireWhiteInside)
     private val markerRegions = MutableStateFlow<List<MarkerRegion>>(emptyList())
 
-    /** Green mask of the pink pixels found in the latest pink pass (frame size), or null. */
     private val markerOverlay = MutableStateFlow<Bitmap?>(null)
 
-    /** Keypoints of the latest detection pass (frame coordinates), drawn as small dots. */
     private val featurePoints = MutableStateFlow<List<ImagePoint>>(emptyList())
-    /** Drawing layers shown on the preview. */
     private val layers = MutableStateFlow(Layers())
     private val marker = ColorMarker()
 
-    /** Detection thresholds (good matches / inliers); relaxed values are meant to be combined with [consistencyOn]. */
     private val thresholds = MutableStateFlow(CalendarDetectionSettings.MIN_GOOD_MATCHES to CalendarDetectionSettings.MIN_INLIERS)
 
-    /** True while a region of the preview is being selected as a new reference. */
     private val selecting = MutableStateFlow(false)
     private val selection = MutableStateFlow<android.graphics.Rect?>(null)
 
-    /** Folder for references captured from the camera. */
     private val captureDir get() = java.io.File(filesDir, "robocontrol/orb_refs")
     private val references = MutableStateFlow<List<String>>(emptyList())
 
-    /** Changes ORB detector settings (re-extracts the references off the main thread) and logs the new reference keypoints. */
+    /**
+     * Changes the ORB settings and re-extracts the references off the main thread.
+     * @param label setting name for the log
+     * @param change applies the change
+     */
     private fun changeOrb(label: String, change: (com.example.robocontrol.vision.OrbConfig) -> com.example.robocontrol.vision.OrbConfig) {
         val o = orb ?: return
         val next = change(orbSettings.value)
@@ -167,7 +152,6 @@ class ObjectProbeActivity : ComponentActivity() {
                 log.i(TAG, "selected region (${gray.width}×${gray.height}) has too few features for a reference")
                 return@launch
             }
-            // Saved as a grayscale PNG in app-private storage (only the selected region, e.g. just the calendar).
             val saved = runCatching {
                 captureDir.mkdirs()
                 val file = java.io.File(captureDir, "$CAMERA_REFERENCE.png")
@@ -181,7 +165,12 @@ class ObjectProbeActivity : ComponentActivity() {
         }
     }
 
-    /** Cuts rectangle [r] (clamped to the image) out of [g]. */
+    /**
+     * Cuts rectangle [r] (clamped to the image) out of [g].
+     * @param g gray image
+     * @param r rectangle
+     * @return the cut-out image
+     */
     private fun cropGray(g: com.example.robocontrol.vision.GrayImage, r: android.graphics.Rect): com.example.robocontrol.vision.GrayImage {
         val x0 = r.left.coerceIn(0, g.width - 1); val y0 = r.top.coerceIn(0, g.height - 1)
         val w = (r.right.coerceIn(x0 + 1, g.width) - x0); val h = (r.bottom.coerceIn(y0 + 1, g.height) - y0)
@@ -190,13 +179,20 @@ class ObjectProbeActivity : ComponentActivity() {
         return com.example.robocontrol.vision.GrayImage(w, h, out)
     }
 
-    /** Turns a gray image into a bitmap for the screen. */
+    /**
+     * Turns a gray image into a bitmap for the screen.
+     * @param g gray image
+     * @return the bitmap
+     */
     private fun grayToBitmap(g: com.example.robocontrol.vision.GrayImage): Bitmap {
         val px = IntArray(g.width * g.height) { val v = g.pixels[it].toInt() and 0xFF; (0xFF shl 24) or (v shl 16) or (v shl 8) or v }
         return Bitmap.createBitmap(px, g.width, g.height, Bitmap.Config.ARGB_8888)
     }
 
-    /** Adds references captured on earlier runs (files in [captureDir]). */
+    /**
+     * Adds references captured on earlier runs (files in [captureDir]).
+     * @param o detector to add to
+     */
     private fun loadSavedCaptures(o: ORB) {
         captureDir.listFiles { f -> f.name.endsWith(".png") }?.forEach { file ->
             val bmp = android.graphics.BitmapFactory.decodeFile(file.path) ?: return@forEach
@@ -207,6 +203,10 @@ class ObjectProbeActivity : ComponentActivity() {
 
     private var cameraJob: Job? = null
 
+    /**
+     * Sets up the object test screen.
+     * @param savedInstanceState saved state
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         log = ProbeLog(applicationContext)
@@ -236,11 +236,13 @@ class ObjectProbeActivity : ComponentActivity() {
         setContent { MaterialTheme { Screen() } }
     }
 
+    /** Stops the camera when the screen is hidden. */
     override fun onStop() {
         stopCamera("screen left")
         super.onStop()
     }
 
+    /** Releases the detector. */
     override fun onDestroy() {
         orb?.release()
         super.onDestroy()
@@ -256,7 +258,6 @@ class ObjectProbeActivity : ComponentActivity() {
             return
         }
         running.value = true
-        // The background calendar monitor streams the camera too; one SurfaceShare consumer at a time.
         CalendarMonitor.setProbeUsingCamera(true)
         cameraJob = lifecycleScope.launch(Dispatchers.Default) {
             RobotApiConnection.connect(applicationContext)
@@ -280,13 +281,15 @@ class ObjectProbeActivity : ComponentActivity() {
                 CalendarMonitor.setProbeUsingCamera(false)
                 return@launch
             }
-            // Preview and detection run separately: the preview must not wait for ORB.
             launch { previewLoop() }
             detectLoop()
         }
     }
 
-    /** Stops both loops and closes the camera stream. */
+    /**
+     * Stops both loops and closes the camera stream.
+     * @param reason reason for the log
+     */
     private fun stopCamera(reason: String) {
         val job = cameraJob ?: return
         job.cancel()
@@ -340,7 +343,7 @@ class ObjectProbeActivity : ComponentActivity() {
         var lastSummary = SystemClock.elapsedRealtime()
         var camFramesAtSummary = camera.framesReceived
         var lastTs = 0L
-        val history = HashMap<String, ArrayDeque<Boolean>>()         // class → detected in the last 3 passes
+        val history = HashMap<String, ArrayDeque<Boolean>>()
         var lastTilesAt = 0L
         var lastTileResult: List<ObjectMatch> = emptyList()
         var tilePasses = 0
@@ -368,7 +371,6 @@ class ObjectProbeActivity : ComponentActivity() {
                 }.also { featurePoints.value = o.lastKeypointPositions }
             }
             val ms = SystemClock.elapsedRealtime() - t0
-            // B: tiles about once per second; per object the better of full frame and tiles counts.
             if (!pinkMode && tilesOn.value && t0 - lastTilesAt >= TILE_INTERVAL_MS) {
                 lastTilesAt = t0
                 val tStart = SystemClock.elapsedRealtime()
@@ -381,7 +383,6 @@ class ObjectProbeActivity : ComponentActivity() {
                 }
             }
             if (pinkMode || !tilesOn.value) lastTileResult = emptyList()
-            // The latest tile result counts until the next tile pass replaces it (tiles run only every TILE_INTERVAL_MS).
             if (lastTileResult.isNotEmpty()) {
                 val byName = lastTileResult.associateBy { it.className }
                 result = result.map { m -> byName[m.className]?.takeIf { better(it, m) } ?: m }
@@ -390,14 +391,12 @@ class ObjectProbeActivity : ComponentActivity() {
             sumMs += ms
             matches.value = result
             val nowMs = SystemClock.elapsedRealtime()
-            // E: an object counts as present if detected in ≥ CONSISTENCY_NEEDED of the last CONSISTENCY_WINDOW passes (when enabled).
             val confirmed = result.associate { m ->
                 val h = history.getOrPut(m.className) { ArrayDeque() }
                 h.addLast(m.detected)
                 while (h.size > CalendarDetectionSettings.CONSISTENCY_WINDOW) h.removeFirst()
                 m.className to if (consistencyOn.value) h.count { it } >= CalendarDetectionSettings.CONSISTENCY_NEEDED else m.detected
             }
-            // Boxes = exactly what this pass computed (owner): a box stays on screen until the next pass, which may remove it.
             boxes.value = result.filter { it.detected && confirmed[it.className] == true }
             val perRef = result.joinToString {
                 "${it.className}: good ${it.goodMatches}, inliers ${it.inliers}" +
@@ -436,7 +435,11 @@ class ObjectProbeActivity : ComponentActivity() {
     @Volatile
     private var markerStats = ""
 
-    /** "on" / "off" for the log. */
+    /**
+     * "on" / "off" for the log.
+     * @param b value
+     * @return the text
+     */
     private fun onOff(b: Boolean) = if (b) "on" else "off"
 
     /**
@@ -533,7 +536,6 @@ class ObjectProbeActivity : ComponentActivity() {
                 Choice(listOf(false, true), settings.gridDistribution, { if (it) "On" else "Off" }) { v -> changeOrb("grid") { it.copy(gridDistribution = v) } }
                 Text("Thresholds (good matches / inliers)", fontSize = 13.sp)
                 Choice(listOf(15 to 12, 10 to 8, 8 to 6), thr, { "${it.first}/${it.second}" }) { v -> thresholds.value = v; log.i(TAG, "thresholds ${v.first}/${v.second}") }
-                // Custom inlier requirement (good matches stay as chosen above; inliers are always a subset of the good matches).
                 Text("Inliers required: ${thr.second}", fontSize = 13.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     val pad = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
@@ -631,14 +633,29 @@ class ObjectProbeActivity : ComponentActivity() {
         }
     }
 
-    /** Stable colour per reference name. */
+    /**
+     * Stable colour per reference name.
+     * @param className reference name
+     * @return the colour
+     */
     private fun colorFor(className: String): Color = BOX_COLORS[Math.floorMod(className.hashCode(), BOX_COLORS.size)]
 
-    /** Which of two results is better: detected first, then more inliers, then more good matches. */
+    /**
+     * Which of two results is better: detected first, then more inliers, then more good matches.
+     * @param a first result
+     * @param b second result
+     * @return true if [a] is better
+     */
     private fun better(a: ObjectMatch, b: ObjectMatch): Boolean =
         if (a.detected != b.detected) a.detected else if (a.inliers != b.inliers) a.inliers > b.inliers else a.goodMatches > b.goodMatches
 
-    /** A row of buttons, one per option; the current one is filled. */
+    /**
+     * A row of buttons, one per option; the current one is filled.
+     * @param options options
+     * @param current selected option
+     * @param label text of an option
+     * @param onPick called with the picked option
+     */
     @Composable
     private fun <T> Choice(options: List<T>, current: T, label: (T) -> String, onPick: (T) -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -650,7 +667,18 @@ class ObjectProbeActivity : ComponentActivity() {
         }
     }
 
-    /** The frame scaled to fit, rotated by [rotationDeg], with outline (green) and bounding box (yellow) per detection. */
+    /**
+     * The frame scaled to fit, with the chosen drawing layers.
+     * @param bitmap camera frame
+     * @param detected detection results
+     * @param rotationDeg rotation in degrees
+     * @param selectionRect selected region, or null
+     * @param selectMode whether a region is being selected
+     * @param pinkRegions pink areas
+     * @param overlays data drawn on top
+     * @param pinkMode whether pink search is on
+     * @param layer layers to draw
+     */
     @Composable
     private fun Preview(
         bitmap: Bitmap, detected: List<ObjectMatch>, rotationDeg: Int, selectionRect: android.graphics.Rect?, selectMode: Boolean,
@@ -659,8 +687,12 @@ class ObjectProbeActivity : ComponentActivity() {
         val image = bitmap.asImageBitmap()
         val labelPaint = android.graphics.Paint().apply { textSize = 32f; isAntiAlias = true; color = android.graphics.Color.YELLOW }
         val imgW = image.width; val imgH = image.height
-        // Drag to select a region (rotation is forced to 0° while selecting, so screen ↔ frame mapping is a plain scale + offset).
         val gestures = if (!selectMode) Modifier else Modifier.pointerInput(imgW, imgH) {
+            /**
+             * Maps a screen position to frame pixels.
+             * @param o screen position
+             * @return column and row
+             */
             fun toImage(o: Offset): Pair<Int, Int> {
                 val scale = min(size.width / imgW.toFloat(), size.height / imgH.toFloat())
                 val left = (size.width - imgW * scale) / 2; val top = (size.height - imgH * scale) / 2
@@ -688,8 +720,13 @@ class ObjectProbeActivity : ComponentActivity() {
             rotate(rotationDeg.toFloat(), pivot = center) {
                 drawImage(image, srcOffset = IntOffset.Zero, srcSize = IntSize(image.width, image.height),
                     dstOffset = IntOffset(left.toInt(), top.toInt()), dstSize = IntSize(dw.toInt(), dh.toInt()))
+                /**
+                 * Maps frame coordinates to the canvas.
+                 * @param x frame x
+                 * @param y frame y
+                 * @return the canvas position
+                 */
                 fun p(x: Double, y: Double) = Offset(left + x.toFloat() * scale, top + y.toFloat() * scale)
-                // Pink mode: darken everything OUTSIDE the search areas, so it is obvious where ORB looks (nowhere else).
                 if (layer.darkenOutside && pinkMode) {
                     val shade = Path().apply {
                         fillType = androidx.compose.ui.graphics.PathFillType.EvenOdd
@@ -706,7 +743,6 @@ class ObjectProbeActivity : ComponentActivity() {
                         drawImage(mask.asImageBitmap(), srcOffset = IntOffset.Zero, srcSize = IntSize(mask.width, mask.height),
                             dstOffset = IntOffset(left.toInt(), top.toInt()), dstSize = IntSize(dw.toInt(), dh.toInt()))
                     }
-                    // All keypoints: small light-blue dots. Inliers of each reference (detected or not): bigger dots in its box colour.
                     if (layer.keypoints) drawPoints(ov.keypoints.map { p(it.x, it.y) }, androidx.compose.ui.graphics.PointMode.Points, Color(0xAA80D8FF),
                         strokeWidth = 3f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
                     if (layer.inliers) ov.matches.forEach { m ->
@@ -714,7 +750,6 @@ class ObjectProbeActivity : ComponentActivity() {
                             colorFor(m.className), strokeWidth = 9f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
                     }
                 }
-                // Pink areas: thick orange = where features are searched, thin pink = the pink pixels' bounds.
                 pinkRegions.forEachIndexed { i, r ->
                     val s = r.search; val b = r.bounds
                     val tl = p(s.x.toDouble(), s.y.toDouble())
@@ -729,7 +764,6 @@ class ObjectProbeActivity : ComponentActivity() {
                 }
                 detected.forEachIndexed { index, m ->
                     if (m.corners.size < 4) return@forEachIndexed
-                    // One colour per reference, so boxes of different references on the same object stay distinguishable.
                     val color = colorFor(m.className)
                     labelPaint.color = color.toArgb()
                     val labelOffset = index * 36f
@@ -754,7 +788,17 @@ class ObjectProbeActivity : ComponentActivity() {
         }
     }
 
-    /** Drawing layers of the preview. */
+    /**
+     * Drawing layers of the preview.
+     * @property keypoints draw keypoints
+     * @property inliers draw inliers
+     * @property boxes draw boxes
+     * @property outlines draw outlines
+     * @property pinkMask draw the pink mask
+     * @property pinkBounds draw pink bounds
+     * @property searchArea draw search areas
+     * @property darkenOutside darken outside the search areas
+     */
     private data class Layers(
         val keypoints: Boolean = true,
         val inliers: Boolean = true,
@@ -777,22 +821,16 @@ class ObjectProbeActivity : ComponentActivity() {
     private companion object {
         const val TAG = "objects"
 
-        /** Range of the custom inlier requirement (4 = the minimum a homography needs). */
         const val MIN_INLIERS = 4
         const val MAX_INLIERS = 200
 
-        /** Class name of a reference captured from the camera on this screen. */
         const val CAMERA_REFERENCE = "Camera_capture"
 
-        /** Box colours, one per reference (chosen by name). */
         val BOX_COLORS = listOf(Color(0xFFFFEB3B), Color(0xFF00E5FF), Color(0xFFFF4081), Color(0xFF76FF03), Color(0xFF448AFF), Color(0xFFE040FB))
 
-        /** How often the tile search runs when enabled. */
         const val TILE_INTERVAL_MS = 1_000L
 
-        /** Largest pink areas searched per pass (each costs one ORB pass). */
         const val MAX_MARKER_REGIONS = 3
-
 
     }
 }

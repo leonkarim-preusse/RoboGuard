@@ -17,10 +17,19 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** Outcome of one [CameraSnapshot.capture]. */
 sealed interface SnapshotResult {
-    /** How long the whole capture took, including starting and stopping the stream. */
     val elapsedMs: Long
 
+    /**
+     * A frame was captured.
+     * @property image grayscale frame
+     * @property elapsedMs time taken
+     */
     data class Success(val image: GrayImage, override val elapsedMs: Long) : SnapshotResult
+    /**
+     * No frame was captured.
+     * @property reason reason
+     * @property elapsedMs time taken
+     */
     data class Failure(val reason: SnapshotFailure, override val elapsedMs: Long) : SnapshotResult
 }
 
@@ -38,14 +47,16 @@ sealed interface SnapshotFailure {
     /** The stream started, but no usable frame arrived within the timeout. */
     data object Timeout : SnapshotFailure
 
-    /** Any other SDK error or negative return code. */
+    /**
+     * Any other SDK error or negative return code.
+     * @property code error code
+     * @property message error text
+     */
     data class Sdk(val code: Int, val message: String?) : SnapshotFailure
 }
 
 /**
- * Takes single grayscale frames from the camera through SurfaceShare ([SurfaceShareApi]): each [capture] opens the
- * stream, keeps the Y plane of one frame and closes the stream again. Requires a connected RobotApi. Captures are
- * serialised; call from a background dispatcher.
+ * Takes single grayscale frames through SurfaceShare. Call from a background dispatcher.
  * @param width requested frame width
  * @param height requested frame height
  * @param framesToSkip frames discarded before one is kept
@@ -57,28 +68,31 @@ class CameraSnapshot(
     private val framesToSkip: Int = 2,
     private val timeoutMs: Long = 3_000
 ) {
-
     private val mutex = Mutex()
 
-    /** Opens the shared stream, returns one grayscale frame, and closes the stream again. */
+    /**
+     * Opens the shared stream, returns one grayscale frame, and closes the stream again.
+     * @return the frame or the reason it failed
+     */
     suspend fun capture(): SnapshotResult = mutex.withLock {
         val t0 = SystemClock.elapsedRealtime()
+        /**
+         * Milliseconds since the capture started.
+         * @return the time
+         */
         fun elapsed() = SystemClock.elapsedRealtime() - t0
 
-        // Frames are delivered on their own thread, as in the OrionStar sample.
         val frameThread = HandlerThread("CameraSnapshot").apply { start() }
         val reader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, MAX_BUFFERED_IMAGES)
         val surface = reader.surface
         val bean = SurfaceShareBean().apply { name = STREAM_NAME }
 
-        // Completed by whichever comes first: a usable frame or an SDK error.
         val outcome = CompletableDeferred<SnapshotResult>()
         var lastError = 0
         var streamRequested = false
 
         var framesSeen = 0
         reader.setOnImageAvailableListener({ r ->
-            // acquireLatestImage drops stale frames; the reader may already be closing, hence runCatching.
             val image = runCatching { r.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
             try {
                 framesSeen++
@@ -93,12 +107,21 @@ class CameraSnapshot(
 
         try {
             val code = SurfaceShareApi.getInstance().requestImageFrame(surface, bean, object : SurfaceShareListener() {
+                /**
+                 * Completes the capture with a failure.
+                 * @param error error code
+                 * @param message error text
+                 */
                 override fun onError(error: Int, message: String?) {
                     lastError = error
                     outcome.complete(SnapshotResult.Failure(mapError(error, message), elapsed()))
                 }
 
-                // STATUS_SET_STREAM_SUCCESS (10) arrives here; the first frame is what actually matters.
+                /**
+                 * Logs status updates.
+                 * @param status status code
+                 * @param message status text
+                 */
                 override fun onStatusUpdate(status: Int, message: String?) {}
             })
             if (code == NOT_CONNECTED_CODE) return SnapshotResult.Failure(SnapshotFailure.NotConnected, elapsed())
@@ -108,8 +131,7 @@ class CameraSnapshot(
             return withTimeoutOrNull(timeoutMs) { outcome.await() }
                 ?: SnapshotResult.Failure(SnapshotFailure.Timeout, elapsed())
         } finally {
-            // Same order as the OrionStar sample: abandon the stream, stop the thread, close the reader.
-            // If the share was already held by someone else (-14), it is not ours to abandon.
+            // Same order as the OrionStar sample; a share held by someone else (-14) is not abandoned.
             if (streamRequested && lastError != SurfaceShareError.ERROR_SURFACE_SHARE_USED) {
                 runCatching { SurfaceShareApi.getInstance().abandonImageFrame(bean) }
             }
@@ -121,7 +143,12 @@ class CameraSnapshot(
         }
     }
 
-    /** Maps a SurfaceShare error code to a [SnapshotFailure]. */
+    /**
+     * Maps a SurfaceShare error code to a [SnapshotFailure].
+     * @param error error code
+     * @param message error text
+     * @return the failure
+     */
     private fun mapError(error: Int, message: String?): SnapshotFailure = when (error) {
         SurfaceShareError.ERROR_SURFACE_SHARE_USED -> SnapshotFailure.CameraBusy
         SurfaceShareError.ERROR_SURFACE_SHARE_PREEMPTED -> SnapshotFailure.Preempted
@@ -129,8 +156,8 @@ class CameraSnapshot(
     }
 
     /**
-     * Copies the Y (brightness) plane into a [GrayImage]. The Y plane always has pixelStride 1, but
-     * rowStride can be larger than the width (row padding), so rows are copied one by one.
+     * Copies the Y plane into a [GrayImage].
+     * @return the image
      */
     private fun Image.yPlaneToGray(): GrayImage {
         val plane = planes[0]
@@ -145,13 +172,10 @@ class CameraSnapshot(
     }
 
     private companion object {
-        /** Name shown to RobotOS for this consumer of the shared stream. */
         const val STREAM_NAME = "RoboGuardSnapshot"
 
-        /** Enough to use acquireLatestImage while frames keep arriving; the OrionStar sample uses 4. */
         const val MAX_BUFFERED_IMAGES = 2
 
-        /** requestImageFrame's return value when the service connection is missing (read from the jar). */
         const val NOT_CONNECTED_CODE = -1
 
         const val THREAD_JOIN_MS = 100L

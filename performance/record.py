@@ -145,8 +145,7 @@ def main():
         adb(serial, "logcat", "-c")
     print(f"recording {seconds} s from pid {pid} on {serial} …")
     samples = sample_proc(serial, pid, seconds)
-    # Command lines AFTER the sampling: reading them takes ~30 s on the busy robot, and done first it delayed the start of
-    # the recording that long (2026-10-19: the drive that triggered it was over before the first sample).
+    # Command lines are read after the sampling, since reading them takes about 30 s on a busy robot.
     # Full command lines of all processes (the stat names are cut to 15 characters, e.g. both HAL services show "android.hardwar").
     cmd = adb(serial, "shell", "for p in /proc/[0-9]*; do echo \"${p#/proc/} $(tr '\\0' ' ' < $p/cmdline 2>/dev/null | cut -c1-80)\"; done").stdout
     cmdlines = {}

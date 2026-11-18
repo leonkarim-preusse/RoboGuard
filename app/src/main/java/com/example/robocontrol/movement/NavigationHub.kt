@@ -10,16 +10,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * Holds the single [MapNavigation] of the process, started by RobotServerService, so that the robot screen and the
- * phone app share the same navigation state and drives continue when the robot shows another screen. [remoteControl]
- * names the phone that is currently steering.
- */
+/** Holds the single [MapNavigation] of the process, shared by the robot screen and the phone app. */
 object NavigationHub {
-
     private const val TAG = "NavigationHub"
 
-    /** How long after the last phone command the robot still counts as remotely controlled. */
     const val REMOTE_ACTIVE_MS = 30_000L
 
     private var scope: CoroutineScope? = null
@@ -27,21 +21,21 @@ object NavigationHub {
     @Volatile
     private var navigation: MapNavigation? = null
 
-    /** Event log shared by both screens (also the robot's own navigation screen shows it). */
     val log = NavigationLog()
 
     private val _remoteControl = MutableStateFlow<String?>(null)
 
-    /** Name of the phone currently steering (null = nobody); cleared [REMOTE_ACTIVE_MS] after its last command. */
     val remoteControl: StateFlow<String?> = _remoteControl.asStateFlow()
 
     @Volatile
     private var lastRemoteAt = 0L
 
-    /** The navigation, started on first use. Returns null only before [start] (i.e. before the service exists). */
     val current: MapNavigation? get() = navigation
 
-    /** Starts the shared navigation (idempotent). Call from RobotServerService.onCreate. */
+    /**
+     * Starts the shared navigation (idempotent). Call from RobotServerService.onCreate.
+     * @param context Android context
+     */
     @Synchronized
     fun start(context: Context) {
         if (navigation != null) return
@@ -64,7 +58,10 @@ object NavigationHub {
         _remoteControl.value = null
     }
 
-    /** Called by the phone routes before each command, so the robot screen can show who is steering. */
+    /**
+     * Called by the phone routes before each command, so the robot screen can show who is steering.
+     * @param client name of the phone
+     */
     @Synchronized
     fun noteRemoteCommand(client: String) {
         lastRemoteAt = android.os.SystemClock.elapsedRealtime()

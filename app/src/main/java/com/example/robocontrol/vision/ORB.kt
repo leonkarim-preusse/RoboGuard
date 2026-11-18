@@ -28,11 +28,19 @@ import org.opencv.features2d.ORB as OpenCvOrb
  * @property ratioTest Lowe's ratio: a match counts only if its distance is below this share of the second-best distance
  * @property minGoodMatches matches required after the ratio test before a homography is computed
  * @property minInliers homography inliers required for a detection
+ * @property minFrameKeypoints keypoints a frame needs before matching
  * @property ransacReprojThreshold maximum reprojection error of an inlier, in pixels
  * @property minAreaPx minimum area of the projected outline, in pixels
  * @property fastThreshold FAST corner threshold; lower values also accept weaker corners
- * @property gridDistribution distribute keypoints over a [gridColumns] × [gridRows] grid instead of keeping the strongest
+ * @property gridDistribution distribute keypoints over a [gridColumns] × [gridRows] grid instead of keeping the
+ *   strongest
+ * @property gridColumns grid columns
+ * @property gridRows grid rows
  * @property contrastBoost apply CLAHE contrast equalisation to frames before detection
+ * @property pyramidLevels pyramid levels
+ * @property homographyMethod OpenCV homography method
+ * @property homographyMaxIters maximum iterations
+ * @property homographyConfidence homography confidence
  */
 data class OrbConfig(
     val maxFeatures: Int = 1000,
@@ -40,7 +48,6 @@ data class OrbConfig(
     val ratioTest: Float = 0.75f,
     val minGoodMatches: Int = 15,
     val minInliers: Int = 12,
-    /** Minimum number of keypoints a frame or crop must have before it is matched; 0 = no minimum. */
     val minFrameKeypoints: Int = 0,
     val ransacReprojThreshold: Double = 5.0,
     val minAreaPx: Double = 400.0,
@@ -49,28 +56,27 @@ data class OrbConfig(
     val gridColumns: Int = 8,
     val gridRows: Int = 6,
     val contrastBoost: Boolean = false,
-    /** Number of levels of the ORB image pyramid (scale factor 1.2 per level). */
     val pyramidLevels: Int = 8,
-    /** OpenCV homography method: Calib3d.RANSAC (classic) or e.g. Calib3d.USAC_DEFAULT (RANSAC with local optimisation and early stopping, faster). */
     val homographyMethod: Int = Calib3d.RANSAC,
     val homographyMaxIters: Int = 2000,
     val homographyConfidence: Double = 0.995
 )
 
 /**
- * A learned reference object: its image and ORB features. The features are native memory and are released by [ORB].
+ * A learned reference object: its image and ORB features.
  * @property className name of the reference
  * @property image the reference image, grayscale and scaled to [OrbConfig.maxReferenceSide]
+ * @property config settings it was read with
+ * @property keypoints reference keypoints
+ * @property descriptors reference descriptors
  */
 class ObjectReference internal constructor(
     val className: String,
     val image: GrayImage,
-    /** Settings this reference was read with and is matched with (per-image section of settings.json, else the general ones). */
     val config: OrbConfig,
     internal val keypoints: Array<KeyPoint>,
     internal val descriptors: Mat
 ) {
-    /** Number of ORB keypoints found. Few keypoints (< ~100) means a poorly textured reference. */
     val keypointCount: Int get() = keypoints.size
 
     /** Frees the native descriptor matrix. */
@@ -84,7 +90,10 @@ class ObjectReference internal constructor(
  * @property goodMatches matches that passed the ratio test
  * @property inliers matches consistent with the homography
  * @property corners the reference's corners projected into the frame (top-left, top-right, bottom-right, bottom-left);
- * empty without a homography
+ *   empty without a homography
+ * @property outlineSource where the corners come from
+ * @property outlineRejected why a result with enough inliers was not detected, or null
+ * @property inlierPoints frame positions of the inliers
  */
 data class ObjectMatch(
     val className: String,
@@ -92,17 +101,8 @@ data class ObjectMatch(
     val goodMatches: Int,
     val inliers: Int,
     val corners: List<ImagePoint>,
-    /**
-     * Where [corners] come from: "outline" = reference corners projected through the homography; callers may replace the corners
-     * and set their own source (the object test uses "marker" for the bounds of a colour marker); "" when not detected.
-     */
     val outlineSource: String = "",
-    /**
-     * Why a result with enough inliers was NOT detected: its projected outline is implausible ("non-convex", "area"), e.g. under
-     * wide-angle lens distortion. Else null.
-     */
     val outlineRejected: String? = null,
-    /** Frame positions of the matches that agree with the homography (for drawing); empty without a homography. */
     val inlierPoints: List<ImagePoint> = emptyList()
 )
 
@@ -117,11 +117,8 @@ data class AssetLoadReport(
 )
 
 /**
- * ORB-based object detection: finds objects learned from reference images in camera frames. All images in
- * `assets/ORB_img` are loaded on construction, keyed by their file name without extension. Per frame, keypoints are
- * computed once; each reference is matched with a kNN Hamming search and Lowe's ratio test, and a homography with enough
- * inliers and a plausible outline counts as a detection. All public methods are synchronized; call them off the main
- * thread and call [release] when done.
+ * ORB-based object detection: finds objects from reference images in camera frames. Call off the main thread and
+ * [release] when done.
  * @param context used to read the reference images from the assets
  * @param config default settings
  * @param configFor settings for one reference by name; null = [config]
@@ -131,52 +128,42 @@ data class AssetLoadReport(
 class ORB(
     context: Context,
     config: OrbConfig = OrbConfig(),
-    /**
-     * Settings for one reference image (file name without extension), e.g. from `assets/settings/settings.json`.
-     * null = use [config] for it. Returning null from [skipReference] is how an image is switched off.
-     */
     private val configFor: (String) -> OrbConfig? = { null },
-    /** true = do not load this asset image at all (settings.json `enabled: false`). */
     private val skipReference: (String) -> Boolean = { false }
 ) {
-
-    /**
-     * Settings in use. [OrbConfig.contrastBoost] may be set directly; detector settings (maxFeatures, fastThreshold, grid) must
-     * go through [applySettings], which also re-extracts all references.
-     */
     @Volatile
     var config: OrbConfig = config
 
-    /** Keypoints found in the last evaluated frame (0 = no texture or too dark). For tuning and test screens. */
     @Volatile
     var lastFrameKeypoints: Int = 0
         private set
 
-    /** Positions of those keypoints in frame coordinates (for drawing on test screens). */
     @Volatile
     var lastKeypointPositions: List<ImagePoint> = emptyList()
         private set
 
-    /**
-     * Collect keypoint positions ([lastKeypointPositions]) for drawing. Off saves one small object per keypoint and pass
-     * (thousands per second), which the garbage collector otherwise has to clean up.
-     */
     @Volatile
     var collectDrawData: Boolean = true
 
     /** Time spent per stage since the last [takeTimings], in nanoseconds. For finding out where detection time goes. */
     class Timings {
         var resizeNs = 0L; var extractNs = 0L; var knnNs = 0L; var ratioNs = 0L; var homographyNs = 0L
+        /**
+         * Adds the stage times of [o].
+         * @param o times to add
+         */
         fun add(o: Timings) { resizeNs += o.resizeNs; extractNs += o.extractNs; knnNs += o.knnNs; ratioNs += o.ratioNs; homographyNs += o.homographyNs }
     }
 
     private var timings = Timings()
 
-    /** Returns the stage timings collected since the previous call and starts a new collection. */
+    /**
+     * Returns the stage timings collected since the previous call and starts a new collection.
+     * @return the collected timings
+     */
     @Synchronized
     fun takeTimings(): Timings = timings.also { timings = Timings() }
 
-    /** Lazy: must not be created before the OpenCV library is loaded in init. */
     private val clahe by lazy { Imgproc.createCLAHE(2.0, Size(8.0, 8.0)) }
 
     init {
@@ -185,17 +172,25 @@ class ORB(
 
     private var orb: OpenCvOrb = createDetector(config.maxFeatures, config.fastThreshold, config.pyramidLevels)
 
-    /** Over-detects for [OrbConfig.gridDistribution]: candidates from which the grid keeps the best per cell. */
     private var wideOrb: OpenCvOrb = createDetector(config.maxFeatures * 4, config.fastThreshold, config.pyramidLevels)
 
-    /** A new OpenCV ORB detector with the given number of features, FAST threshold and pyramid levels. */
+    /**
+     * A new OpenCV ORB detector with the given number of features, FAST threshold and pyramid levels.
+     * @param features maximum keypoints
+     * @param fastThreshold FAST threshold
+     * @param levels pyramid levels
+     * @return the detector
+     */
     private fun createDetector(features: Int, fastThreshold: Int, levels: Int): OpenCvOrb =
         OpenCvOrb.create(features, 1.2f, levels.coerceIn(1, 12), 31, 0, 2, 0 /* HARRIS_SCORE */, 31, fastThreshold)
 
-    /** Detectors for references whose settings differ from [config]; keyed by the values that shape a detector. */
     private val extraDetectors = HashMap<Triple<Int, Int, Int>, OpenCvOrb>()
 
-    /** The detector for [settings]; a cached extra one when they differ from the general config. */
+    /**
+     * The detector for [settings]; a cached extra one when they differ from the general config.
+     * @param settings ORB settings
+     * @return the detector
+     */
     private fun detectorFor(settings: OrbConfig): OpenCvOrb {
         if (settings.maxFeatures == config.maxFeatures && settings.fastThreshold == config.fastThreshold &&
             settings.pyramidLevels == config.pyramidLevels
@@ -222,7 +217,13 @@ class ORB(
         }
     }
 
-    /** Detects keypoints and computes descriptors with the current settings (grid distribution if enabled). */
+    /**
+     * Detects keypoints and computes descriptors with the current settings (grid distribution if enabled).
+     * @param image grayscale image
+     * @param keypoints receives the keypoints
+     * @param descriptors receives the descriptors
+     * @param settings ORB settings
+     */
     private fun extract(image: Mat, keypoints: MatOfKeyPoint, descriptors: Mat, settings: OrbConfig = config) {
         val detector = detectorFor(settings)
         if (!settings.gridDistribution) {
@@ -247,19 +248,11 @@ class ORB(
         }
     }
 
-    /** Empty mask = "use the whole image"; reused to avoid allocating one per call. */
     private val noMask = Mat()
 
-    /** The reference dictionary: class name -> reference. Insertion order is kept. */
     private val references = LinkedHashMap<String, ObjectReference>()
 
-    /**
-     * Result of loading the asset images during construction. Declared after all fields it needs,
-     * because Kotlin initialises properties in order.
-     */
     val assetLoadReport: AssetLoadReport = loadReferencesFromAssets(context.assets)
-
-    // ---- reference dictionary ------------------------------------------------
 
     /**
      * Learns [className] from [image], replacing a reference of the same name.
@@ -293,19 +286,25 @@ class ORB(
         }
     }
 
-    /** The reference stored under [className], or null. */
+    /**
+     * The reference stored under [className], or null.
+     * @param className reference name
+     * @return the reference, or null
+     */
     @Synchronized
     operator fun get(className: String): ObjectReference? = references[className]
 
-    /** Snapshot of the dictionary. Changing ORB afterwards does not change this map. */
     val referenceMap: Map<String, ObjectReference>
         @Synchronized get() = LinkedHashMap(references)
 
-    /** All class names currently stored. */
     val classNames: Set<String>
         @Synchronized get() = references.keys.toSet()
 
-    /** Removes and frees one reference. Returns false if there was none with that name. */
+    /**
+     * Removes and frees one reference. Returns false if there was none with that name.
+     * @param className reference name
+     * @return true if a reference was removed
+     */
     @Synchronized
     fun removeReference(className: String): Boolean {
         val removed = references.remove(className) ?: return false
@@ -320,20 +319,20 @@ class ORB(
         references.clear()
     }
 
-    // ---- detection -------------------------------------------------------------
-
     /**
      * Returns the references detected in [frame].
      * @param frame grayscale camera frame
      * @param classNames references to search for; null = all
+     * @return the detected references
      */
     fun detect(frame: GrayImage, classNames: Collection<String>? = null): List<ObjectMatch> =
         evaluate(frame, classNames).filter { it.detected }
 
     /**
-     * Returns the references detected in a bitmap [frame] (ARGB_8888 or RGB_565), in its pixel coordinates.
+     * Returns the references detected in a bitmap [frame].
      * @param frame camera frame
      * @param classNames references to search for; null = all
+     * @return the detected references
      */
     fun detect(frame: Bitmap, classNames: Collection<String>? = null): List<ObjectMatch> =
         evaluate(frame, classNames).filter { it.detected }
@@ -342,6 +341,7 @@ class ORB(
      * Compares [frame] with the references and returns one result per reference, detected or not.
      * @param frame grayscale camera frame
      * @param classNames references to compare; null = all, unknown names are ignored
+     * @return one result per reference
      */
     @Synchronized
     fun evaluate(frame: GrayImage, classNames: Collection<String>? = null): List<ObjectMatch> {
@@ -354,13 +354,14 @@ class ORB(
     }
 
     /**
-     * Searches overlapping, enlarged tiles of [frame] and returns the best result per reference, in frame coordinates.
+     * Searches overlapping, enlarged tiles of [frame].
      * @param frame grayscale camera frame
      * @param cols number of tile columns
      * @param rows number of tile rows
      * @param overlap overlap between neighbouring tiles, as a share of a tile
      * @param upscale enlargement factor of each tile
      * @param classNames references to compare; null = all
+     * @return the best result per reference
      */
     @Synchronized
     fun evaluateTiles(
@@ -403,6 +404,8 @@ class ORB(
      * @param targetSide target length of the region's longer side after scaling, in pixels
      * @param maxUpscale maximum enlargement factor
      * @param classNames references to compare; null = all
+     * @param scale exact scale of the crop, or null to use [targetSide]
+     * @return one result per reference
      */
     @Synchronized
     fun evaluateRegion(
@@ -411,7 +414,6 @@ class ORB(
         targetSide: Int = 800,
         maxUpscale: Double = 3.0,
         classNames: Collection<String>? = null,
-        /** Exact scale factor for the crop (e.g. from the object's expected size); overrides [targetSide]/[maxUpscale]. */
         scale: Double? = null
     ): List<ObjectMatch> {
         val x0 = region.x.coerceIn(0, frame.width - 1)
@@ -428,7 +430,14 @@ class ORB(
         }
     }
 
-    /** Evaluates [crop] of [full], scaled by [upscale]; corners are mapped back to [full] coordinates. */
+    /**
+     * Evaluates [crop] of [full], scaled by [upscale]; corners are mapped back to [full] coordinates.
+     * @param full whole frame
+     * @param crop region to search
+     * @param upscale scale factor
+     * @param classNames references to search, or null for all
+     * @return one result per reference
+     */
     private fun evaluateCrop(full: Mat, crop: ImageRegion, upscale: Double, classNames: Collection<String>?): List<ObjectMatch> {
         val part = full.submat(crop.y, crop.y + crop.height, crop.x, crop.x + crop.width)
         val scaled = Mat()
@@ -439,6 +448,11 @@ class ORB(
                     if (upscale < 1.0) Imgproc.INTER_AREA else Imgproc.INTER_LINEAR)
             }
             timings.resizeNs += System.nanoTime() - tResize
+            /**
+             * Maps a crop point back to frame coordinates.
+             * @param p point in the crop
+             * @return the frame point
+             */
             fun back(p: ImagePoint) = ImagePoint(p.x / upscale + crop.x, p.y / upscale + crop.y)
             val results = evaluateGray(input, classNames).map { m ->
                 m.copy(corners = m.corners.map(::back), inlierPoints = m.inlierPoints.map(::back))
@@ -451,11 +465,21 @@ class ORB(
         }
     }
 
-    /** Which of two results is better: detected first, then more inliers, then more good matches. */
+    /**
+     * Which of two results is better: detected first, then more inliers, then more good matches.
+     * @param a first result
+     * @param b second result
+     * @return true if [a] is better
+     */
     private fun better(a: ObjectMatch, b: ObjectMatch): Boolean =
         if (a.detected != b.detected) a.detected else if (a.inliers != b.inliers) a.inliers > b.inliers else a.goodMatches > b.goodMatches
 
-    /** Same as the [GrayImage] overload, for a bitmap frame (ARGB_8888 or RGB_565). */
+    /**
+     * Same as the [GrayImage] overload, for a bitmap frame (ARGB_8888 or RGB_565).
+     * @param frame bitmap frame
+     * @param classNames references to search, or null for all
+     * @return one result per reference
+     */
     @Synchronized
     fun evaluate(frame: Bitmap, classNames: Collection<String>? = null): List<ObjectMatch> {
         val gray = frame.toGrayMat()
@@ -474,9 +498,12 @@ class ORB(
         noMask.release()
     }
 
-    // ---- internals -------------------------------------------------------------
-
-    /** Shared body of both evaluate overloads; [gray] is a single-channel frame owned by the caller. */
+    /**
+     * Shared body of both evaluate overloads; [gray] is a single-channel frame owned by the caller.
+     * @param gray grayscale frame
+     * @param classNames references to search, or null for all
+     * @return one result per reference
+     */
     private fun evaluateGray(gray: Mat, classNames: Collection<String>?): List<ObjectMatch> {
         val selected = if (classNames == null) references.values.toList()
         else classNames.mapNotNull { references[it] }
@@ -492,7 +519,6 @@ class ORB(
             lastFrameKeypoints = keypoints.rows()
             val frameKeypoints = keypoints.toArray()
             lastKeypointPositions = if (collectDrawData) frameKeypoints.map { ImagePoint(it.pt.x, it.pt.y) } else emptyList()
-            // A frame without texture (dark room, lens covered, a tiny crop) has no usable descriptors.
             if (descriptors.rows() < 2 || frameKeypoints.size < config.minFrameKeypoints) {
                 return selected.map { notFound(it.className, 0) }
             }
@@ -504,7 +530,10 @@ class ORB(
         }
     }
 
-    /** Converts a bitmap (ARGB_8888 or RGB_565, not HARDWARE) into a new grayscale Mat. The caller must release() it. */
+    /**
+     * Converts a bitmap (ARGB_8888 or RGB_565, not HARDWARE) into a new grayscale Mat. The caller must release() it.
+     * @return the grayscale Mat
+     */
     private fun Bitmap.toGrayMat(): Mat {
         val rgba = Mat()
         val gray = Mat()
@@ -529,8 +558,6 @@ class ORB(
         val loaded = mutableListOf<String>()
         val rejected = linkedMapOf<String, String>()
 
-        // The assets root also contains folders added by the system or libraries (e.g. "images",
-        // "webkit"), which is why only known image extensions are considered.
         val files = runCatching { assets.list(ASSET_DIR) }.getOrNull().orEmpty()
             .filter { it.substringAfterLast('.', "").lowercase() in IMAGE_EXTENSIONS }
             .sorted()
@@ -589,10 +616,14 @@ class ORB(
         return assets.open(path).use { BitmapFactory.decodeStream(it, null, options) }
     }
 
-    /** Extracts the features of one reference image and stores it under [className]; null if it has too few features. */
+    /**
+     * Extracts the features of one reference image and stores it under [className]; null if it has too few features.
+     * @param className reference name
+     * @param gray grayscale image
+     * @return the reference, or null
+     */
     private fun addReferenceMat(className: String, gray: Mat): ObjectReference? {
         require(className.isNotBlank()) { "className must not be blank" }
-        // Per-image settings from settings.json, else the general ones this ORB was built with.
         val settings = configFor(className) ?: config
         val scaled = downscale(gray, settings.maxReferenceSide)
         val keypoints = MatOfKeyPoint()
@@ -612,7 +643,12 @@ class ORB(
         }
     }
 
-    /** Scales so the longer side is at most [OrbConfig.maxReferenceSide]. Returns [gray] itself if already small. */
+    /**
+     * Scales so the longer side is at most [OrbConfig.maxReferenceSide]. Returns [gray] itself if already small.
+     * @param gray grayscale image
+     * @param maxSide longest allowed side
+     * @return the scaled image
+     */
     private fun downscale(gray: Mat, maxSide: Int = config.maxReferenceSide): Mat {
         val longer = max(gray.cols(), gray.rows())
         if (longer <= maxSide) return gray
@@ -623,13 +659,15 @@ class ORB(
         return out
     }
 
-    /** Steps 2 and 3 of the class description for one reference. */
+    /**
+     * Matches one reference against the frame features.
+     * @param reference reference
+     * @param frameDescriptors frame descriptors
+     * @param frameKeypoints frame keypoints
+     * @return the result
+     */
     private fun match(reference: ObjectReference, frameDescriptors: Mat, frameKeypoints: Array<KeyPoint>): ObjectMatch {
-        // Each reference is matched with its own settings (settings.json: per-image section, else the general ones).
         val settings = reference.config
-        // Exact brute-force Hamming kNN (k = 2), like BFMatcher.knnMatch, but via batchDistance: the results come back as two plain
-        // int matrices instead of one Java Mat object per reference feature, which made matching the slowest step on the robot
-        // (250–290 ms of a 600 ms pass, 2026-09-17).
         val tKnn = System.nanoTime()
         val distances = Mat()
         val indices = Mat()
@@ -643,11 +681,7 @@ class ORB(
             val rows = distances.rows()
             val dist = IntArray(rows * 2).also { if (rows > 0) distances.get(0, 0, it) }
             val idx = IntArray(rows * 2).also { if (rows > 0) indices.get(0, 0, it) }
-            // One frame keypoint may be claimed by at most ONE reference feature: keep the closest.
-            // Without this, a crop with very few keypoints matches hundreds of reference features onto the same handful of
-            // points; the ratio test passes by chance and findHomography collapses them into a degenerate transform with a
-            // huge inlier count. Measured on the robot 2026-09-21: 9 frame keypoints, "446 good matches, 336 inliers" on a
-            // 32 px speck with no calendar in the room. After the rule, good matches can never exceed the frame's keypoints.
+            // Each frame keypoint may be claimed by only one reference feature, which prevents degenerate homographies.
             val bestForFrame = HashMap<Int, Int>(frameKeypoints.size * 2)
             val bestDistance = HashMap<Int, Int>(frameKeypoints.size * 2)
             for (i in 0 until rows) {
@@ -691,8 +725,6 @@ class ORB(
             if (inliers < settings.minInliers) return ObjectMatch(reference.className, false, good, inliers, corners, inlierPoints = inlierPoints)
             val problem = outlineProblem(corners, settings.minAreaPx)
             if (problem == null) return ObjectMatch(reference.className, true, good, inliers, corners, "outline", inlierPoints = inlierPoints)
-            // Not detected. (Accepting the inliers' bounding box here was tried on the robot, 2026-09-17: many false detections
-            // on the whiteboard without the calendar. A caller with a second identifier, e.g. a colour marker, may decide.)
             return ObjectMatch(reference.className, false, good, inliers, corners, "", problem, inlierPoints)
         } finally {
             src.release()
@@ -702,7 +734,13 @@ class ORB(
         }
     }
 
-    /** Maps the reference image's corners through the homography into frame coordinates. */
+    /**
+     * Maps the reference image's corners through the homography into frame coordinates.
+     * @param homography homography matrix
+     * @param width reference width
+     * @param height reference height
+     * @return the projected corners
+     */
     private fun projectCorners(homography: Mat, width: Int, height: Int): List<ImagePoint> {
         val w = width.toDouble()
         val h = height.toDouble()
@@ -740,20 +778,20 @@ class ORB(
         return if (abs(doubleArea) / 2 >= minAreaPx) null else "area"
     }
 
-    /** A "not detected" result for [className]. */
+    /**
+     * A "not detected" result for [className].
+     * @param className reference name
+     * @param goodMatches good matches found
+     * @return the result
+     */
     private fun notFound(className: String, goodMatches: Int) =
         ObjectMatch(className, detected = false, goodMatches = goodMatches, inliers = 0, corners = emptyList())
 
     companion object {
         private const val TAG = "ORB"
 
-        /**
-         * Folder inside the APK's assets that holds the reference images: `robocontrol/assets/ORB_img` (app/build.gradle.kts maps
-         * `robocontrol/assets` to the assets root). Kept separate so other assets (e.g. the Silero model) never mix with them.
-         */
         private const val ASSET_DIR = "ORB_img"
 
-        /** Extensions treated as reference images. HEIC/HEIF decode only where the Android version supports it. */
         private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "webp", "bmp", "gif", "heic", "heif")
 
         @Volatile
@@ -762,13 +800,13 @@ class ORB(
         /**
          * Loads OpenCV's native library once per process. Called by the constructor; exposed so
          * an app can check availability early, e.g. at startup.
+         * @return true if OpenCV is available
          */
         @Synchronized
         fun loadOpenCv(): Boolean {
             if (!openCvLoaded) {
                 openCvLoaded = OpenCVLoader.initLocal()
-                // Before the first parallel OpenCV call: otherwise OpenCV starts a pool of 7 helper threads that spin after
-                // every short operation (measured 0.8-0.95 of a core on the robot, more than the detection itself).
+                // Before the first parallel OpenCV call, otherwise OpenCV starts a busy-waiting helper pool.
                 if (openCvLoaded) runCatching { org.opencv.core.Core.setNumThreads(DetectionSettings.run.openCvThreads.coerceAtLeast(1)) }
             }
             return openCvLoaded

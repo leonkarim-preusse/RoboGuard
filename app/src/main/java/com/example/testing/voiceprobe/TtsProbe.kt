@@ -23,36 +23,37 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Test of [OrionStarTts] on the robot: English and German speech, voice list, language codes, validation,
- * interruption, overlapping sentences and play status. Tests that need listening ask the tester for a verdict
- * ([verdict]). A second raw [SkillApi] connection is used for the numeric language code and the play status.
- * Suspend functions block for up to [TIMEOUT_MS]; do not call them on the main thread.
+ * Tests of [OrionStarTts] on the robot. Suspend functions block; do not call them on the main thread.
  * @param context used to connect to the speech service
  * @param log log of the test screen
  */
 class TtsProbe(private val context: Context, private val log: ProbeLog) {
-
     private val tts = OrionStarTts(context)
     private val rawApi = SkillApi()
 
     @Volatile
     private var rawConnected = false
 
-    /** Name of the most recent test, used to label the ✔/✘ verdict. */
     @Volatile
     private var lastTest: String? = null
 
-    /**
-     * Reports whether RobotOS grants (onRecovery) or withdraws (onSuspend) SDK control from this app.
-     * Only the request type is logged, never request text, which can contain speech.
-     */
     private val moduleCallback = object : ModuleCallbackApi() {
+        /**
+         * Logs a request forwarded by RobotOS.
+         * @param reqId request id
+         * @param reqType request type
+         * @param reqText request text
+         * @param reqParam request parameters
+         * @return false, the request is not handled
+         */
         override fun onSendRequest(reqId: Int, reqType: String?, reqText: String?, reqParam: String?): Boolean {
             log.i(TAG, "RobotOS request: $reqType")
             return false
         }
 
+        /** Logs that SDK control was lost. */
         override fun onSuspend() = log.i(TAG, "RobotOS SUSPENDED this app: another app holds SDK control, TTS will not work")
+        /** Logs that SDK control is back. */
         override fun onRecovery() = log.i(TAG, "RobotOS RECOVERED this app: SDK control granted")
     }
 
@@ -62,34 +63,36 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         val t0 = now()
         tts.connect { log.i(TAG, "OrionStarTts connected after ${now() - t0} ms") }
         rawApi.connectApi(context, object : ApiListener {
+            /** Registers the module callback once connected. */
             override fun handleApiConnected() {
                 rawConnected = true
                 log.i(TAG, "raw SkillApi connected after ${now() - t0} ms")
             }
 
+            /** Logs the disconnect. */
             override fun handleApiDisconnected() {
                 rawConnected = false
                 log.i(TAG, "raw SkillApi disconnected")
             }
 
+            /** Logs that the API is unavailable. */
             override fun handleApiDisabled() {
                 rawConnected = false
                 log.i(TAG, "raw SkillApi disabled: app not in foreground or not authorized, TTS will not work")
             }
         })
 
-        // CoreService only serves its "active app module"; being the foreground activity is not enough
-        // (on the robot, mActiveAppModule stayed com.ainirobot.maptool while this screen was on top and
-        // playText got no callback). connectServer + setCallback is the SDK's documented init order and is
-        // expected to register this app as a module; onRecovery/onSuspend above show whether it worked.
         RobotApiConnection.connect(context, object : ApiListener {
+            /** Logs the speech service connection. */
             override fun handleApiConnected() {
                 RobotApi.getInstance().setCallback(moduleCallback)
                 log.i(TAG, "RobotApi connected after ${now() - t0} ms, module callback registered")
                 logSdkControl()
             }
 
+            /** Logs the disconnect. */
             override fun handleApiDisconnected() = log.i(TAG, "RobotApi disconnected")
+            /** Logs that the speech service is unavailable. */
             override fun handleApiDisabled() = log.i(TAG, "RobotApi disabled: this app is not the active app")
         })
     }
@@ -98,14 +101,16 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
     fun disconnect() {
         tts.disconnect()
         runCatching { rawApi.disconnectApi() }
-        // No RobotApi.disconnectApi(): that connection is shared by the whole app (RobotApiConnection).
         rawConnected = false
     }
 
     /** Stops whatever is currently being spoken. */
     fun stopSpeech() = tts.stop()
 
-    /** Records the tester's judgement of the most recent test in the log. */
+    /**
+     * Records the tester's judgement of the most recent test in the log.
+     * @param asExpected whether the result was as expected
+     */
     fun verdict(asExpected: Boolean) {
         val test = lastTest ?: return log.i(TAG, "no test has run yet")
         log.i(TAG, "VERDICT $test: ${if (asExpected) "as expected" else "WRONG"}")
@@ -118,7 +123,6 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         for ((language, text) in SMOKE_SENTENCES) {
             log.i(TAG, "$language: \"$text\"")
             val t0 = now()
-            // withTimeoutOrNull cancels speakAndWait on timeout, which also stops the speech.
             val outcome = withTimeoutOrNull(TIMEOUT_MS) {
                 tts.speakAndWait(text, language)?.let { "failed: $it" } ?: "finished"
             } ?: "no callback within ${TIMEOUT_MS / 1000} s"
@@ -141,7 +145,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         }
     }
 
-    /** Test 2a: one English sentence through [OrionStarTts.speakEnglish]'s code path. */
+    /** Test 2a: one English sentence. */
     suspend fun english() = speakAndMeasure(
         name = "english",
         language = TtsLanguage.ENGLISH,
@@ -149,7 +153,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         expectation = "Expect: the sentence in English, clearly understandable."
     )
 
-    /** Test 2b: one German sentence with umlauts and ß, sent with the code name "de_DE". */
+    /** Test 2b: one German sentence with umlauts. */
     suspend fun german() = speakAndMeasure(
         name = "german (de_DE)",
         language = TtsLanguage.GERMAN,
@@ -172,9 +176,13 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         }
         runCatching {
             rawApi.playText(entity, object : TextListener() {
+                /** Logs the start. */
                 override fun onStart() { started.complete(now() - t0) }
+                /** Logs the completion. */
                 override fun onComplete() { result.complete(null) }
+                /** Logs the interruption. */
                 override fun onStop() { result.complete(TtsFailure.Interrupted) }
+                /** Logs the error. */
                 override fun onError() { result.complete(TtsFailure.SpeechService) }
             })
         }.onFailure {
@@ -199,6 +207,10 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         for ((name, text, expected) in cases) {
             var reported: TtsFailure? = null
             val accepted = tts.speak(text, TtsLanguage.ENGLISH, object : TtsListener {
+                /**
+                 * Logs the failure.
+                 * @param failure reason for the failure
+                 */
                 override fun onFailed(failure: TtsFailure) { reported = failure }
             })
             val pass = !accepted && reported == expected
@@ -275,7 +287,7 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
                     delay(SAMPLE_MS)
                 }
             }
-            delay(SAMPLE_MS * 2) // a few samples before speech starts
+            delay(SAMPLE_MS * 2)
             tts.speak(ENGLISH_SENTENCE, TtsLanguage.ENGLISH, eventLogger("sentence", t0, null, done))
             withTimeoutOrNull(TIMEOUT_MS) { done.await() }
             delay(AFTER_END_SAMPLING_MS)
@@ -283,10 +295,12 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         }
     }
 
-    // ---- helpers ------------------------------------------------------------
-
     /**
      * Shared body of tests 2a and 2b: speak, then log time to start, time to end and the result.
+     * @param name test name
+     * @param language voice language
+     * @param text sentence
+     * @param expectation what to expect
      */
     private suspend fun speakAndMeasure(name: String, language: TtsLanguage, text: String, expectation: String) {
         begin(name, expectation)
@@ -300,34 +314,59 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         askForVerdict()
     }
 
-    /** Listener that completes [started] with the start delay and [result] with the outcome. */
+    /**
+     * Listener that completes [started] with the start delay and [result] with the outcome.
+     * @param t0 start time
+     * @param started receives the start delay
+     * @param result receives the outcome
+     * @return the listener
+     */
     private fun deferredListener(
         t0: Long,
         started: CompletableDeferred<Long>,
         result: CompletableDeferred<TtsFailure?>
     ): TtsListener = object : TtsListener {
+        /** Completes [started]. */
         override fun onStarted() { started.complete(now() - t0) }
+        /** Completes [result] successfully. */
         override fun onFinished() { result.complete(null) }
+        /**
+         * Completes [result] with the failure.
+         * @param failure reason for the failure
+         */
         override fun onFailed(failure: TtsFailure) { result.complete(failure) }
     }
 
-    /** Listener that logs every event of one sentence with a timestamp relative to [t0]. */
+    /**
+     * Listener that logs every event of one sentence with a timestamp relative to [t0].
+     * @param label sentence label
+     * @param t0 start time
+     * @param started completed on start, or null
+     * @param done completed at the end
+     * @return the listener
+     */
     private fun eventLogger(
         label: String,
         t0: Long,
         started: CompletableDeferred<Unit>?,
         done: CompletableDeferred<Unit>
     ): TtsListener = object : TtsListener {
+        /** Logs the start. */
         override fun onStarted() {
             log.i(TAG, "$label started at ${now() - t0} ms")
             started?.complete(Unit)
         }
 
+        /** Logs the end. */
         override fun onFinished() {
             log.i(TAG, "$label finished at ${now() - t0} ms")
             done.complete(Unit)
         }
 
+        /**
+         * Logs the failure.
+         * @param failure reason for the failure
+         */
         override fun onFailed(failure: TtsFailure) {
             log.i(TAG, "$label failed ($failure) at ${now() - t0} ms")
             done.complete(Unit)
@@ -335,8 +374,10 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
     }
 
     /**
-     * Waits up to [TIMEOUT_MS] for [result] and logs the outcome. A timeout means the speech
-     * service never called back; speech is stopped in that case so the next test starts clean.
+     * Waits up to [TIMEOUT_MS] for [result] and logs the outcome.
+     * @param t0 start time
+     * @param started start delay
+     * @param result outcome
      */
     private suspend fun reportOutcome(t0: Long, started: CompletableDeferred<Long>, result: CompletableDeferred<TtsFailure?>) {
         val completed = withTimeoutOrNull(TIMEOUT_MS) { result.await(); true } ?: false
@@ -350,11 +391,18 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         log.i(TAG, "RESULT: ${failure?.let { "failed: $it" } ?: "finished"}, started after $startedAfter, total ${now() - t0} ms")
     }
 
-    /** The speech service's play status as text, or the error. */
+    /**
+     * The speech service's play status as text, or the error.
+     * @return the status text
+     */
     private fun readPlayStatus(): String =
         runCatching { rawApi.getTtsPlayStatus().toString() }.getOrElse { "error ${it.javaClass.simpleName}" }
 
-    /** Marks the start of a test in the log and remembers its name for [verdict]. */
+    /**
+     * Marks the start of a test in the log and remembers its name for [verdict].
+     * @param name test name
+     * @param expectation what to expect
+     */
     private fun begin(name: String, expectation: String) {
         lastTest = name
         log.section("TTS: $name")
@@ -375,13 +423,15 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
     /** Asks the tester for a ✔ / ✘ verdict. */
     private fun askForVerdict() = log.i(TAG, "Did it behave as expected? Press ✔ or ✘.")
 
-    /** Milliseconds since boot. */
+    /**
+     * Milliseconds since boot.
+     * @return milliseconds since boot
+     */
     private fun now() = SystemClock.elapsedRealtime()
 
     private companion object {
         const val TAG = "tts"
 
-        /** Upper bound for any single sentence; far longer than every test text takes to speak. */
         const val TIMEOUT_MS = 30_000L
         const val STOP_TIMEOUT_MS = 5_000L
         const val INTERRUPT_AFTER_MS = 1_500L
@@ -390,10 +440,8 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
         const val AFTER_END_SAMPLING_MS = 1_000L
         const val VOICES_PREVIEW_CHARS = 300
 
-        /** Short pause so separate sentences are audibly separate. */
         const val PAUSE_BETWEEN_SENTENCES_MS = 700L
 
-        /** Sentences for [saySentences]: the kind of thing RoboGuard will actually say. */
         val SMOKE_SENTENCES = listOf(
             TtsLanguage.ENGLISH to "Hello, my name is RoboGuard.",
             TtsLanguage.ENGLISH to "I respect your privacy. My camera is switched off.",
@@ -405,10 +453,8 @@ class TtsProbe(private val context: Context, private val log: ProbeLog) {
 
         const val ENGLISH_SENTENCE = "Hello, I am RoboGuard. The camera in this room is switched off."
 
-        /** Umlauts and ß on purpose: an English voice mispronounces them audibly. */
         const val GERMAN_SENTENCE = "Hallo, ich bin RoboGuard. Die Kamera in diesem Zimmer ist ausgeschaltet. Schöne Grüße!"
 
-        /** Long enough that there is still speech left to interrupt after 1.5 s. */
         val LONG_TEXT = List(3) {
             "This is a long test sentence. It keeps going so that the stop command has something to interrupt."
         }.joinToString(" ")

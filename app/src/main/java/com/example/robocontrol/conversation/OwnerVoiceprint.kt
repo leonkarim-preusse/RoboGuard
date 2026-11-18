@@ -12,10 +12,10 @@ import java.io.File
 
 /**
  * A stored voice template. It can only be compared with embeddings and erased; the values cannot be read out.
+ * @property values embedding values of the template
  * @property info statistics about the template
  */
 class Voiceprint internal constructor(private val values: FloatArray, val info: VoiceprintInfo) {
-
     /**
      * Cosine similarity of [embedding] to this voice.
      * @param embedding L2-normalised embedding
@@ -25,19 +25,28 @@ class Voiceprint internal constructor(private val values: FloatArray, val info: 
     fun similarityTo(embedding: FloatArray, cohort: FloatArray? = null): Float =
         centredSimilarity(values, embedding, cohort)
 
-    /** Overwrites the values in memory. Call when the template is no longer needed. */
+    /** Overwrites the values in memory. */
     fun zero() = values.fill(0f)
 
-    /** A copy of the values for the enrolment's own comparison; the caller must zero it after use. */
+    /**
+     * A copy of the values for the enrolment's own comparison; the caller must zero it after use.
+     * @return copy of the values; the caller zeroes it
+     */
     internal fun copyValues(): FloatArray = values.copyOf()
 
-    /** Never prints the values. */
+    /**
+     * Never prints the values.
+     * @return a text without the values
+     */
     override fun toString(): String = "Voiceprint(${info.dimensions} values, taught ${info.createdAtMs})"
 
     companion object {
         /**
-         * The comparison of [similarityTo] for two plain vectors, for the enrolment, which has to judge its own pieces
-         * before a [Voiceprint] exists — and has to judge them on the scale the detector will use later.
+         * Centred similarity of two plain vectors, as in [similarityTo].
+         * @param one first vector
+         * @param other second vector
+         * @param cohort cohort mean, or null
+         * @return the similarity
          */
         internal fun centredSimilarity(one: FloatArray, other: FloatArray, cohort: FloatArray?): Float {
             if (cohort == null || cohort.size != one.size) return SpeakerEmbedder.similarity(one, other)
@@ -55,6 +64,11 @@ class Voiceprint internal constructor(private val values: FloatArray, val info: 
 
 /**
  * Statistics about a stored voice that may be shown on screen.
+ * @property model name of the speaker model
+ * @property dimensions embedding size
+ * @property createdAtMs creation time
+ * @property speechSeconds speech used, in seconds
+ * @property pieces pieces used
  * @property selfSimilarityMean mean similarity of the enrolment pieces to the template
  * @property selfSimilarityMin lowest similarity of an enrolment piece to the template
  * @property threshold similarity at or above which a voice counts as the owner
@@ -76,60 +90,64 @@ data class VoiceprintInfo(
     val suggestedThreshold: Float? = null
 ) {
     companion object {
-        /** Default width of the unclear band below the threshold. */
         const val DEFAULT_MARGIN = 0.07f
 
-        /** [cohortId] of a threshold set on the raw scale, without a cohort. */
         const val NO_COHORT = 0L
     }
 }
 
 /**
- * Stores voice templates and the cohort mean, encrypted with an own Android Keystore key (AES-256-GCM), under
- * `files/robocontrol/voice/`. Several named voices can be stored; the detectors use the active one.
+ * Stores voice templates and the cohort mean, encrypted with an own Keystore key.
+ * @property context Android context
  */
 class OwnerVoiceprintStore private constructor(private val context: Context) {
-
     private val cipher = KeystoreZoneCipher(KEY_ALIAS)
     private val folder: File get() = File(context.filesDir, "robocontrol/voice")
 
-    /** Preferences that hold the name of the active voice. */
     private val prefs get() = context.getSharedPreferences("robocontrol_voice", Context.MODE_PRIVATE)
 
     private val _active = MutableStateFlow(safeName(prefs.getString(KEY_ACTIVE, null) ?: DEFAULT_PROFILE))
 
     private val _generation = MutableStateFlow(0L)
 
-    /** Incremented on every change of a stored voice, its threshold, the active voice or the cohort. */
     val generation: StateFlow<Long> = _generation.asStateFlow()
 
     /** Counts one change of the stored voices, threshold or cohort, so a running detector restarts with the new state. */
     private fun changed() { _generation.value = _generation.value + 1 }
 
-    /** Name of the voice the detectors use. */
     val activeProfile: StateFlow<String> = _active.asStateFlow()
 
     private val _profiles = MutableStateFlow(listProfiles())
 
-    /** All stored voices, by name. */
     val profiles: StateFlow<List<String>> = _profiles.asStateFlow()
 
     private val file: File get() = fileFor(_active.value)
 
-    /** The encrypted file of one stored voice. */
+    /**
+     * The encrypted file of one stored voice.
+     * @param profile voice name
+     * @return the file
+     */
     private fun fileFor(profile: String) = File(folder, safeName(profile) + ".print")
 
     /**
      * Normalises a voice name for use as a file name: letters, digits, space, "_" and "-", at most 40 characters.
      * @param profile name entered by the user
+     * @return the normalised name
      */
     fun safeName(profile: String) = profile.trim().replace(Regex("[^A-Za-z0-9 _-]"), "_").take(40).ifBlank { DEFAULT_PROFILE }
 
-    /** Names of all stored voices, sorted. */
+    /**
+     * Names of all stored voices, sorted.
+     * @return the names
+     */
     private fun listProfiles(): List<String> =
         folder.listFiles()?.filter { it.name.endsWith(".print") }?.map { it.name.removeSuffix(".print") }?.sorted().orEmpty()
 
-    /** Switches the voice the detectors compare against. */
+    /**
+     * Switches the voice the detectors compare against.
+     * @param profile voice name
+     */
     @Synchronized
     fun setActiveProfile(profile: String) {
         val name = safeName(profile)
@@ -149,7 +167,10 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         _info.value = runCatching { load()?.also { it.zero() }?.info }.getOrNull()
     }
 
-    /** Null if the active voice can be used; otherwise why not ("no voice stored", or it cannot be read). */
+    /**
+     * Null if the active voice can be used; otherwise why not ("no voice stored", or it cannot be read).
+     * @return null if the active voice can be used, else the reason
+     */
     @Synchronized
     fun problem(): String? {
         if (!file.exists()) return "no owner voice stored"
@@ -160,16 +181,24 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
     }
 
     /**
-     * True if [info]'s threshold was set against another cohort than the one stored now. Voices from before this was
-     * recorded ([VoiceprintInfo.cohortId] null) are accepted as they are.
+     * Checks whether [info]'s threshold belongs to another cohort.
+     * @param info stored voice info
+     * @return true if it was set against a different cohort
      */
     fun cohortMismatch(info: VoiceprintInfo): Boolean = info.cohortId != null && info.cohortId != currentCohortId()
 
-    /** Creation time of the stored cohort, or [VoiceprintInfo.NO_COHORT]. */
+    /**
+     * Creation time of the stored cohort, or [VoiceprintInfo.NO_COHORT].
+     * @return the creation time
+     */
     @Synchronized
     fun currentCohortId(): Long = runCatching { readCohort()?.third }.getOrNull() ?: VoiceprintInfo.NO_COHORT
 
-    /** Deletes one stored voice; the active one falls back to whatever is left. */
+    /**
+     * Deletes one stored voice; the active one falls back to whatever is left.
+     * @param profile voice name
+     * @return true if a file was deleted
+     */
     @Synchronized
     fun deleteProfile(profile: String): Boolean {
         @Suppress("NAME_SHADOWING") val profile = safeName(profile)
@@ -178,7 +207,6 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
             _profiles.value = listProfiles()
             if (_active.value == profile) {
                 setActiveProfile(_profiles.value.firstOrNull() ?: DEFAULT_PROFILE)
-                // Same name again (the last voice was the default one): setActiveProfile changed nothing, so say it here.
                 _info.value = runCatching { load()?.also { it.zero() }?.info }.getOrNull()
                 changed()
             }
@@ -189,13 +217,18 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
 
     private val _info = MutableStateFlow(runCatching { load()?.also { it.zero() }?.info }.getOrNull())
 
-    /** What is stored, without the vector — for the screen. Null = the robot does not know a voice. */
     val info: StateFlow<VoiceprintInfo?> = _info.asStateFlow()
 
-    /** Whether a voice is stored under the active name. */
+    /**
+     * Whether a voice is stored under the active name.
+     * @return true if a voice is stored
+     */
     fun exists(): Boolean = file.exists()
 
-    /** Reads the template. Returns null if none is stored; throws nothing — an unreadable file is reported as null. */
+    /**
+     * Reads the template; null if none is stored or the file cannot be read.
+     * @return the template, or null
+     */
     @Synchronized
     fun load(): Voiceprint? {
         val f = file
@@ -208,7 +241,12 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         }.onFailure { Log.e(TAG, "could not read the stored voice: $it") }.getOrNull()
     }
 
-    /** Writes the template (temp file + rename). Returns null on success, else a message for the screen. */
+    /**
+     * Writes the template (temp file + rename). Returns null on success, else a message for the screen.
+     * @param values template values
+     * @param info statistics to store
+     * @return null on success, else a message
+     */
     @Synchronized
     fun save(values: FloatArray, info: VoiceprintInfo): String? {
         return runCatching {
@@ -256,17 +294,25 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
     @Synchronized
     fun setThreshold(threshold: Float): String? = update { it.copy(threshold = threshold.coerceIn(MIN_THRESHOLD, MAX_THRESHOLD)) }
 
-    /** Changes only the unclear band of the stored voice (see [VoiceprintInfo.margin]). */
+    /**
+     * Changes only the unclear band of the stored voice (see [VoiceprintInfo.margin]).
+     * @param margin new unclear band
+     * @return null on success, else a message
+     */
     @Synchronized
     fun setMargin(margin: Float): String? = update { it.copy(margin = margin.coerceIn(0f, MAX_MARGIN)) }
 
-    /** Takes over the threshold the last enrolment suggested. */
+    /**
+     * Takes over the threshold the last enrolment suggested.
+     * @return null on success, else a message
+     */
     @Synchronized
     fun applySuggestedThreshold(): String? = update { info -> info.suggestedThreshold?.let { info.copy(threshold = it) } ?: info }
 
     /**
-     * Rewrites the stored info with [change], binding the threshold to the cohort stored NOW (a threshold set by hand is
-     * set on the scale the detector uses at this moment). Saves nothing if nothing changed.
+     * Rewrites the stored info with [change].
+     * @param change function applied to the stored info
+     * @return null on success, else a message
      */
     private fun update(change: (VoiceprintInfo) -> VoiceprintInfo): String? {
         val print = load() ?: return "no voice stored"
@@ -282,14 +328,14 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         return error
     }
 
-    // ---- cohort: the average of many OTHER voices, recorded through this microphone -------------------------
-
     private val _cohort = MutableStateFlow(runCatching { readCohort()?.second }.getOrNull())
 
-    /** How many pieces of speech the stored cohort was averaged from, or null if none is stored. */
     val cohortPieces: StateFlow<Int?> = _cohort.asStateFlow()
 
-    /** The cohort mean, or null. A plain average — it is nobody's voiceprint and matches no single person. */
+    /**
+     * The cohort mean, or null. An average over many voices that matches no single person.
+     * @return the cohort mean, or null
+     */
     @Synchronized
     fun loadCohort(): FloatArray? = runCatching { readCohort()?.first }
         .onFailure { Log.e(TAG, "could not read the cohort: $it") }
@@ -297,11 +343,12 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
 
     /**
      * Stores the average of the recorded other voices (never single voices).
+     * @param values mean of the recorded voices
+     * @param pieces number of pieces averaged
      * @return null on success, otherwise the reason (for example an empty average).
      */
     @Synchronized
     fun saveCohort(values: FloatArray, pieces: Int): String? = runCatching {
-        // An all-zero (or nearly zero) mean would switch the centring off without anybody noticing.
         require(norm(values) >= MIN_COHORT_NORM) { "the recorded average is empty; record the other voices again" }
         val json = JSONObject()
             .put("pieces", pieces)
@@ -336,14 +383,16 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         return deleted
     }
 
-    /** Reads the cohort average with its piece count and time, or null if none is stored or it is empty. */
+    /**
+     * Reads the cohort average with its piece count and time, or null if none is stored or it is empty.
+     * @return mean, piece count and creation time, or null
+     */
     private fun readCohort(): Triple<FloatArray, Int, Long>? {
         val file = File(File(context.filesDir, "robocontrol/voice"), COHORT_FILE)
         if (!file.exists()) return null
         val json = JSONObject(String(cipher.decrypt(file.readBytes(), cohortAad()), Charsets.UTF_8))
         val array = json.getJSONArray("mean")
         val mean = FloatArray(array.length()) { array.getDouble(it).toFloat() }
-        // Written by the bug fixed 2026-10-19 (Stop during a cohort run stored zeros): treat it as no cohort.
         if (norm(mean) < MIN_COHORT_NORM) {
             Log.w(TAG, "stored cohort is empty (all zeros): ignored, record the other voices again")
             return null
@@ -351,13 +400,23 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         return Triple(mean, json.optInt("pieces"), json.optLong("createdAtMs", 1L))
     }
 
-    /** Euclidean length of [values]. */
+    /**
+     * Euclidean length of [values].
+     * @param values vector
+     * @return the length
+     */
     private fun norm(values: FloatArray): Double = kotlin.math.sqrt(values.sumOf { it.toDouble() * it })
 
-    /** Associated data of the cohort file: binds it to its file name. */
+    /**
+     * Associated data of the cohort file: binds it to its file name.
+     * @return the associated data
+     */
     private fun cohortAad() = "roboguard-voiceprint:$COHORT_FILE".toByteArray(Charsets.UTF_8)
 
-    /** Deletes the stored voice. */
+    /**
+     * Deletes the stored voice.
+     * @return true if a file was deleted
+     */
     @Synchronized
     fun delete(): Boolean {
         val deleted = !file.exists() || file.delete()
@@ -370,7 +429,11 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         return deleted
     }
 
-    /** The statistics of a stored voice as written in its file. */
+    /**
+     * The statistics of a stored voice as written in its file.
+     * @param json stored JSON
+     * @return the statistics
+     */
     private fun info(json: JSONObject) = VoiceprintInfo(
         model = json.optString("model"),
         dimensions = json.optInt("dimensions"),
@@ -385,33 +448,36 @@ class OwnerVoiceprintStore private constructor(private val context: Context) {
         suggestedThreshold = if (json.has("suggestedThreshold")) json.optDouble("suggestedThreshold").toFloat() else null
     )
 
-    /** Binds the file to its purpose: a copy dropped into another app's folder cannot be decrypted. */
+    /**
+     * Binds the file to its purpose: a copy dropped into another app's folder cannot be decrypted.
+     * @return the associated data
+     */
     private fun aad() = "roboguard-voiceprint:${file.name}".toByteArray(Charsets.UTF_8)
 
     companion object {
         private const val TAG = "OwnerVoiceprint"
         private const val COHORT_FILE = "cohort.mean"
 
-        /** Name of the voice used when nothing else is chosen; also the file the very first enrolment wrote. */
         const val DEFAULT_PROFILE = "owner"
 
         private const val KEY_ACTIVE = "active_profile"
         private const val KEY_ALIAS = "robocontrol_owner_voiceprint"
 
-        /** Lowest threshold that can be set. */
         const val MIN_THRESHOLD = 0.2f
         const val MAX_THRESHOLD = 0.97f
 
-        /** Widest unclear band that can be set. */
         const val MAX_MARGIN = 0.4f
 
-        /** A cohort mean shorter than this is empty (zeros), not an average of voices. */
         private const val MIN_COHORT_NORM = 1e-3
 
         @Volatile
         private var instance: OwnerVoiceprintStore? = null
 
-        /** The one store of the process. */
+        /**
+         * The one store of the process.
+         * @param context Android context
+         * @return the store
+         */
         fun get(context: Context): OwnerVoiceprintStore =
             instance ?: synchronized(this) {
                 instance ?: OwnerVoiceprintStore(context.applicationContext).also { instance = it }

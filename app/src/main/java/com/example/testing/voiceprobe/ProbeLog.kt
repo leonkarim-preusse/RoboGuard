@@ -13,30 +13,26 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Log of the test screens. Every line is shown on screen ([lines]) and written to a file in `files/voiceprobe/`, one file
- * per session, with seconds since the log was created. Speech payloads appear on screen as a short preview, but only
- * their shape (length, JSON keys) is written to the file. Thread-safe.
+ * Log of the test screens, shown on screen and written to `files/voiceprobe/`. Thread-safe.
  * @param context used to locate the log folder
  */
 class ProbeLog(context: Context) {
-
-    /** Reference point for the relative timestamps on every line. */
     private val start = SystemClock.elapsedRealtime()
 
-    /** Log file of this session. */
     private val file: File = File(context.filesDir, "voiceprobe")
         .apply { mkdirs() }
         .resolve("probe-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".log")
 
     private val _lines = MutableStateFlow<List<String>>(emptyList())
 
-    /** Lines for the screen, newest last, capped at [MAX_SCREEN_LINES]. */
     val lines: StateFlow<List<String>> = _lines.asStateFlow()
 
-    /** Absolute path of this session's log file, shown at the top of the probe screen. */
     val filePath: String get() = file.absolutePath
 
-    /** Writes a visible separator, used when a probe starts. */
+    /**
+     * Writes a visible separator, used when a probe starts.
+     * @param title section title
+     */
     fun section(title: String) = write("==== $title ====", "==== $title ====")
 
     /**
@@ -74,15 +70,14 @@ class ProbeLog(context: Context) {
     }
 
     companion object {
-        /** Long enough to recognise a format, short enough not to show whole sentences. */
         private const val PREVIEW_CHARS = 160
 
-        /** Keeps the Compose list responsive during long sessions. */
         private const val MAX_SCREEN_LINES = 500
 
         /**
          * Describes a payload by its length and, for JSON, its keys.
          * @param value the payload
+         * @return the description
          */
         fun describe(value: String?): String {
             if (value == null) return "null"

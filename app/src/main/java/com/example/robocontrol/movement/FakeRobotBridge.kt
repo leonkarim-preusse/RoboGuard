@@ -16,7 +16,6 @@ class FakeRobotBridge(
     private val stepMetres: Double = 0.10,
     private val arrivalRadius: Double = 0.20
 ) : RobotBridge {
-
     private val _pose = MutableStateFlow<RobotPose?>(null)
     override val pose: StateFlow<RobotPose?> = _pose.asStateFlow()
 
@@ -33,29 +32,39 @@ class FakeRobotBridge(
     private var target: Point2D? = null
     private var listener: NavigationListener? = null
 
-    /** Set to have the fake report a specific pose status, e.g. to simulate a
-     *  RobotOS forbidden area authored in OrionStar's own map tool. */
     var forcedStatus: PoseStatus? = null
 
-    // ---- lifecycle -----------------------------------------------------
-
+    /** Marks the fake robot as connected. */
     override fun connect() {
         _connected.value = true
         emitPose()
     }
 
+    /** Marks the fake robot as disconnected. */
     override fun disconnect() {
         stopNavigation()
         _connected.value = false
     }
 
-    // ---- localization & map --------------------------------------------
-
+    /**
+     * Reports the fake localization state.
+     * @param callback receives the state
+     */
     override fun isLocalized(callback: (Boolean) -> Unit) = callback(localized)
 
-    /** Sets whether the fake robot counts as localised. */
+    /**
+     * Sets whether the fake robot counts as localised.
+     * @param value true if localized
+     */
     fun setLocalized(value: Boolean) { localized = value }
 
+    /**
+     * Sets the fake pose and marks the robot as localized.
+     * @param x x in metres
+     * @param y y in metres
+     * @param theta heading in radians
+     * @param callback receives true
+     */
     override fun setPoseEstimate(x: Double, y: Double, theta: Double, callback: (Boolean) -> Unit) {
         position = Point2D(x, y)
         heading = theta
@@ -64,37 +73,69 @@ class FakeRobotBridge(
         callback(true)
     }
 
+    /**
+     * Reports the fake map name.
+     * @param callback receives the name
+     */
     override fun currentMapName(callback: (String?) -> Unit) = callback(mapName)
 
+    /**
+     * Switches the fake map; the robot is no longer localized.
+     * @param mapName name of the map
+     * @param callback receives true
+     */
     override fun switchMap(mapName: String, callback: (Boolean) -> Unit) {
         this.mapName = mapName
-        // RobotOS loses localization on map switch, and places are map-bound.
         localized = false
         places.clear()
         callback(true)
     }
 
-    // ---- places --------------------------------------------------------
-
+    /**
+     * Lists the fake places.
+     * @param callback receives the names
+     */
     override fun listPlaces(callback: (List<String>) -> Unit) = callback(places.keys.toList())
 
+    /**
+     * Saves the current fake position as a place.
+     * @param placeName name of the place
+     * @param callback receives true
+     */
     override fun saveCurrentPositionAs(placeName: String, callback: (Boolean) -> Unit) {
         places[placeName] = position
         callback(true)
     }
 
+    /**
+     * Removes a fake place.
+     * @param placeName name of the place
+     * @param callback receives true if it existed
+     */
     override fun removePlace(placeName: String, callback: (Boolean) -> Unit) {
         callback(places.remove(placeName) != null)
     }
 
+    /**
+     * Looks up a fake place.
+     * @param placeName name of the place
+     * @param callback receives the position, or null
+     */
     override fun locationOf(placeName: String, callback: (Point2D?) -> Unit) =
         callback(places[placeName])
 
-    /** Test helper: place a named point without driving there first. */
+    /**
+     * Adds a named place without driving there.
+     * @param name name of the place
+     * @param at position
+     */
     fun definePlace(name: String, at: Point2D) { places[name] = at }
 
-    // ---- navigation ----------------------------------------------------
-
+    /**
+     * Starts a simulated drive to a place.
+     * @param placeName name of the place
+     * @param listener receives progress and outcome
+     */
     override fun navigateTo(placeName: String, listener: NavigationListener) {
         val p = places[placeName]
         if (p == null) {
@@ -104,6 +145,11 @@ class FakeRobotBridge(
         navigateTo(p, listener)
     }
 
+    /**
+     * Starts a simulated drive to a point.
+     * @param target target position
+     * @param listener receives progress and outcome
+     */
     override fun navigateTo(target: Point2D, listener: NavigationListener) {
         if (!localized) {
             listener.onFailed(NavFailure.NotLocalized)
@@ -120,6 +166,7 @@ class FakeRobotBridge(
         if (position.distanceTo(target) <= arrivalRadius) finishArrived()
     }
 
+    /** Stops the simulated drive. */
     override fun stopNavigation() {
         val l = listener
         target = null
@@ -127,7 +174,11 @@ class FakeRobotBridge(
         l?.onFailed(NavFailure.CancelledByCaller)
     }
 
-    /** Turns instantly. */
+    /**
+     * Turns instantly.
+     * @param angleRad angle in radians
+     * @param callback receives true
+     */
     override fun turnInPlace(angleRad: Double, callback: (Boolean) -> Unit) {
         heading = EscapeHeading.normalize(heading + angleRad)
         emitPose()
@@ -135,8 +186,8 @@ class FakeRobotBridge(
     }
 
     /**
-     * Advance the simulation one step. Returns true while still navigating.
-     * Call repeatedly in a test; drive from a coroutine or Handler in the app.
+     * Advances the simulation one step.
+     * @return true while still navigating
      */
     fun tick(): Boolean {
         val t = target ?: return false
@@ -154,14 +205,21 @@ class FakeRobotBridge(
         return target != null
     }
 
-    /** Run to completion or until [maxSteps]. Returns steps taken. */
+    /**
+     * Runs the simulation until the drive ends or [maxSteps] is reached.
+     * @param maxSteps maximum number of steps
+     * @return steps taken
+     */
     fun runToCompletion(maxSteps: Int = 10_000): Int {
         var n = 0
         while (n < maxSteps && tick()) n++
         return n
     }
 
-    /** Teleport, for setting up a test case. */
+    /**
+     * Moves the fake robot to [p] instantly.
+     * @param p new position
+     */
     fun placeAt(p: Point2D) {
         position = p
         emitPose()

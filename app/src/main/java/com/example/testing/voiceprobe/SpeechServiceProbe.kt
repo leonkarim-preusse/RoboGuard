@@ -13,46 +13,52 @@ import com.ainirobot.coreservice.client.speech.SkillCallback
  * @param log log of the test screen
  */
 class SpeechServiceProbe(private val context: Context, private val log: ProbeLog) {
-
-    /** Non-null while connected (or connecting). Also serves as the "is started" flag. */
     private var skillApi: SkillApi? = null
 
-    /** Last value sent with setMultipleModeEnable. Assumes the service starts with it off. */
     private var multipleMode = false
 
-    /** For throttling [SkillCallback.onVolumeChange]. */
     private var lastVolumeLogAt = 0L
 
-    /** Logs every callback of the speech service. */
     private val callback = object : SkillCallback() {
-
-        /** Partial ASR result while someone is still speaking. May contain speech content. */
+        /**
+         * Partial ASR result while someone is still speaking. May contain speech content.
+         * @param result partial result
+         */
         override fun onSpeechParResult(result: String?) = log.payload(TAG, "onSpeechParResult", result)
 
-        /** Final ASR result of one utterance. May contain speech content. */
+        /**
+         * Final ASR result of one utterance. May contain speech content.
+         * @param result final result
+         */
         override fun onQueryAsrResult(result: String?) = log.payload(TAG, "onQueryAsrResult", result)
 
-        /** Logs the shape of a speech stream payload. */
+        /**
+         * Logs the shape of a speech stream payload.
+         * @param data stream payload
+         */
         override fun onSpeechStreamData(data: String?) = log.payload(TAG, "onSpeechStreamData", data)
 
-        /** Recognition session started (presumably after the wake word). */
+        /** Logs the start of a recognition session. */
         override fun onStart() = log.i(TAG, "onStart")
 
-        /** Recognition session ended. */
+        /** Logs the end of a recognition session. */
         override fun onStop() = log.i(TAG, "onStop")
 
-        /** A query finished; the meaning of [status] is undocumented. */
+        /**
+         * Logs a finished query.
+         * @param status status code
+         */
         override fun onQueryEnded(status: Int) = log.i(TAG, "onQueryEnded status=$status")
 
         /**
-         * Voice activity detection timing. Probably how long it has been silent (ms);
-         * the log should show whether it resets when a person starts speaking.
+         * Logs voice activity timing.
+         * @param time reported time
          */
         override fun onVadMuteTime(time: Int) = log.i(TAG, "onVadMuteTime $time")
 
         /**
-         * Input loudness. It can fire many times per second, so only one value every
-         * [VOLUME_LOG_INTERVAL_MS] is logged. That is enough to see whether it follows speech.
+         * Logs the input loudness at most every [VOLUME_LOG_INTERVAL_MS].
+         * @param volume input volume
          */
         override fun onVolumeChange(volume: Int) {
             val now = SystemClock.elapsedRealtime()
@@ -61,13 +67,19 @@ class SpeechServiceProbe(private val context: Context, private val log: ProbeLog
             log.i(TAG, "onVolumeChange $volume")
         }
 
-        /** Errors from the speech service, e.g. network ASR failures. */
+        /**
+         * Logs errors of the speech service.
+         * @param sid session id
+         * @param code error code
+         * @param message error text
+         */
         override fun onError(sid: String?, code: Int, message: String?) =
             log.i(TAG, "onError sid=$sid code=$code message=$message")
 
         /**
          * Logs the request and returns null.
          * @param index index passed by the speech service
+         * @return null
          */
         override fun onGetMultipleModeInfos(index: Int): String? {
             log.i(TAG, "onGetMultipleModeInfos($index) requested, answering null")
@@ -82,13 +94,16 @@ class SpeechServiceProbe(private val context: Context, private val log: ProbeLog
         val api = SkillApi()
         skillApi = api
         api.connectApi(context, object : ApiListener {
+            /** Registers the callback once connected. */
             override fun handleApiConnected() {
                 log.i(TAG, "connected, registering callback")
                 api.registerCallBack(callback)
                 logTtsStatus()
             }
 
+            /** Logs the disconnect. */
             override fun handleApiDisconnected() = log.i(TAG, "disconnected")
+            /** Logs that the speech service is unavailable. */
             override fun handleApiDisabled() = log.i(TAG, "disabled (app not authorized or not in foreground?)")
         })
     }

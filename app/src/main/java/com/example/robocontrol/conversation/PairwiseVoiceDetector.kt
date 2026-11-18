@@ -10,10 +10,7 @@ import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * [ConversationDetector] that compares pieces of speech with each other: each new embedding is compared with the
- * pieces held in the window, and a median similarity below [ConversationSettings.differentVoiceBelow] means two
- * voices. Embeddings are kept in memory only for the window and zeroed on reset and stop. A stored cohort mean is used
- * to centre the comparison.
+ * [ConversationDetector] that compares pieces of speech with each other; a low median similarity means two voices.
  * @param context used to load the models and the cohort
  * @param source audio input
  * @param settings detection settings
@@ -23,7 +20,6 @@ class PairwiseVoiceDetector(
     private val source: PcmSource = AndroidMicSource(),
     private val settings: ConversationSettings = ConversationSettings()
 ) : ConversationDetector {
-
     private val _snapshot = MutableStateFlow(ConversationSnapshot(method = DetectionMethod.PAIRWISE))
     override val snapshot: StateFlow<ConversationSnapshot> = _snapshot.asStateFlow()
 
@@ -35,6 +31,7 @@ class PairwiseVoiceDetector(
     private val debug = DebugTimeline()
     private var lastStateForDebug = ConversationState.NO_SPEECH
 
+    /** Starts the detection thread. */
     @Synchronized
     override fun start() {
         if (thread != null) return
@@ -44,18 +41,25 @@ class PairwiseVoiceDetector(
         }
     }
 
+    /**
+     * Stops the detection thread and waits for it.
+     * @return true if the thread ended
+     */
     @Synchronized
     override fun stop(): Boolean {
         val t = thread
         thread = null
         t?.interrupt()
-        // Wait for the thread to close the microphone. The next detector opens it immediately afterwards, and two
-        // AudioRecords on the same device give silence on Android 9 rather than an error.
+        // Two AudioRecords on Android 9 give silence, so wait until the microphone is released.
         runCatching { t?.join(STOP_TIMEOUT_MS) }
         return t == null || !t.isAlive
     }
 
-    /** One piece of speech: its centred embedding and when it was heard. */
+    /**
+     * One piece of speech: its centred embedding and when it was heard.
+     * @property embedding centred embedding
+     * @property timeMs audio time of the piece
+     */
     private class Piece(val embedding: FloatArray, val timeMs: Long)
 
     /**
@@ -74,9 +78,6 @@ class PairwiseVoiceDetector(
         val gate = SpeechGateState(settings)
         val pieces = PieceAssembler(settings, source.sampleRate)
         val held = ArrayDeque<Piece>()
-        // Outlier filter (settings.confirmTwice): a piece that read "another voice" waits HERE, outside `held`, until the
-        // next piece says the same. Before, it went into `held` at once, so the next normal piece was compared with the
-        // outlier itself and "confirmed" it.
         var pending: Piece? = null
         var readings = emptyList<Float>()
         var wasDifferent = false
@@ -88,7 +89,6 @@ class PairwiseVoiceDetector(
         var lastPublish = -1_000L
         var worker: EmbeddingWorker<FloatArray>? = null
         val silence = SilenceWindow(settings.resetAfterSilenceMs, settings.resetMaxSpeechShare)
-        // Load counters for the performance recording (numbers only, see AudioLoad).
         val load = AudioLoad(TAG, "compare pieces, another voice when the median is below %.2f, %d pieces held, window %d s, ".format(
             settings.differentVoiceBelow, settings.piecesKept, settings.windowMs / 1000) +
             "%s, confirm twice %b, pieces %s, gate %s, silero %.2f (release %.2f), floor %.0f dBFS".format(
@@ -103,27 +103,25 @@ class PairwiseVoiceDetector(
             pending = null
         }
 
+        /**
+         * Keeps [piece] for later comparisons and drops the oldest beyond the limit.
+         * @param piece piece to keep
+         */
         fun hold(piece: Piece) {
             held.addLast(piece)
             while (held.size > settings.piecesKept) held.removeFirst().embedding.fill(0f)
         }
 
         try {
-            // The microphone first: if it cannot be opened, no model has been loaded for nothing.
             val openError = source.open()
             if (openError != null) {
                 _snapshot.value = _snapshot.value.copy(running = false, error = openError)
                 return
             }
             if (settings.gateMode != SpeechGateMode.LEVEL_ONLY) vad = SileroVad(context)
-            // Audio that is not read in time is gone for good, unlike a camera frame: this loop outranks the detection
-            // workers (which run at THREAD_PRIORITY_URGENT_DISPLAY, -8).
             runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) }
-            // One line the graphs can read the threshold lines from (performance/graphs.py).
             Log.i(TAG, "gate: %s, silero %.2f (hysteresis %.2f), level floor %.0f dBFS".format(
                 settings.gateMode, settings.speechThreshold, settings.speechHysteresis, settings.minLevelDb))
-            // The embedding runs on its own thread, so the microphone is read all the time. It hands back the
-            // CENTRED vector, which this thread keeps in `held` and zeroes when it is dropped.
             worker = EmbeddingWorker(context, "PairwiseVoiceEmbed", capacity = 1,
                 compute = { embedding, _ -> centre(embedding, cohort) },
                 discard = { it.fill(0f) },
@@ -156,7 +154,6 @@ class PairwiseVoiceDetector(
                     }
                 }
                 val levelDb = hopLevelDb(hop)
-                // The robot's own voice would read as another voice (see RobotSpeaking and PieceAssembler).
                 val robotTalking = speaking.active(timeMs)
                 if (robotTalking != wasRobotTalking) {
                     Log.i(TAG, if (robotTalking) "robot is speaking: ignoring the microphone until it stops"
@@ -176,8 +173,6 @@ class PairwiseVoiceDetector(
                 for (piece in pieces.onHop(hop, timeMs, levelDb, gated, robotTalking)) {
                     if (!worker.offer(piece)) Log.w(TAG, "embedding still busy: piece dropped")
                 }
-                // speechSamples too, see OwnerVoiceDetector.
-                // Silence = at most 10 % speech over the window (owner, 2026-10-19), not a single frame.
                 if (silence.add(speech) && (speechSamples > 0 || held.isNotEmpty() || pending != null)) {
                     silence.clear()
                     forget()
@@ -201,8 +196,6 @@ class PairwiseVoiceDetector(
                         hold(piece)
                         continue
                     }
-                    // The MEDIAN of the comparisons decides, not the lowest: the minimum of up to six noisy pairs sank the
-                    // more pieces were held, and one outlier in the window pulled every later minimum down.
                     val similarities = held.map { SpeakerEmbedder.similarity(piece.embedding, it.embedding) }.sorted()
                     val median = if (similarities.size % 2 == 1) similarities[similarities.size / 2]
                     else (similarities[similarities.size / 2 - 1] + similarities[similarities.size / 2]) / 2
@@ -216,7 +209,6 @@ class PairwiseVoiceDetector(
                             hold(piece)
                         }
                         waiting != null && different -> {
-                            // The piece after the outlier is also far from the voices held before it: two voices.
                             differentUntil = timeMs + settings.windowMs
                             hold(waiting)
                             hold(piece)
@@ -230,7 +222,6 @@ class PairwiseVoiceDetector(
                             note = " (the piece before it was dropped, not repeated)"
                         }
                         different && wasDifferent -> {
-                            // A run of "another voice" keeps counting at once; only the first one has to be repeated.
                             differentUntil = timeMs + settings.windowMs
                             hold(piece)
                         }
@@ -244,7 +235,6 @@ class PairwiseVoiceDetector(
                     Log.i(TAG, "piece: median similarity to the %d held pieces %.3f (lowest %.3f) -> %s%s".format(
                         similarities.size, median, similarities.first(), if (different) "another voice" else "same voice", note))
                 }
-                // Pieces older than the window say nothing about who is in the room now.
                 while (held.isNotEmpty() && timeMs - held.first().timeMs > settings.windowMs) {
                     held.removeFirst().embedding.fill(0f)
                 }
@@ -289,14 +279,12 @@ class PairwiseVoiceDetector(
                 }
             }
         } catch (_: InterruptedException) {
-            // stop() while waiting for audio: a normal end
         } catch (e: Exception) {
             Log.e(TAG, "detector stopped", e)
             _snapshot.value = _snapshot.value.copy(error = e.message ?: e.toString())
         } finally {
             runCatching { source.close() }
             if (worker != null) worker.stop() else cohort?.fill(0f)
-            // Results the worker still hands back are erased by its own discard.
             while (true) (worker?.poll() ?: break).value.fill(0f)
             forget()
             pieces.clear()
@@ -309,9 +297,13 @@ class PairwiseVoiceDetector(
         }
     }
 
-    /** Subtracts the cohort mean and renormalises, so the room and the microphone cancel out of the comparison. */
+    /**
+     * Subtracts the cohort mean and renormalises, so the room and the microphone cancel out of the comparison.
+     * @param embedding embedding
+     * @param cohort cohort mean, or null
+     * @return the centred, normalised vector
+     */
     private fun centre(embedding: FloatArray, cohort: FloatArray?): FloatArray {
-        // Runs on the embedding thread; the cohort is only read there and erased by the worker when it ends.
         if (cohort == null || cohort.size != embedding.size) return embedding.copyOf()
         val out = FloatArray(embedding.size) { embedding[it] - cohort[it] }
         return SpeakerEmbedder.normalise(out)
@@ -321,7 +313,6 @@ class PairwiseVoiceDetector(
         const val TAG = "PairwiseVoice"
         const val PUBLISH_MS = 100L
 
-        /** How long stop() waits for the thread to let go of the microphone. */
         const val STOP_TIMEOUT_MS = 1_000L
         const val READINGS_KEPT = 8
     }

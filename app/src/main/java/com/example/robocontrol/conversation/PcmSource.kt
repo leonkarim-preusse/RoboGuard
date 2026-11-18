@@ -16,7 +16,12 @@ interface PcmSource {
     /** @return null if opened, otherwise a reason */
     fun open(): String?
 
-    /** Reads up to [count] samples into [buffer]. @return samples read, 0 if none yet, −1 at the end or on error */
+    /**
+     * Reads up to [count] samples into [buffer].
+     * @param buffer target buffer
+     * @param count number of samples
+     * @return samples read, 0 if none yet, −1 at the end or on error
+     */
     fun read(buffer: ShortArray, count: Int): Int
 
     /** Stops reading and frees the source. */
@@ -32,15 +37,14 @@ class AndroidMicSource(
     override val sampleRate: Int = 16_000,
     private val audioSource: Int = MediaRecorder.AudioSource.CAMCORDER
 ) : PcmSource {
-
     private var record: AudioRecord? = null
 
+    /**
+     * Opens the microphone.
+     * @return null on success, else the reason
+     */
     override fun open(): String? {
-        // The buffer has to bridge the LONGEST pause the reading thread can take, and that is one embedding: CAM++ needs
-        // 0.7 s on an idle robot and up to 3.4 s under full load, on the SAME thread that reads the microphone. With the
-        // old `minBuffer * 4` (≈ 0.2-0.3 s here) everything beyond that was simply lost, and the piece after each one
-        // started with a hole in the middle of a word — which is what produced the random outliers while the owner was
-        // speaking normally (measured 2026-09-28: audio/clock fell to 0.67-0.76 exactly around those readings).
+        // Large enough to cover one embedding on the reading thread without losing audio.
         val minBuffer = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBuffer <= 0) return "16 kHz mono not supported (getMinBufferSize=$minBuffer)"
         val r = try {
@@ -59,8 +63,7 @@ class AndroidMicSource(
             r.release()
             return "startRecording failed: $e"
         }
-        // On Android 9 a refused start does not throw: the record simply is not recording, and every read returns 0
-        //.
+        // On Android 9 a refused start does not throw: the record is not recording and every read returns 0.
         if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
             runCatching { r.stop() }
             r.release()
@@ -70,6 +73,12 @@ class AndroidMicSource(
         return null
     }
 
+    /**
+     * Reads from the microphone.
+     * @param buffer target buffer
+     * @param count number of samples
+     * @return samples read, or −1 on error
+     */
     override fun read(buffer: ShortArray, count: Int): Int {
         val r = record ?: return -1
         val n = r.read(buffer, 0, count)
@@ -77,6 +86,7 @@ class AndroidMicSource(
         return if (n < 0) -1 else n
     }
 
+    /** Releases the microphone. */
     override fun close() {
         record?.let {
             runCatching { it.stop() }
@@ -86,7 +96,6 @@ class AndroidMicSource(
     }
 
     private companion object {
-        /** Seconds of microphone audio the buffer must hold while the thread is busy elsewhere. */
         const val BUFFER_SECONDS = 4
     }
 }
@@ -105,11 +114,18 @@ class SyntheticVoicesSource(
     override val sampleRate: Int = 16_000,
     seed: Int = 7
 ) : PcmSource {
-
-    /** One part of the script: [speaker] 0 or 1, or null for silence, for [durationMs]. */
+    /**
+     * One part of the script: [speaker] 0 or 1, or null for silence, for [durationMs].
+     * @property speaker speaker 0 or 1, or null for silence
+     * @property durationMs length in milliseconds
+     */
     data class Segment(val speaker: Int?, val durationMs: Long)
 
-    /** A synthetic voice: pitch and how much all formants are scaled (vocal-tract length). */
+    /**
+     * A synthetic voice: pitch and how much all formants are scaled (vocal-tract length).
+     * @property pitchHz pitch in Hz
+     * @property formantScale factor for all formants
+     */
     private data class Voice(val pitchHz: Double, val formantScale: Double)
 
     private val voices = listOf(Voice(115.0, 1.0), Voice(215.0, 1.2))
@@ -127,7 +143,6 @@ class SyntheticVoicesSource(
     private val y1 = DoubleArray(3)
     private val y2 = DoubleArray(3)
 
-    /** Times (ms) where the speaker changes from one voice to the other, ignoring silences: the "truth" for a test. */
     val expectedChangesMs: List<Long> = buildList {
         var t = 0L
         var lastSpeaker: Int? = null
@@ -140,11 +155,21 @@ class SyntheticVoicesSource(
         }
     }
 
+    /**
+     * Starts the synthetic feed.
+     * @return always null
+     */
     override fun open(): String? {
         startedAtNanos = System.nanoTime()
         return null
     }
 
+    /**
+     * Produces synthetic samples.
+     * @param buffer target buffer
+     * @param count number of samples
+     * @return samples written, or −1 at the end
+     */
     override fun read(buffer: ShortArray, count: Int): Int {
         if (sample >= totalSamples) return -1
         if (realtime) {
@@ -158,7 +183,10 @@ class SyntheticVoicesSource(
         return n
     }
 
-    /** Produces the next sample of the script. */
+    /**
+     * Produces the next sample of the script.
+     * @return the sample
+     */
     private fun nextSample(): Short {
         val t = sample.toDouble() / sampleRate
         val ms = sample * 1000 / sampleRate
@@ -174,7 +202,7 @@ class SyntheticVoicesSource(
 
         val voice = voices[speaker]
         val syllable = (t * 4).toInt()                       // 4 syllables per second
-        val envelope = 0.5 - 0.5 * cos(2 * PI * (t * 4 % 1.0)) // loud in the middle of each syllable
+        val envelope = 0.5 - 0.5 * cos(2 * PI * (t * 4 % 1.0))
         val pitch = voice.pitchHz * (1 + 0.03 * sin(2 * PI * 5 * t) + 0.05 * sin(2 * PI * 0.3 * t))
         phase += pitch / sampleRate
         val pulse = if (phase >= 1.0) { phase -= 1.0; 1.0 } else 0.0
@@ -192,11 +220,10 @@ class SyntheticVoicesSource(
         return (value * 32767).toInt().toShort()
     }
 
+    /** Ends the synthetic feed. */
     override fun close() {}
 
     private companion object {
-
-        /** The resonator cascade is very quiet; this brings syllable peaks to roughly −15 dBFS. */
         const val OUTPUT_GAIN = 250.0
     }
 }

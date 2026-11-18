@@ -57,10 +57,13 @@ import kotlin.math.max
  * the KL2 graph and the log.
  */
 class SpeakerProbeActivity : ComponentActivity() {
-
     private lateinit var log: ProbeLog
     private lateinit var probe: SpeakerProbe
 
+    /**
+     * Sets up the speaker test screen.
+     * @param savedInstanceState saved state
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         log = ProbeLog(applicationContext)
@@ -93,7 +96,6 @@ class SpeakerProbeActivity : ComponentActivity() {
         LaunchedEffect(lines.size) { if (lines.isNotEmpty()) listState.scrollToItem(lines.lastIndex) }
 
         Row(Modifier.fillMaxSize().padding(12.dp)) {
-            // ---- left: controls
             Column(
                 Modifier.width(330.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -150,7 +152,6 @@ class SpeakerProbeActivity : ComponentActivity() {
 
             Spacer(Modifier.width(16.dp))
 
-            // ---- right: decision, numbers, graph, log
             Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 StateBanner(snapshot)
                 Numbers(snapshot)
@@ -163,7 +164,13 @@ class SpeakerProbeActivity : ComponentActivity() {
         }
     }
 
-    /** A row of option buttons; the current one is filled. */
+    /**
+     * A row of option buttons; the current one is filled.
+     * @param options options
+     * @param current selected option
+     * @param label text of an option
+     * @param onPick called with the picked option
+     */
     @Composable
     private fun <T> Choice(options: List<T>, current: T, label: (T) -> String, onPick: (T) -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -182,7 +189,10 @@ class SpeakerProbeActivity : ComponentActivity() {
         }
     }
 
-    /** ✔ / ✘ buttons for one test scenario; the verdict goes into the log file. */
+    /**
+     * ✔ / ✘ buttons for one test scenario; the verdict goes into the log file.
+     * @param scenario scenario name
+     */
     @Composable
     private fun VerdictRow(scenario: String) {
         Column {
@@ -199,7 +209,10 @@ class SpeakerProbeActivity : ComponentActivity() {
         }
     }
 
-    /** Big coloured banner with the detector's current state. */
+    /**
+     * Big coloured banner with the detector's current state.
+     * @param s detector snapshot
+     */
     @Composable
     private fun StateBanner(s: ConversationSnapshot) {
         val (label, color) = when {
@@ -218,7 +231,10 @@ class SpeakerProbeActivity : ComponentActivity() {
         }
     }
 
-    /** The live numbers: level, gate, speech seconds, evidence and the count rule. */
+    /**
+     * The live numbers: level, gate, speech seconds, evidence and the count rule.
+     * @param s detector snapshot
+     */
     @Composable
     private fun Numbers(s: ConversationSnapshot) {
         val level = if (s.levelDb.isFinite()) "%.0f dBFS".format(s.levelDb) else "silent"
@@ -230,9 +246,18 @@ class SpeakerProbeActivity : ComponentActivity() {
         )
     }
 
-    /** Evidence (evidence rule) against its threshold, plus what both rules currently say. */
+    /**
+     * Evidence (evidence rule) against its threshold, plus what both rules currently say.
+     * @param s detector snapshot
+     * @param threshold evidence threshold
+     */
     @Composable
     private fun EvidenceBar(s: ConversationSnapshot, threshold: Double) {
+        /**
+         * Text for one rule's verdict.
+         * @param multiple whether the rule says more than one speaker
+         * @return the text
+         */
         fun verdict(multiple: Boolean) = if (multiple) "MULTIPLE" else "one"
         Text(
             "Evidence %.2f / %.1f → ${verdict(s.multipleByEvidence)}   ·   Count rule: ${s.changesInWindow} changes → ${verdict(s.multipleByCount)}   ·   shown: ${s.decisionRule}"
@@ -248,7 +273,12 @@ class SpeakerProbeActivity : ComponentActivity() {
         }
     }
 
-    /** KL2 over time (blue), candidate threshold (dashed orange), accepted changes as markers along the bottom. */
+    /**
+     * KL2 over time (blue), candidate threshold (dashed orange), accepted changes as markers along the bottom.
+     * @param s detector snapshot
+     * @param relative candidate factor over the mean
+     * @param modifier layout modifier
+     */
     @Composable
     private fun Kl2Graph(s: ConversationSnapshot, relative: Double, modifier: Modifier) {
         Canvas(modifier.background(Color(0xFFF2F2F2))) {
@@ -256,6 +286,11 @@ class SpeakerProbeActivity : ComponentActivity() {
             if (values.size < 2) return@Canvas
             val threshold = relative * s.kl2Mean
             val top = max(values.max(), threshold) * 1.1
+            /**
+             * Maps a KL2 value to a y position.
+             * @param v KL2 value
+             * @return the y position
+             */
             fun y(v: Double) = (size.height * (1 - v / top)).toFloat()
             val dx = size.width / (values.size - 1)
             for (i in 1 until values.size) {

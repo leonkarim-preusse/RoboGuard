@@ -36,25 +36,24 @@ import kotlinx.coroutines.launch
 
 /** Test screen for [TtsProbe]; one test runs at a time. */
 class TtsProbeActivity : ComponentActivity() {
-
     private lateinit var log: ProbeLog
     private lateinit var probe: TtsProbe
 
-    /** The test currently running, so Stop can cancel it. */
     private var running: Job? = null
 
-    /** True while a test runs; drives the enabled state of the test buttons. */
     private val busy = MutableStateFlow(false)
 
+    /**
+     * Sets up the TTS test screen.
+     * @param savedInstanceState saved state
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Application context: SDK listeners must not keep this activity alive.
         log = ProbeLog(applicationContext)
         probe = TtsProbe(applicationContext, log)
         log.i("probe", "log file: ${log.filePath}")
         probe.connect()
 
-        // Plain MaterialTheme: robocontrol must not depend on roboguard's theme.
         setContent {
             MaterialTheme {
                 ProbeScreen()
@@ -62,15 +61,13 @@ class TtsProbeActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Leaving the screen (home button, another app coming to the front) stops a running test and the speech.
-     * The SDK would stop serving this app in the background anyway, and a test must never keep running unseen.
-     */
+    /** Stops a running test and the speech when the screen is left. */
     override fun onStop() {
         if (running?.isActive == true) stopTest("screen left")
         super.onStop()
     }
 
+    /** Stops speech and disconnects. */
     override fun onDestroy() {
         running?.cancel()
         probe.disconnect()
@@ -83,14 +80,12 @@ class TtsProbeActivity : ComponentActivity() {
         val lines by log.lines.collectAsState()
         val isBusy by busy.collectAsState()
 
-        // Keep the newest line visible.
         val listState = rememberLazyListState()
         LaunchedEffect(lines.size) {
             if (lines.isNotEmpty()) listState.scrollToItem(lines.lastIndex)
         }
 
         Column(Modifier.fillMaxSize().padding(12.dp)) {
-            // Always enabled and always at the top, so a test can be stopped no matter what state it is in.
             Button(
                 onClick = { stopTest("STOP pressed") },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F), contentColor = Color.White),
@@ -127,6 +122,7 @@ class TtsProbeActivity : ComponentActivity() {
     /**
      * Runs one test off the main thread (the tests wait on callbacks and binder calls).
      * Ignored if a test is already running.
+     * @param test test to run
      */
     private fun runTest(test: suspend () -> Unit) {
         if (running?.isActive == true) return
@@ -141,8 +137,8 @@ class TtsProbeActivity : ComponentActivity() {
     }
 
     /**
-     * Cancels the running test, silences the robot and re-enables the test buttons immediately,
-     * without waiting for the cancelled coroutine to finish.
+     * Cancels the running test and silences the robot.
+     * @param reason reason for the log
      */
     private fun stopTest(reason: String) {
         running?.cancel()

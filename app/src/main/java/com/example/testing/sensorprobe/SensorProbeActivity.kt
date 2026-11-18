@@ -50,13 +50,16 @@ import kotlinx.coroutines.launch
  * the sensors back to the saved settings.
  */
 class SensorProbeActivity : ComponentActivity() {
-
     private lateinit var log: ProbeLog
     private lateinit var probe: SensorProbe
 
     private var running: Job? = null
     private val busy = MutableStateFlow(false)
 
+    /**
+     * Sets up the sensor test screen.
+     * @param savedInstanceState saved state
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         log = ProbeLog(applicationContext)
@@ -64,7 +67,6 @@ class SensorProbeActivity : ComponentActivity() {
         log.i("probe", "log file: ${log.filePath}")
         probe.start()
 
-        // Plain MaterialTheme: robocontrol must not depend on roboguard's theme.
         setContent {
             MaterialTheme {
                 ProbeScreen()
@@ -72,11 +74,10 @@ class SensorProbeActivity : ComponentActivity() {
         }
     }
 
+    /** Restores the saved sensor settings. */
     override fun onDestroy() {
         running?.cancel()
         probe.stop()
-        // Never leave LIDAR, microphone or camera switched off after testing. GlobalScope because this
-        // activity's scope is being cancelled; best effort, the SDK may already refuse a background app.
         @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
         GlobalScope.launch(Dispatchers.IO) { probe.restoreSaved() }
         super.onDestroy()
@@ -89,7 +90,6 @@ class SensorProbeActivity : ComponentActivity() {
         val isBusy by busy.collectAsState()
         val shown by probe.lastImage.collectAsState()
 
-        // The microphone check records one second; ask for the permission up front.
         val requestMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             log.i("probe", "RECORD_AUDIO granted=$granted")
         }
@@ -105,7 +105,6 @@ class SensorProbeActivity : ComponentActivity() {
         }
 
         Row(Modifier.fillMaxSize().padding(12.dp)) {
-            // Left: all controls, one per line, scrollable so none can be pushed off-screen.
             Column(
                 modifier = Modifier.width(440.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -128,7 +127,6 @@ class SensorProbeActivity : ComponentActivity() {
 
             Spacer(Modifier.width(16.dp))
 
-            // Right: the latest camera snapshot (if any) above the log, taking the remaining width.
             Column(Modifier.weight(1f).fillMaxHeight()) {
                 shown?.let { image ->
                     Text(image.caption, fontSize = 14.sp)
@@ -149,13 +147,21 @@ class SensorProbeActivity : ComponentActivity() {
         }
     }
 
-    /** One full-width test button; disabled while any test is running. */
+    /**
+     * One full-width test button; disabled while any test is running.
+     * @param label button text
+     * @param isBusy whether a test is running
+     * @param test test to run
+     */
     @Composable
     private fun TestButton(label: String, isBusy: Boolean, test: suspend () -> Unit) {
         Button(enabled = !isBusy, onClick = { runTest(test) }, modifier = Modifier.fillMaxWidth()) { Text(label) }
     }
 
-    /** Runs one test off the main thread; ignored while another test is running. */
+    /**
+     * Runs one test off the main thread; ignored while another test is running.
+     * @param test test to run
+     */
     private fun runTest(test: suspend () -> Unit) {
         if (running?.isActive == true) return
         busy.value = true

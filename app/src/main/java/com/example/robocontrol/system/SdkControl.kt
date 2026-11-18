@@ -8,16 +8,22 @@ import kotlinx.coroutines.delay
 
 /** Waits until RobotOS has given RoboGuard SDK control after a screen was brought to the front. */
 object SdkControl {
-
     private const val TAG = "SdkControl"
 
     /**
-     * Polls `RobotApi.isActive()` every 100 ms for at most [timeoutMs]; if control had to be regained, waits [settleMs] more.
+     * Waits until RobotOS grants SDK control, then [settleMs] more if control had to be regained.
+     * @param context Android context
+     * @param timeoutMs maximum wait
+     * @param settleMs extra wait after regaining control
      * @return true if RoboGuard is in control
      */
     suspend fun awaitControl(context: Context, timeoutMs: Long = 3_000, settleMs: Long = 1_000): Boolean {
         RobotApiConnection.connect(context)
         val api = RobotApi.getInstance()
+        /**
+         * Checks whether RoboGuard has SDK control.
+         * @return true if it has control
+         */
         fun active() = runCatching { api.isApiConnectedService() && api.isActive() }.getOrDefault(false)
         val wasActive = active()
         val deadline = SystemClock.elapsedRealtime() + timeoutMs

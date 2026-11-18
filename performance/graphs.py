@@ -52,8 +52,8 @@ OWNER_CONFIG_RE = re.compile(r"listening for the owner's voice \(threshold (\d+[
 PAIRWISE_CONFIG_RE = re.compile(r"comparing voices with each other \(different below (\d+[.,]\d+)")
 # The repeated "settings: …" line carries every threshold, and unlike the start lines it is in every long enough run.
 SET_OWNER_RE = re.compile(r"owner comparison, threshold (\d+[.,]\d+), margin (\d+[.,]\d+)")
-# Since 2026-10-19 the pairwise method decides on the median, and the settings line gives Silero's release bar instead of the
-# hysteresis (release = threshold - hysteresis, bounded); both forms are read.
+# Newer logs give the pairwise median and Silero's release value instead of the hysteresis
+# (release = threshold - hysteresis, bounded); both forms are read.
 SET_PAIR_RE = re.compile(r"compare pieces, another voice (?:when the median is )?below (\d+[.,]\d+)")
 SET_GATE_RE = re.compile(r"silero (\d+[.,]\d+) \((hysteresis|release) (\d+[.,]\d+)\), floor (-?\d+) dBFS")
 SET_ACTIVITY_RE = re.compile(r"speech activity, (\d+) % of the last ([\d,.]+) s, gaps up to (\d+) ms")
@@ -332,10 +332,7 @@ def activity_figure(data, out_path, t0, t_end, windows):
     resets = parse_events(voice, "reset after")
 
     # A wide left margin: the row labels are sentences, not numbers.
-    fig = Figure("What the robot was doing", subtitle_for(data, t0),
-                 t0, t_end, left=360, right=260,
-                 note="One row per activity. A filled bar means the activity was running; a tick marks a single event. "
-                      "Bars with a height show a share per 2 s window.")
+    fig = Figure("Activity test", subtitle_for(data, t0), t0, t_end, left=360, right=260)
     fig.drives = drive_intervals(data.get("navigation", []), t_end)
 
     rows = []
@@ -352,12 +349,14 @@ def activity_figure(data, out_path, t0, t_end, windows):
         rows.append(("Object detection running", SERIES[0], "level",
                      [(w["t"], min(w["pps"] / 12.0, 1.0)) for w in windows]))
     if audio:
-        rows.append(("Microphone: speech into the network", SERIES[5], "level",
+        rows.append(("Microphone: share of speech", SERIES[5], "level",
                      [(a["t"], a["speech"] / 100.0) for a in audio]))
     rows.append(("Voice piece embedded", SERIES[6], "event", [s["t"] for s in similarity]))
     rows.append(("Robot speaking (microphone ignored)", OTHER, "span", speaking))
     rows.append(("Conversation: silence reset", SERIES[3], "event", resets))
     rows.append(("Conversation prompt shown", SERIES[1], "event", prompts))
+    # A row with nothing in it belongs to something this run did not use.
+    rows = [row for row in rows if row[3]]
 
     row_h, gap = 26, 12
     height = len(rows) * (row_h + gap)
@@ -400,15 +399,13 @@ def _cpu_context(fig, data, t0):
         return
     total = [(s["t"], sum(fnum(r[3]) for r in s["rows"])) for s in threads]
     ymax = max(200, int(max(v for _, v in total) / 100 + 1) * 100)
-    top, y_of = fig.panel("RoboGuard CPU in total", 180, ymax, " %", list(range(0, ymax + 1, 100)),
-                          "sum over all its threads; 100 % = one core")
+    top, y_of = fig.panel("RoboGuard CPU load", 180, ymax, " %", list(range(0, ymax + 1, 100)))
     fig.area(top, 180, y_of, total, "#e8effa")
     fig.line(y_of, total, SERIES[0])
     cores = data.get("cores", [])
     if cores:
         busy = [(c["t"], sum(v for v in c["cores"].values() if v >= 0)) for c in cores]
-        top, y_of = fig.panel("Whole robot: all cores together", 180, 800, " %", [0, 200, 400, 600, 800],
-                              "800 % = all eight cores fully busy")
+        top, y_of = fig.panel("Robot CPU load", 180, 800, " %", [0, 200, 400, 600, 800])
         fig.area(top, 180, y_of, busy, "#fdece4")
         fig.line(y_of, busy, SERIES[1])
 
@@ -700,18 +697,17 @@ def voice_figure(data, out_path, t0, t_end):
                               [round(vmax * i / 4, 1) for i in range(5)], "Silero, runs on every chunk")
         fig.line(y_of, [(a["t"], a["vad"]) for a in audio], SERIES[3], dots=True)
 
-        top, y_of = fig.panel("Pieces sent into the speaker network", 140, max(3, max(a["pieces"] for a in audio)), "",
-                              list(range(0, max(3, max(a["pieces"] for a in audio)) + 1)), "per 2 s window")
-        bw = max((fig.W - fig.R - fig.L) / max(len(audio), 1) - 2, 3)
-        for a in audio:
-            if a["pieces"]:
-                x = fig.x_of(a["t"])
-                fig.g.rectangle([x - bw, y_of(a["pieces"]), x, top + 140], fill=SERIES[6])
+        if any(a["pieces"] for a in audio):
+            top, y_of = fig.panel("Pieces sent into the speaker network", 140, max(3, max(a["pieces"] for a in audio)), "",
+                                  list(range(0, max(3, max(a["pieces"] for a in audio)) + 1)), "per 2 s window")
+            bw = max((fig.W - fig.R - fig.L) / max(len(audio), 1) - 2, 3)
+            for a in audio:
+                if a["pieces"]:
+                    x = fig.x_of(a["t"])
+                    fig.g.rectangle([x - bw, y_of(a["pieces"]), x, top + 140], fill=SERIES[6])
 
     if similarity:
-        # The panel is drawn WITHOUT ticks and gets its own grid below, because the values are not on a 0…1 scale: after
-        # cohort centring they run from about −0.4 to +0.6, and drawing a 0…1 axis under points that are mapped to the
-        # data range put the dots next to their own grid lines (owner, 2026-09-28).
+        # No ticks; the panel gets its own grid from the data range, since centred similarities are not on a 0…1 scale.
         owner_threshold = gate.get("ownerThreshold")
         pair_threshold = gate.get("pairwiseThreshold")
         marks = [v for v in (owner_threshold,
@@ -748,8 +744,7 @@ def voice_figure(data, out_path, t0, t_end):
             fig.g.ellipse([x - 4, y - 4, x + 4, y + 4], fill=colour)
         fig.legend(top, [("owner / same voice", SERIES[2]), ("somebody else", SERIES[1]), ("unclear", OTHER)])
 
-        # Both of those in one picture (owner request): the gate's probability and what the comparison made of it, on the
-        # same time axis. Left scale = probability, right scale = similarity; the dashed lines are their thresholds.
+        # Gate probability (left scale) and similarity readings (right scale) on one time axis; dashed lines = thresholds.
         if probs:
             top, y_raw = fig.panel("Speech probability and the readings together", 320, 1.0, "", [],
                                    "left: Silero probability · right: similarity of the piece")

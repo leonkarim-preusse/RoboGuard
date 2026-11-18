@@ -25,35 +25,32 @@ class OrionStarBridge(
     private val context: Context,
     private val reqIdSource: () -> Int = { nextReqId() }
 ) : RobotBridge {
-
     private val _pose = MutableStateFlow<RobotPose?>(null)
     override val pose: StateFlow<RobotPose?> = _pose.asStateFlow()
 
     private val _connected = MutableStateFlow(false)
     override val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
-    /** Linear speed of the next drive in m/s; used together with [angularSpeed], null = robot default. */
     @Volatile
     var linearSpeed: Double? = null
 
-    /** See [linearSpeed]. */
     @Volatile
     var angularSpeed: Double? = null
 
-    /** This bridge's hook into the app-wide connection ([RobotApiConnection]); never a second `connectServer`. */
     private val apiListener = object : ApiListener {
+        /** Registers the pose listener once connected. */
         override fun handleApiConnected() {
-            // ⚠ setCallback expects a ModuleCallbackApi subclass. Supply the
-            // app's ModuleCallback here once voice/system dispatch is wired.
-            // RobotApi.getInstance().setCallback(ModuleCallback())
             registerPoseListener()
             _connected.value = true
         }
 
+        /** Marks the bridge as disconnected. */
         override fun handleApiDisconnected() { _connected.value = false }
+        /** Marks the SDK as unavailable. */
         override fun handleApiDisabled() { _connected.value = false }
     }
 
+    /** Connects through the shared [RobotApiConnection]. */
     override fun connect() {
         RobotApiConnection.connect(context, apiListener)
     }
@@ -70,21 +67,24 @@ class OrionStarBridge(
         _connected.value = false
     }
 
-    /** The registered pose status listener, so a reconnect does not add a second one and disconnect can remove it. */
     private var poseListener: StatusListener? = null
 
     /** Listens to RobotOS's pose status and publishes every new pose in [pose]. Replaces an older listener. */
     private fun registerPoseListener() {
         poseListener?.let { runCatching { RobotApi.getInstance().unregisterStatusListener(it) } }
         poseListener = object : StatusListener() {
+                /**
+                 * Forwards the pose status.
+                 * @param type status type
+                 * @param value status JSON
+                 */
                 override fun onStatusUpdate(type: String?, value: String?) {
                     val json = runCatching { JSONObject(value ?: return) }.getOrNull() ?: return
                     _pose.value = RobotPose(
                         x = json.optDouble("px", json.optDouble("x", 0.0)),
                         y = json.optDouble("py", json.optDouble("y", 0.0)),
                         theta = json.optDouble("theta", 0.0),
-                        // ⚠ confirm the key name for the safety field against the jar;
-                        // the docs describe the enum but not the JSON key.
+                        // TODO: confirm the JSON key of the safety field; the docs describe only the enum.
                         status = PoseStatus.fromCode(json.optInt("status", -1))
                     )
                 }
@@ -92,16 +92,31 @@ class OrionStarBridge(
         RobotApi.getInstance().registerStatusListener(Definition.STATUS_POSE, poseListener)
     }
 
-    // ---- localization & map ---------------------------------------------
-
+    /**
+     * Asks RobotOS whether the robot is localized.
+     * @param callback receives the answer
+     */
     override fun isLocalized(callback: (Boolean) -> Unit) {
         RobotApi.getInstance().isRobotEstimate(reqIdSource(), object : CommandListener() {
+            /**
+             * Passes the answer on.
+             * @param result result code
+             * @param message answer
+             * @param extraData extra data
+             */
             override fun onResult(result: Int, message: String?, extraData: String?) {
                 callback(message?.contains("true", ignoreCase = true) == true)
             }
         })
     }
 
+    /**
+     * Sets the robot's pose estimate.
+     * @param x x in metres
+     * @param y y in metres
+     * @param theta heading in radians
+     * @param callback receives true on success
+     */
     override fun setPoseEstimate(x: Double, y: Double, theta: Double, callback: (Boolean) -> Unit) {
         val params = JSONObject()
             .put(Definition.JSON_NAVI_POSITION_X, x)
@@ -109,33 +124,65 @@ class OrionStarBridge(
             .put(Definition.JSON_NAVI_POSITION_THETA, theta)
         RobotApi.getInstance().setPoseEstimate(reqIdSource(), params.toString(),
             object : CommandListener() {
+                /**
+                 * Passes the result on.
+                 * @param result result code
+                 * @param message answer
+                 * @param extraData extra data
+                 */
                 override fun onResult(result: Int, message: String?, extraData: String?) =
                     callback(result == Definition.RESULT_OK)
             })
     }
 
+    /**
+     * Asks RobotOS for the current map name.
+     * @param callback receives the name, or null
+     */
     override fun currentMapName(callback: (String?) -> Unit) {
         RobotApi.getInstance().getMapName(reqIdSource(), object : CommandListener() {
+            /**
+             * Passes the name on.
+             * @param result result code
+             * @param message map name
+             * @param extraData extra data
+             */
             override fun onResult(result: Int, message: String?, extraData: String?) = callback(message)
         })
     }
 
+    /**
+     * Switches RobotOS to another map.
+     * @param mapName map name
+     * @param callback receives true on success
+     */
     override fun switchMap(mapName: String, callback: (Boolean) -> Unit) {
         RobotApi.getInstance().switchMap(reqIdSource(), mapName, object : CommandListener() {
+            /**
+             * Passes the result on.
+             * @param result result code
+             * @param message answer
+             * @param extraData extra data
+             */
             override fun onResult(result: Int, message: String?, extraData: String?) =
                 callback(result == Definition.RESULT_OK)
         })
-        // Caller must re-localize afterward: switching maps drops the estimate,
-        // and saved places belong to the map they were created on.
     }
 
-    // ---- places -----------------------------------------------------------
-
+    /**
+     * Lists the RobotOS places of the current map.
+     * @param callback receives the names
+     */
     override fun listPlaces(callback: (List<String>) -> Unit) {
         RobotApi.getInstance().getPlaceList(reqIdSource(), object : CommandListener() {
+            /**
+             * Parses the place list.
+             * @param result result code
+             * @param message place list as JSON
+             * @param extraData extra data
+             */
             override fun onResult(result: Int, message: String?, extraData: String?) {
-                // ⚠ response shape is a JSON array of place objects; confirm the
-                // name key against the jar before relying on "name".
+                // TODO: confirm the name key of the place objects against the jar.
                 val names = runCatching {
                     val arr = JSONArray(message)
                     (0 until arr.length()).mapNotNull {
@@ -147,23 +194,47 @@ class OrionStarBridge(
         })
     }
 
+    /**
+     * Saves the current position as a RobotOS place.
+     * @param placeName name of the place
+     * @param callback receives true on success
+     */
     override fun saveCurrentPositionAs(placeName: String, callback: (Boolean) -> Unit) {
         RobotApi.getInstance().setLocation(reqIdSource(), placeName, object : CommandListener() {
+            /**
+             * Passes the result on.
+             * @param result result code
+             * @param message answer
+             * @param extraData extra data
+             */
             override fun onResult(result: Int, message: String?, extraData: String?) =
                 callback(result == Definition.RESULT_OK)
         })
     }
 
+    /**
+     * Reports false: removing places is not supported by the SDK.
+     * @param placeName name of the place
+     * @param callback receives false
+     */
     override fun removePlace(placeName: String, callback: (Boolean) -> Unit) {
-        // ⚠ removeLocation is deprecated AND a no-op in robotservice_12.3.jar: its body is
-        // `return 0` and it never calls the listener, so the callback would never fire.
-        // No verified replacement yet: editPlace takes an undocumented JSON string and
-        // updatePlaceList rewrites the whole place list. Report failure instead of hanging.
+        // removeLocation is a no-op in robotservice_12.3.jar and never calls the listener.
         callback(false)
     }
 
+    /**
+     * Looks up a RobotOS place.
+     * @param placeName name of the place
+     * @param callback receives the position, or null
+     */
     override fun locationOf(placeName: String, callback: (Point2D?) -> Unit) {
         RobotApi.getInstance().getLocation(reqIdSource(), placeName, object : CommandListener() {
+            /**
+             * Parses the place.
+             * @param result result code
+             * @param message place as JSON
+             * @param extraData extra data
+             */
             override fun onResult(result: Int, message: String?, extraData: String?) {
                 val p = runCatching {
                     val o = JSONObject(message ?: return@runCatching null)
@@ -177,14 +248,15 @@ class OrionStarBridge(
         })
     }
 
-    // ---- navigation -------------------------------------------------------
-
+    /**
+     * Starts a drive to a RobotOS place.
+     * @param placeName name of the place
+     * @param listener receives progress and outcome
+     */
     override fun navigateTo(placeName: String, listener: NavigationListener) {
         val linear = linearSpeed
         val angular = angularSpeed
         val code = if (linear != null && angular != null) {
-            // startNavigation(int reqId, String destination, double coordinateDeviation, long time,
-            //                 double linearSpeed, double angularSpeed, ActionListener): names read from the jar.
             RobotApi.getInstance().startNavigation(
                 reqIdSource(), placeName, COORDINATE_DEVIATION, OBSTACLE_TIMEOUT_MS, linear, angular, actionListener(listener)
             )
@@ -196,15 +268,16 @@ class OrionStarBridge(
         if (code < 0) listener.onFailed(NavFailure.Sdk(code, "startNavigation rejected the request"))
     }
 
+    /**
+     * Starts a drive to map coordinates.
+     * @param target target position
+     * @param listener receives progress and outcome
+     */
     override fun navigateTo(target: Point2D, listener: NavigationListener) {
-        // Pose(float, float, float) and startNavigation(int, Pose, double, long, ActionListener) are verified in
-        // robotservice_12.3.jar (actionbean.Pose). Theta 0 = the robot ends facing +x; orientation is not needed yet.
         val pose = Pose(target.x.toFloat(), target.y.toFloat(), 0f)
         val linear = linearSpeed
         val angular = angularSpeed
         val code = if (linear != null && angular != null) {
-            // startNavigation(int reqId, Pose pose, double coordinateDeviation, long time,
-            //                 double linearSpeed, double angularSpeed, ActionListener): names read from the jar.
             RobotApi.getInstance().startNavigation(
                 reqIdSource(), pose, COORDINATE_DEVIATION, OBSTACLE_TIMEOUT_MS, linear, angular, actionListener(listener)
             )
@@ -217,19 +290,35 @@ class OrionStarBridge(
         if (code < 0) listener.onFailed(NavFailure.Sdk(code, "startNavigation rejected the request"))
     }
 
+    /** Stops navigation and direct motions. */
     override fun stopNavigation() {
-        // stopMove() alone cannot stop navigation (per the docs), so stopNavigation is the essential call.
-        // stopMove() additionally ends direct motions such as turnInPlace's turnLeft/turnRight.
+        // stopMove() does not stop navigation, but ends direct motions such as turnLeft/turnRight.
         RobotApi.getInstance().stopNavigation(reqIdSource())
         runCatching { RobotApi.getInstance().stopMove(reqIdSource(), null) }
     }
 
+    /**
+     * Turns on the spot.
+     * @param angleRad angle in radians, positive = counter-clockwise
+     * @param callback receives true on success
+     */
     override fun turnInPlace(angleRad: Double, callback: (Boolean) -> Unit) {
-        // turnLeft/turnRight(reqId, speed, angle, CommandListener): both in DEGREES (deg/s and deg); the jar converts
-        // them with Math.toRadians before sending "turn_left"/"turn_right". Left assumed = counter-clockwise = +theta.
+        // turnLeft/turnRight take degrees (deg/s and deg).
         val degrees = Math.toDegrees(abs(angleRad)).toFloat()
         val listener = object : CommandListener() {
+            /**
+             * Passes the result on.
+             * @param result result code
+             * @param message answer
+             * @param extraData extra data
+             */
             override fun onResult(result: Int, message: String?, extraData: String?) = callback(result == Definition.RESULT_OK)
+            /**
+             * Reports the failure.
+             * @param errorCode error code
+             * @param errorString error text
+             * @param extraData extra data
+             */
             override fun onError(errorCode: Int, errorString: String?, extraData: String?) = callback(false)
         }
         val api = RobotApi.getInstance()
@@ -239,11 +328,17 @@ class OrionStarBridge(
     }
 
     /**
-     * Turns the SDK's action callbacks into [NavigationListener] calls. Only the 3-argument callbacks are overridden,
-     * because the SDK calls both variants.
+     * Turns the SDK's action callbacks into [NavigationListener] calls.
      * @param listener receives the converted events
+     * @return the SDK listener
      */
     private fun actionListener(listener: NavigationListener) = object : ActionListener() {
+        /**
+         * Reports arrival or failure.
+         * @param status result status
+         * @param response answer
+         * @param extraData extra data
+         */
         override fun onResult(status: Int, response: String?, extraData: String?) {
             when (status) {
                 Definition.RESULT_OK -> listener.onArrived()
@@ -251,12 +346,18 @@ class OrionStarBridge(
             }
         }
 
+        /**
+         * Reports an SDK error.
+         * @param errorCode error code
+         * @param errorString error text
+         * @param extraData extra data
+         */
         override fun onError(errorCode: Int, errorString: String?, extraData: String?) {
             listener.onFailed(
                 when (errorCode) {
                     Definition.ERROR_NOT_ESTIMATE -> NavFailure.NotLocalized
                     Definition.ERROR_DESTINATION_NOT_EXIST -> NavFailure.DestinationUnknown
-                    // Yes, "ARRAIVE" — the typo is in the SDK, not here.
+                    // "ARRAIVE" is the SDK's spelling.
                     Definition.ERROR_DESTINATION_CAN_NOT_ARRAIVE -> NavFailure.Unreachable
                     Definition.ACTION_RESPONSE_ALREADY_RUN -> NavFailure.AlreadyRunning
                     Definition.ERROR_MULTI_ROBOT_WAITING_TIMEOUT -> NavFailure.TimedOut
@@ -265,6 +366,12 @@ class OrionStarBridge(
             )
         }
 
+        /**
+         * Reports progress.
+         * @param status status code
+         * @param data status data
+         * @param extraData extra data
+         */
         override fun onStatusUpdate(status: Int, data: String?, extraData: String?) {
             listener.onProgress(
                 when (status) {
@@ -280,38 +387,21 @@ class OrionStarBridge(
     }
 
     companion object {
-        /** Success radius in metres. */
         const val COORDINATE_DEVIATION = 0.3
 
-        /** Obstacle-avoidance timeout, milliseconds (SDK unit). */
         const val OBSTACLE_TIMEOUT_MS = 30_000L
 
-        /** Rotation speed for turnInPlace, degrees per second. */
         const val TURN_SPEED_DEG_PER_S = 30f
 
         private var counter = 1000
-        /** A new request id for an SDK call. */
+        /**
+         * A new request id for an SDK call.
+         * @return the request id
+         */
         private fun nextReqId(): Int = ++counter
     }
 }
 
-// ============================================================================
-//  Optional, later: making a private zone a *real* obstacle
-//
-//  Everything above enforces privacy in the app. If the thesis wants the robot's
-//  own planner to refuse to route through a private zone, the only documented
-//  lever is the raw occupancy grid:
-//
-//      val pgm = ShareMemoryApi.getInstance().getMapPgmPFD(mapName)
-//      // paint the polygon's cells as occupied
-//      ShareMemoryApi.getInstance().setMapPgmPFD(mapName, modifiedBytes)
-//
-//  Caveats worth stating in the write-up rather than discovering on hardware:
-//   - semantics are undocumented; resolution and origin of the grid must be
-//     derived from the map's .yaml before world->cell conversion is possible
-//   - it mutates the shared map, so it affects every app on the robot and
-//     persists past uninstall
-//   - it is irreversible without keeping the original grid
-//  The app-level guard is the safer primary mechanism; this is the fallback if
-//  a reviewer asks "but what stops the planner routing through the bedroom?"
-// ============================================================================
+// Possible extension: private zones as real obstacles by writing them into the occupancy grid
+// (ShareMemoryApi.getMapPgmPFD / setMapPgmPFD). This is undocumented, changes the map shared by all apps and
+// cannot be undone without a copy of the original grid, so the app-level guard is used instead.

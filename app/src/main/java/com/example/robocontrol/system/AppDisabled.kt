@@ -12,19 +12,23 @@ import com.example.robocontrol.vision.CalendarMonitor
  * service is not running. Saved in SharedPreferences.
  */
 object AppDisabled {
-
     private const val TAG = "AppDisabled"
     private const val PREFS = "robocontrol_app_disabled"
     private const val KEY = "disabled"
     private const val SERVICE = "com.example.roboguard.RobotServerService"
 
-    /** Whether RoboGuard was switched off with the debug switch. */
+    /**
+     * Whether RoboGuard was switched off with the debug switch.
+     * @param context Android context
+     * @return true if disabled
+     */
     fun isDisabled(context: Context): Boolean =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, false)
 
     /**
-     * Switches RoboGuard off or back on. Off: gives the default-app setting back, stops the service and both monitors.
-     * On: makes RoboGuard the default app again and starts the service. The caller closes or rebuilds its screen.
+     * Switches RoboGuard off or back on.
+     * @param context Android context
+     * @param disabled true to switch it off
      */
     fun setDisabled(context: Context, disabled: Boolean) {
         val app = context.applicationContext
@@ -33,7 +37,6 @@ object AppDisabled {
         if (disabled) {
             Log.i(TAG, "RoboGuard disabled: no autostart, no service, camera and microphone released")
             DefaultAppSetting.restorePrevious(app) { Log.i(TAG, "default app: $it") }
-            // Stopped here as well: the service only ends once nothing is bound to it any more.
             ConversationMonitor.stop()
             CalendarMonitor.stop()
             NavigationHub.stop()

@@ -4,7 +4,6 @@ import kotlin.math.max
 
 /** Named access to the object detection settings in `assets/settings/settings.json` ([DetectionSettings]). */
 object CalendarDetectionSettings {
-    /** General ORB settings (per-image overrides: `DetectionSettings.forImage(name)`). */
     val orb: OrbConfig get() = DetectionSettings.general.toOrbConfig()
 
     val MIN_GOOD_MATCHES: Int get() = DetectionSettings.general.minGoodMatches
@@ -14,7 +13,6 @@ object CalendarDetectionSettings {
     val MAX_REGION_SCALE: Double get() = DetectionSettings.general.maxRegionScale
     val ORB_MARGIN_PX: Int get() = DetectionSettings.general.orbMarginPx
 
-    /** Pink areas whose long side is below this (frame pixels) are ignored; see [markerGatedPass]. */
     val MIN_REGION_LONG_SIDE_PX: Int get() = DetectionSettings.general.minRegionLongSidePx
     val SCALE_REGION_TO_REFERENCE: Boolean get() = DetectionSettings.general.scaleRegionToReference
     val USE_PINK_MARKER: Boolean get() = DetectionSettings.general.usePinkMarker
@@ -30,23 +28,17 @@ object CalendarDetectionSettings {
     val REARM_AFTER_GONE_MS: Long get() = DetectionSettings.run.rearmAfterGoneSeconds.coerceAtLeast(0) * 1000L
     val POPUP_COOLDOWN_MS: Long get() = DetectionSettings.run.popupCooldownSeconds.coerceAtLeast(0) * 1000L
 
-    /** Lowest/highest inlier requirement the camera view may set. */
     const val MIN_INLIERS_LOWEST = ObjectSettings.ORB_MIN_INLIERS
     const val MIN_INLIERS_HIGHEST = 200
 
-    /**
-     * ORB finds no keypoints within its 31 px patch border, so the crop keeps at least this much around the pink frame
-     * after scaling (property of ORB, not a setting).
-     */
     const val ORB_MIN_SCALED_BORDER_PX = 32
 
-    /**
-     * Android thread priority of the detection workers (nice value; lower = more CPU, more likely a fast core). −8 =
-     * THREAD_PRIORITY_URGENT_DISPLAY, the level Android gives the screen's render thread.
-     */
     const val WORKER_PRIORITY = android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
 
-    /** Applies the pink-search settings from the file to [marker]. */
+    /**
+     * Applies the pink-search settings from the file to [marker].
+     * @param marker colour search to configure
+     */
     fun applyTo(marker: ColorMarker) = DetectionSettings.pink.applyTo(marker)
 }
 
@@ -67,6 +59,10 @@ data class RegionCheck(val frameSide: Int, val scale: Double, val keypoints: Int
  * @property regions pink areas that were searched
  * @property keypoints number of keypoints found in all searched areas
  * @property keypointPositions frame positions of these keypoints
+ * @property previewMs time to build the colour image
+ * @property orbTimings ORB stage times
+ * @property skipped true if ORB was skipped because another worker ran it
+ * @property checks one entry per searched pink area
  */
 class MarkerPass(
     val results: List<ObjectMatch>,
@@ -74,42 +70,36 @@ class MarkerPass(
     val regions: List<MarkerRegion>,
     val keypoints: Int,
     val keypointPositions: List<ImagePoint>,
-    /** Time to build the colour image from the camera's YUV data (0 if it already existed). */
     val previewMs: Long = 0,
-    /** ORB stage times of this pass. */
     val orbTimings: ORB.Timings = ORB.Timings(),
-    /** True if a pink area was found but ORB was skipped because another worker was running ORB ([markerGatedPass] orbGate). */
     val skipped: Boolean = false,
-    /** One entry per pink area ORB ran on. */
     val checks: List<RegionCheck> = emptyList()
 )
 
 /**
- * Runs one detection pass gated by the pink marker: finds pink areas in [frame], runs ORB only inside each and keeps
- * the best result per reference. A detection counts if its outline centre lies in the pink area, or if enough good
- * matches and inliers were found in it.
+ * Runs one detection pass: finds pink areas in [frame] and runs ORB only inside them.
  * @param orb detector
  * @param marker pink marker search
  * @param frame camera frame
  * @param thresholds good matches and inliers required, per reference name
  * @param maxRegions maximum number of pink areas searched
  * @param withOverlay also build the pink overlay for the debug view
+ * @param classNames references to search, or null for all
+ * @param orbGate allows one ORB run at a time, or null
+ * @return the pass result
  */
 fun markerGatedPass(
     orb: ORB,
     marker: ColorMarker,
     frame: CameraFrame,
-    /** Thresholds per reference name (good matches, inliers); from settings.json, so an image can demand more or fewer. */
     thresholds: (String) -> Pair<Int, Int>,
     maxRegions: Int = CalendarDetectionSettings.MAX_REGIONS,
     withOverlay: Boolean = false,
-    /** Only these references are searched for (null = all); the others are handled elsewhere, e.g. without the pink gate. */
     classNames: Collection<String>? = null,
-    /** If given, ORB runs only while holding a permit; otherwise the pass returns [MarkerPass.skipped]. */
     orbGate: java.util.concurrent.Semaphore? = null
 ): MarkerPass {
-    orb.takeTimings() // start a fresh collection for this pass
-    val previewMs = 0L // colour now comes straight from the YUV data inside ColorMarker.find (counted as colour time)
+    orb.takeTimings()
+    val previewMs = 0L
     val found = runCatching { marker.find(frame, withOverlay) }.getOrNull()
     val regions = found?.regions.orEmpty().take(maxRegions)
     if (regions.isNotEmpty() && orbGate != null && !orbGate.tryAcquire()) {
@@ -122,12 +112,8 @@ fun markerGatedPass(
     var keypoints = 0
     val points = ArrayList<ImagePoint>()
     val checks = ArrayList<RegionCheck>()
-    // The pink line runs along the reference image's edges, so its long side ≈ the reference's long side (640 px after loading).
     val referenceSide = orb.referenceMap.values.maxOfOrNull { max(it.image.width, it.image.height) } ?: 640
     for (region in regions) {
-        // Too small to be the object: below this the crop is enlarged several times and carries no detail, but ORB still
-        // finds a few keypoints and can match them (robot, 2026-09-21: 32-74 px specks announced as a calendar while no
-        // calendar was in the room). The calendar at wall distance measured ~310 px.
         if (max(region.bounds.width, region.bounds.height) < CalendarDetectionSettings.MIN_REGION_LONG_SIDE_PX) continue
         val scale = if (!CalendarDetectionSettings.SCALE_REGION_TO_REFERENCE) 1.0
         else (referenceSide.toDouble() / max(region.bounds.width, region.bounds.height).coerceAtLeast(1))
@@ -154,11 +140,14 @@ fun markerGatedPass(
 }
 
 /**
- * Judges an ORB result found inside a pink area: a plausible outline with its centre in the area counts; otherwise
- * enough good matches and inliers count too, with the pink bounds as the box.
+ * Judges an ORB result found inside a pink area.
+ * @param m ORB result
+ * @param region pink area
+ * @param minGood good matches needed
+ * @param minInliers inliers needed
+ * @return the judged result
  */
 private fun judgeInMarker(m: ObjectMatch, region: MarkerRegion, minGood: Int, minInliers: Int): ObjectMatch {
-    // The caller's thresholds apply to both paths (ORB's own config may differ, e.g. after adjusting the inliers at runtime).
     if (m.detected && m.corners.size == 4 && m.goodMatches >= minGood && m.inliers >= minInliers) {
         val centre = ImagePoint(m.corners.sumOf { it.x } / 4, m.corners.sumOf { it.y } / 4)
         if (region.search.contains(centre)) return m
@@ -172,6 +161,11 @@ private fun judgeInMarker(m: ObjectMatch, region: MarkerRegion, minGood: Int, mi
     return m.copy(detected = true, corners = box, outlineSource = "marker")
 }
 
-/** Detected first, then more inliers, then more good matches. */
+/**
+ * Detected first, then more inliers, then more good matches.
+ * @param a first result
+ * @param b second result
+ * @return true if [a] is better
+ */
 fun isBetter(a: ObjectMatch, b: ObjectMatch): Boolean =
     if (a.detected != b.detected) a.detected else if (a.inliers != b.inliers) a.inliers > b.inliers else a.goodMatches > b.goodMatches
