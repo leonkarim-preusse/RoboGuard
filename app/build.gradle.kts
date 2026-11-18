@@ -20,6 +20,10 @@ android {
 
         multiDexEnabled = true
 
+        // Test screens ("RG … Test" launcher icons): included by default, -PtestScreens=false builds the app without them.
+        manifestPlaceholders["testScreens"] =
+            (project.findProperty("testScreens") as String?)?.toBoolean()?.toString() ?: "true"
+
         // Only the robot's processor type (OrionStar GreetBot Mini: arm64-v8a, checked with getprop). OpenCV and ONNX Runtime
         // otherwise ship native libraries for four ABIs, which made the APK ~270 MB and WiFi installs very slow.
         ndk {

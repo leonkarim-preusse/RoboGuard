@@ -1,319 +1,48 @@
-This is the source code for the robot application of roboguard. Check [here](https://github.com/leonkarim-preusse/RoboGuardAndroidEnd) for the smartphone application.
-## Installation (Linux)
-0. Android Studio is recommended, it already intergrates the Android Debugging Bridge
-1. install Android Debugging Bridge ```sudo apt-get install adb```
-2. On your target device enable Developer Options (usually tapping "Build Number" 7 times, untill it says " You are now a developer")
-   -> Enable USB Debugging or Wireless Debugging afterwards and connect the target device (consult https://developer.android.com/tools/adb?hl=eng for further information)
-3. if you are using Android Studio, the wireless connection can be established from within Android Studio and your target device will be shown as a potential target to run the app on
-4. Run the app with your target device chosen over Android Studio or generate an apk using android studion and install it on your target device:
-   a) open a terminal
-   b) ```adb devices``` -> you will see the id of your target device, needed if you are connected to multiple devices
-   c) ```adb -s <id> install -r path/to/your/app.apk```
+This is the source code for the robot application of RoboGuard. Check [here](https://github.com/leonkarim-preusse/RoboGuardAndroidEnd) for the smartphone application.
 
-## Troubelshooting
+## Installation (Linux)
+### Requirements
+1. Android Studio is recommended; it already contains the Android Debug Bridge (adb) and a suitable JDK. Without Android Studio: ```sudo apt-get install adb``` and a JDK 17 or 21 (newer JDKs are not supported by the Gradle version used)
+2. The robot (OrionStar GreetBot Mini) has adb switched off by default. Enable it on the robot: pull down the status bar with one finger, tap the time zone several times, enter the dynamic password (available from OrionStar support) and select "Enable debugging". "Persistent debugging" keeps it switched on after a reboot
+3. Connect to the robot over USB or WiFi:
+   - WiFi: ```adb mdns services``` shows the robot's address, then ```adb connect <ip>:5555```
+   - ```adb devices``` lists the connected devices and their ids. Confirm the debugging dialog on the robot's screen the first time
+4. The app is built for the robot's processor only (arm64-v8a); it does not run on other architectures
+
+### Build and install
+The app can be installed **with** or **without** the test screens. The test screens are additional launcher icons ("RG Voice Test", "RG TTS Test", "RG Sensor Test", "RG Movement Test", "RG Object Test", "RG Speaker Test") used to test single features on the robot. They are selected with the Gradle flag ```testScreens```:
+
+| Variant | Command | Result |
+|---|---|---|
+| With test screens (default) | ```./gradlew installDebug``` or ```./gradlew installDebug -PtestScreens=true``` | RoboGuard plus the six "RG … Test" icons |
+| Without test screens | ```./gradlew installDebug -PtestScreens=false``` | Only RoboGuard; the test screens are disabled and have no icon |
+
+- With several devices connected, choose the robot with ```ANDROID_SERIAL=<id> ./gradlew installDebug ...```
+- In Android Studio, "Run" builds the default variant (with test screens). To build without them, add the line ```testScreens=false``` to ```gradle.properties``` and run again
+- Alternatively build an APK with ```./gradlew assembleDebug -PtestScreens=<true|false>``` and install it with ```adb -s <id> install -r app/build/outputs/apk/debug/app-debug.apk```
+- If ```./gradlew``` is not executable, use ```bash ./gradlew```
+
+### First start on the robot
+1. Start RoboGuard by tapping its icon on the robot's home screen. RobotOS only gives apps started from its home launcher control over the robot (speech, navigation, sensors); apps started with ```adb shell am start``` are ignored by the robot SDK. On its first start RoboGuard makes itself the robot's default app, so it starts automatically after a reboot
+2. Allow the microphone permission when asked, or beforehand: ```adb shell pm grant com.example.roboguard android.permission.RECORD_AUDIO```
+3. To let RoboGuard switch the camera off through Android, make it a device admin once: ```adb shell dpm set-active-admin com.example.roboguard/com.example.robocontrol.sensorcontrol.RoboGuardDeviceAdmin```
+4. Allow storage access when "Navigation and Map" asks for it; the robot's map is read from its storage
+5. A map has to be created with the robot's own map tool before navigation and private areas can be used
+6. Pair the phone app by scanning the QR code shown on the robot's screen
+
+## Troubleshooting
 1. Uninstall: ```adb uninstall com.example.roboguard```
 2. Connection issues: ```adb kill-server``` ```adb start-server```
-
-## Documentation
-1. ```Praktikumsbericht_fixed``` contains detailed explanations (in german)
-2. All source code is found under ```~/app/src/main/java/com/example/roboguard``` and documented in the Code
-3. ```Main Activity.kt``` controls the UI and ```RobotServerService``` controls the server therefore they control the application flow
-4. The robot control added after the Praktikum is found under ```~/app/src/main/java/com/example/robocontrol``` and documented in the Code. ```RobotServerService``` starts its three background parts: ```ConversationMonitor```, ```CalendarMonitor``` and ```NavigationHub```
-   - ```movement```: map, private areas and driving. ```MapNavigation.kt``` holds the navigation state for the robot screen (```MapNavigationActivity.kt```) and the phone (```NavigationRoutes.kt```, routes ```/nav/...```). ```NavigationController.kt``` and ```PrivacyGuard.kt``` check every drive before and while the robot moves
-   - ```conversation```: conversation detection from the microphone. ```ConversationMonitor.kt``` decides when to listen and shows the prompt; the four methods are ```SpeakerChangeDetector``` (in ```ConversationDetector.kt```), ```OwnerVoiceDetector.kt```, ```PairwiseVoiceDetector.kt``` and ```SpeechActivityDetector.kt```. ```VoiceEnrolment.kt``` teaches the owner's voice, ```OwnerVoiceprint.kt``` stores it encrypted
-   - ```vision```: object detection from the camera. ```CalendarMonitor.kt``` runs the detection, ```ORB.kt``` matches the reference images, ```ColorMarker.kt``` finds the pink frame around the calendar, ```CalendarPromptActivity.kt``` is the calendar popup
-   - ```sensorcontrol```: ```sensors.kt``` holds the sensor and situational settings from the phone, ```SensorSwitches.kt``` switches camera, microphone and LIDAR
-   - ```audio``` (speech output), ```text``` (```UiText.kt```), ```system``` (SDK connection, default app, debug mode, disable switch)
-   - ```assets```: ```texts/texts.json``` contains every text on screen and every spoken sentence, ```settings/settings.json``` all object detection settings, ```ORB_img``` the reference images, ```silero``` and ```speaker``` the two speech models
-5. The on-robot test screens ("RG ... Test" icons) are found under ```~/app/src/main/java/com/example/testing```, see the testing sections below
-6. ```performance``` contains the host-side scripts for recording and plotting the robot's CPU load and detection times (```record.py```, ```graphs.py```, ```plot.py```, ```compare.py```)
-
-## Testing the voice probes
-The voice probes under ```app/src/main/java/com/example/testing/voiceprobe``` are hardware tests for detecting whether more than one person is speaking. They answer three questions before the detector is built:
-1. Can the app record audio itself while the robot's own speech service is running, and how many real microphones does it get?
-2. What does the robot's speech service report to an app (voice activity, volume, "multiple mode")?
-3. Does the robot report the direction a voice came from?
-
-The probes only use audio and sound direction, never the camera. No audio is saved. The log file contains no transcripts, only the length and format of what the speech service sent.
-
-### Preparation
-1. Install the app on the robot as described in the Installation section above (a debug build is needed to read the log file later)
-2. Grant the microphone permission, either when the probe screen asks for it or beforehand:
-   ```adb shell pm grant com.example.roboguard android.permission.RECORD_AUDIO```
-3. Test in a quiet room with two people available. Write down where the robot stands and where the people stand
-4. Start the probe screen by tapping the **RG Voice Test** icon on the robot's home screen (swipe to the next page if needed). Do not start it with ```adb shell am start```: RobotOS only lets apps started from its home launcher use the robot SDK
-5. Keep the probe screen in the foreground for the whole test. The robot only serves its SDK to the app in front, so if another app or popup appears, the results of probes 2 and 3 are not valid
-
-### Test 1: Mic access (run this first)
-1. Press **1 Mic access**. The run takes about 15–25 seconds
-2. While it runs, keep talking normally at about 1 m from the robot. After the run, say the wake word once and check whether the robot still reacts
-3. Read the result in the log:
-
-| Log output | Meaning | Consequence |
-|---|---|---|
-| ```RESULT: no source delivered signal``` | The robot's speech service holds the microphone | Detection from raw audio is not possible, only tests 2 and 3 matter |
-| a source works, all ```corrToCh0``` are about ```1.000``` | One microphone, copied into several channels | Speaker-change detection works, but direction has to come from the robot (test 3) |
-| ```distinct≈``` greater than 1 | Several real microphones are available | The app could calculate the sound direction itself |
-| robot no longer reacts to the wake word after the run | The recording interferes with the speech service | Note it; the detector must not block the robot's voice control |
-
-### Test 2: Speech service
-1. Press **2 Speech service**. The log must show ```connected, registering callback```. If it shows ```disabled```, the probe screen is not in the foreground or the app lacks permission
-2. Press **TTS status** once while the robot is silent and once while it is talking, and note both values
-3. Go through these three situations, about 30 seconds each, and press **Clear screen** in between so each situation is easy to read:
-   a) one person talks to the robot
-   b) two people take turns talking
-   c) two people talk over each other
-4. Press **Toggle multiple mode** and repeat a) to c)
-5. For each situation, note which callbacks appear (```onVadMuteTime```, ```onVolumeChange```, ```onSpeechStreamData```, ```onGetMultipleModeInfos```, ...) and how their length and format differ between a), b) and c)
-
-### Test 3: Sound direction
-1. Press **3 Sound direction**. The log must show ```RobotApi connected```
-2. Say the wake word from the front, left, right and behind the robot, at about 1.5 m, and wait for the robot to react each time
-3. Check whether an angle appears (in ```onSendRequest```, in a ```broadcast``` line or in ```status status_speaker```) and whether it matches where you stood
-4. Talk from different sides without the wake word and check whether any direction is reported at all
-5. Press **Stop listeners** when done
-
-### Getting the results
-The log file name is shown in the first line on the probe screen. To copy it to your computer:
-1. ```adb shell run-as com.example.roboguard ls files/voiceprobe```
-2. ```adb exec-out run-as com.example.roboguard cat files/voiceprobe/<file name> > probe.log```
-
-
-## Testing text-to-speech
-```app/src/main/java/com/example/robocontrol/audio/OrionStarTts.kt``` lets the robot speak English and German sentences through the OrionStar SDK. The TTS test screen checks on the robot that this works, and answers two open questions: whether a German voice is installed, and which language code format the robot expects.
-
-### Preparation
-1. Install the app on the robot as described in the Installation section above
-2. Turn the robot's volume up and stand within about 1 m of it
-3. Start the TTS test screen by tapping the **RG TTS Test** icon on the robot's home screen (swipe to the next page if needed). Do not start it with ```adb shell am start```: RobotOS only lets apps started from its home launcher use the robot SDK, and every speech command would be silently ignored
-4. The log must show ```OrionStarTts connected```, ```raw SkillApi connected``` and **```SDK control active: yes```**. If it says ```SDK control active: NO```, close the screen and start it again from the home launcher icon
-5. Keep the test screen in the foreground for the whole test
-
-### Running the tests
-Run the tests in order. Only one test runs at a time. After every test that ends with "Press ✔ or ✘", press **✔ As expected** or **✘ Wrong**; your answer is written into the log file.
-
-| Button | What happens | Expected | If not |
-|---|---|---|---|
-| **0 Say sentences** | The robot says three English and then three German sentences, one after another | All six sentences spoken completely; each log line shows ```-> finished``` | Nothing audible: check the volume and that the log says ```connected```. German sounds English: continue with tests 1 and 3 |
-| **1 Voices** | Lists the installed voices for English and German | A non-empty result for both | Empty or ```null``` for German: no German voice is installed, so tests 2 German and 3 will not sound German |
-| **2 English** | Speaks one English sentence | Clear English speech; ```RESULT: finished``` | ```failed``` or no callback: note the log lines |
-| **2 German** | Speaks one German sentence with ü, ö and ß | A German voice with correct umlauts | English pronunciation of German words: the robot ignored the language code, run test 3 |
-| **3 German (code 7)** | Same German sentence, but with the numeric language code ```7``` instead of ```de_DE``` | Compare with 2 German | Only this one sounds German: ```OrionStarTts``` has to be changed to the numeric code |
-| **4 Validation** | Tries blank text, text that is too long and text that looks like JSON | Three ```PASS``` lines and **no sound** | Any ```FAIL``` line, or anything audible |
-| **5 Interrupt** | Starts a long sentence and stops it after 1.5 s | Speech actually stops; ```PASS: result Interrupted``` | Voice keeps talking, or ```FAIL``` |
-| **6 Overlap** | Sends a second sentence while the first is still speaking | No right answer, this documents the robot's behaviour | Read the order of the log lines: A interrupted then B = interrupts; A finished then B = queues; B failed = rejected |
-| **7 Play status** | Reads the speaking status every 0.3 s before, during and after a sentence | No right answer | Note which status values only appear between ```started``` and ```finished``` |
-
-**Stop** cancels the running test and silences the robot. **Clear screen** clears only the visible log.
-
-### Getting the results
-Same as for the voice probes: the log file name is shown in the first line on the screen.
-1. ```adb shell run-as com.example.roboguard ls files/voiceprobe```
-2. ```adb exec-out run-as com.example.roboguard cat files/voiceprobe/<file name> > tts.log```
-
-
-## Testing sensor switching
-```app/src/main/java/com/example/robocontrol/sensorcontrol``` switches the robot's sensors according to the privacy settings: LIDAR through the OrionStar SDK, and the microphone and camera through both the SDK and Android. The sensor test screen checks on the robot what each switch really does.
-
-Every test switches one sensor and then checks three things:
-1. **Report**: did each SDK or Android call succeed? (```CONFIRMED``` = read back and correct, ```SENT``` = accepted but cannot be read back, ```FAILED```, ```PENDING``` = SDK not connected yet)
-2. **Read-back**: what the SDK and Android report afterwards
-3. **Effect**: is a test recording silent, does a camera snapshot fail or come back black, does the LIDAR visibly stop
-
-The tests only change the settings in memory, never the saved settings file. Closing the test screen switches everything back to the saved settings.
-
-### Preparation
-1. Install the app on the robot as described in the Installation section above
-2. **Put the robot in a safe spot where it cannot drive off**: without LIDAR it cannot see obstacles
-3. Grant the microphone permission (the test screen also asks for it):
-   ```adb shell pm grant com.example.roboguard android.permission.RECORD_AUDIO```
-4. For the Android camera switch, make the app a device admin once:
-   ```adb shell dpm set-active-admin com.example.roboguard/com.example.robocontrol.sensorcontrol.RoboGuardDeviceAdmin```
-   Without it, the Android camera switch reports ```FAILED``` with this command as the reason; all other switches still work
-5. Start the sensor test screen by tapping the **RG Sensor Test** icon on the robot's home screen (swipe to the next page if needed). Do not start it with ```adb shell am start```: RobotOS only lets apps started from its home launcher use the robot SDK
-6. Keep the test screen in the foreground for the whole test
-
-### Running the tests
-Run the tests in order. After every test that ends with "Press ✔ or ✘", press **✔ As expected** or **✘ Wrong**; your answer is written into the log file.
-
-| Button | What to do | Expected | If not |
-|---|---|---|---|
-| **1 Status** | Nothing; wait a few seconds after opening the screen first | ```RobotApi connected: true```; all read-backs listed | ```connected: false```: wait and press again. ```device admin active: false```: see preparation step 4 |
-| **2 Microphone ON** | Talk or clap during the 1 s recording | ```PASS```, recording has signal | ```FAIL``` (silent) here means the app cannot record at all; the OFF test below then proves nothing. Check with the voice probes' Mic access test |
-| **3 Microphone OFF** | Talk or clap during the recording, then say the wake word | ```Android ... CONFIRMED```, ```PASS``` (silent), robot does not react to the wake word | Note which of the two switches reported what, and whether the wake word still worked |
-| **4 Camera ON** | Stand in front of the robot | Snapshot with normal brightness, ```PASS``` | Snapshot fails while ON: note the reason (e.g. ```CameraBusy```) |
-| **5 Camera OFF** | Step in front of the robot afterwards | ```stopVision ... CONFIRMED```, ```PASS``` (blocked or black), no reaction to your face | Snapshot still works: the switches do not block the shared camera stream. Note which reports say ```CONFIRMED``` |
-| **6 LIDAR OFF** | Look at the LIDAR on the robot's base | ```updateRadarStatus ... CONFIRMED```, radar status closed, LIDAR visibly stopped | LIDAR keeps running despite ```CONFIRMED```: the SDK call does not really switch it off |
-| **7 LIDAR ON** | Look at the LIDAR again | ```CONFIRMED```, LIDAR running; the robot may need to relocalize | LIDAR stays off: restart the robot before driving it |
-
-Finally press **Restore saved settings** (or close the screen).
-
-### Testing the full path from the phone app
-Only works once ```RobotServerService``` calls ```Sensors.get(applicationContext).update(settings)``` in its ```/save``` handler.
-1. Keep the sensor test screen open on the robot
-2. In the phone app, switch off one sensor and save
-3. The log must show ```settings change applied: <sensor>=OFF```; then press **1 Status** to see the reports
-4. Switch it back on in the phone app and save again
-
-### Getting the results
-Same as for the other probes: the log file name is shown in the first line on the screen.
-1. ```adb shell run-as com.example.roboguard ls files/voiceprobe```
-2. ```adb exec-out run-as com.example.roboguard cat files/voiceprobe/<file name> > sensors.log```
-
-
-## Testing object detection
-
-Checks whether ORB (`robocontrol/vision/ORB.kt`) finds a known object in the robot's live camera image. Every image in
-`app/src/main/java/com/example/robocontrol/assets/ORB_img/` is a reference; its file name without extension is the object name
-(e.g. `Calendar_prop.jpeg` → "Calendar_prop"). Camera frames are only held in memory; nothing is saved.
-
-### Preparation
-
-1. Put a photo of the object in `assets/ORB_img` (flat, well textured objects work best: calendars, posters, book covers),
-   build and install the app.
-2. In RoboGuard's privacy settings the camera must be **on**.
-3. Tap **RG Object Test** on the robot's home screen (not via adb, otherwise the camera stream gets no SDK service).
-
-### Running the test
-
-| Step | Do | Expected |
-|---|---|---|
-| **1** | Wait for the status line | `ready: Calendar_prop`; the log lists keypoints per reference (≥ ~200 is good, < 100 is weak) |
-| **2** | Tap *Start camera + detection* | Live camera image on the right; if it is sideways, pick 90° / 270° under *Rotate preview* |
-| **3** | Hold the object in front of the robot at ~0.5–1 m | Green outline and yellow box with the name and inlier count; log `DETECTED …` |
-| **4** | Tilt, move further away, cover half of it | Note when the box disappears (log `lost …` with the numbers) |
-| **5** | Point the camera at other things | No box; `inliers` should stay well below 12 |
-
-The stats line shows good matches and inliers per reference and how long one detection takes. Detected = at least
-15 good matches and 12 inliers (`OrbConfig`). Too many false boxes → raise `minInliers`; object not found although visible
-→ lower it or use a better reference photo (sharp, straight on, object filling the image).
-
-### Pink marker (colour as a second identifier)
-
-For objects with a pink line around them (e.g. the calendar). Switch **Only search near pink marker** to *On*: ORB then
-searches only the areas close to pink pixels (white rectangle on the preview; thin pink = the pink pixels themselves) and
-skips the full frame and the tiles. Without pink in view nothing can be detected.
-
-| Step | Do | Expected |
-|---|---|---|
-| **P1** | Pink marker *On*, calendar in view | A white rectangle around the calendar; stats `regions 1 [W×H/…px]` |
-| **P2** | Wait | Box around the calendar; `(pink box)` = enough inliers but the outline was distorted, the box is the pink line |
-| **P3** | Turn the robot away from the calendar (whiteboard only) | No white rectangle, no box (`regions 0`) |
-| **P4** | No white rectangle although the pink line is visible | Lower *minimum saturation* (35) or raise the margin |
-| **P5** | White rectangles on other pinkish things | Raise *minimum saturation* (80); note what they were |
-
-## Testing speaker change detection
-
-Checks whether the robot can tell **one person talking** from **more than one person talking**, using speaker change
-detection (`robocontrol/conversation`). It notices when the voice changes from one moment to the next. It does not
-recognise who is speaking, and it stores no audio: the log contains only numbers (levels, distances, times, decisions).
-
-### Preparation
-
-1. Install the app and tap **RG Speaker Test** on the robot's home screen.
-2. In RoboGuard's privacy settings the microphone must be **on**, otherwise the test refuses to listen.
-3. A quiet room helps for the first run. Stand about 1 m in front of the robot.
-
-### The screen
-
-- **Left:** STOP, *Start listening (microphone)*, *Synthetic self-test*, *Synthetic demo*, and ✔/✘ buttons per scenario.
-- **Right, top:** the current decision in large letters: *no speech* (grey), *listening…* (blue, not enough speech yet),
-  *ONE speaker* (green) or *MORE THAN ONE speaker* (orange).
-- **Below:** live numbers, and a graph of the **KL2 distance** (blue line) between the last two 1.5 s blocks of speech. The
-  dashed orange line is the candidate threshold. A peak above it is checked with **ΔBIC**; if ΔBIC > 0 it counts as a change.
-- "More than one speaker" = at least 2 changes within the last 20 s.
-
-### Running the tests
-
-| Step | Do | Expected |
-|---|---|---|
-| **0 Self-test** | Tap *Synthetic self-test (fast)* | Log: four `PASS` lines and `self-test: 4/4 scenes PASS` (takes a few seconds) |
-| **0b Demo** | Tap *Synthetic demo (40 s, live)* and watch | ~12 s *ONE speaker*, a pause, then *MORE THAN ONE speaker* while the two synthetic voices alternate |
-| **1** | *Start listening*, one person talks continuously for 30 s | Stays *ONE speaker*; few or no `CHANGE` lines |
-| **2** | Two people take turns, a few sentences each, for about 1 min | Switches to *MORE THAN ONE speaker*; `CHANGE` lines near the turn changes |
-| **3** | Two people talk at the same time | Unknown: overlapping speech is the hard case; note what happens |
-| **4** | Nobody talks, only background noise | *no speech*, or at least no `CHANGE` lines |
-| **5** | One person talks, pauses 5 s, talks again | Stays *ONE speaker* |
-
-After each scenario tap ✔ or ✘ next to it, then *STOP*. The verdict goes into the log together with what the screen showed.
-
-### Getting the results
-
-```bash
-adb exec-out run-as com.example.roboguard ls files/voiceprobe/
-adb exec-out run-as com.example.roboguard cat files/voiceprobe/<probe-file>.log
-```
-
-`candidate at … s: KL2 …, ΔBIC … → CHANGE / rejected` lines show every decision. Too many wrong changes → raise
-`bicLambda` or `kl2Relative` in `ChangeDetectorConfig`; missed changes → lower them.
-
-## Testing movement
-```app/src/main/java/com/example/testing/movementprobe``` is a test screen for driving the robot: it shows the robot's current map to scale, the robot's live position, the places saved in RobotOS, and points you add by tapping the map. You can then let the robot drive to any of them.
-
-### Preparation
-1. A map must exist and be active on the robot (created with the robot's map tool). The robot must know where it is on that map (localized)
-2. **Clear the area the robot will drive through** and stay close enough to press STOP
-3. Start the test screen by tapping the **RG Movement Test** icon on the robot's home screen. Do not start it with ```adb shell am start```: RobotOS only lets apps started from its home launcher use the robot SDK
-4. Allow storage access when asked: the map is read from the robot's storage
-
-### The screen
-- **Left**: the red **STOP** button, status (map name, SDK control, localized, robot position, navigation state), **Drive to selected**, **Reload map**, **Clear my points**, and all points as a list
-- **Right**: the map (grey = unknown, white = free, dark = walls) with the robot (green circle, the line shows its heading), saved places (blue) and your points (orange); the selected point has a red ring. The log is below the map
-
-### Running the tests
-| Step | What to do | Expected | If not |
-|---|---|---|---|
-| **1 Check status** | Wait a few seconds after opening | ```SDK control: yes```, ```Localized: yes```, the map shows, the green robot sits where the robot really is | ```SDK control: NO```: restart the screen from the home icon. ```Localized: NO```: relocalize in the map tool. Robot in the wrong spot on the map: note it, the map orientation or position conversion may be wrong |
-| **2 Move the robot by hand** | Push or turn the robot a little (or drive it with the map tool) | The green circle and its heading line follow within a second | Note which direction is mirrored or rotated |
-| **3 Drive to a saved place** | Tap a blue place in the list, then **Drive to selected** | The robot drives there; log ends with ```ARRIVED``` | Note the ```FAILED: ...``` reason from the log |
-| **4 Drive to your own point** | Tap an open, reachable spot on the map (it becomes P1 and is selected), then **Drive to selected** | The robot drives to that spot and the green circle ends on the orange point; ```ARRIVED``` | Robot drives somewhere else: the tap-to-position conversion is off |
-| **5 STOP** | Start a drive, then press **STOP** | The robot stops immediately; log shows ```STOP``` | The robot keeps driving: press the robot's emergency stop |
-| **6 Unreachable point** | Tap a spot inside a wall or outside the map, then drive | Navigation fails with a clear reason (e.g. ```Unreachable```) and the robot does not move | Note what happened |
-| **8 Save a location** | Drive or push the robot to a spot, check ```Localized: yes```, press **Save current position…**, enter a name, **Save** | The name appears under "My locations" (purple on the map, at the robot's position) and is selected; closing and reopening the screen keeps it | The button is greyed out: the robot is not localized. An error in the dialog explains why saving was refused |
-| **9 Drive to a saved location** | Move the robot away, select your location, **Drive to selected** | The robot returns to the saved spot; ```ARRIVED``` | Note the log |
-| **7 No-go zone** | If the map has no-go lines, place a point behind one and drive | RobotOS refuses or drives around, never through the zone | Note it |
-
-Leaving the screen (home button, another app) stops any navigation.
-
-### No-go line test (changes the robot's map)
-RoboGuard can write no-go lines into the robot's map the same way RobotOS's map tool does; the robot's own route planner then avoids them. This is the basis for private areas. Existing no-go lines are shown in **blue** on the map.
-
-**Before the first write, make a backup on your PC** (it was done once on 2026-09-16 into ```~/RoboGuard_map_backups/```):
-```adb pull "/sdcard/robot/map/RoboGuard Lab-0916110443/." ~/RoboGuard_map_backups/RoboGuard_Lab_<date>/```
-RoboGuard also keeps its own copy of the original map image before its first change.
-
-| Step | What to do | Expected | If not |
-|---|---|---|---|
-| **1 Choose A and B** | Select the charging point in the list, press **A = selected**; select the Empfangsstelle, press **B = selected** | ```A: …  B: …``` shows both | |
-| **2 Preview** | **Preview line across A–B** | A **red** line crosses the room halfway between A and B, from wall to wall. Nothing is written yet | The line ends in the open or cuts through a place: do not write, note the log |
-| **3 Baseline drive** | Drive the robot to A, then to B (before writing) | Robot drives directly to B | |
-| **4 Write** | **Write no-go line to robot map…** → **Write** | The dialog shows ```no-go line written```; after a moment the line appears **blue** on the map. The log shows ```setMapForbidLineFlag … answered``` and ```setMapUpdateTime … answered``` | Note the error in the dialog and log |
-| **5 Observe** | Drive the robot back to A, then to B | The robot does not cross the line: it detours around it if there is a way, or navigation fails (e.g. ```Unreachable```) | The robot drives straight through: RobotOS may only load the change after reloading the map. Try switching the map in the map tool (or restarting the robot), relocalize, and repeat step 5. Note what was needed |
-| **6 Restore** | **Restore original map…** → **Restore** | ```original map restored```; the red/blue line from step 4 disappears after reload | See "Restoring from the PC backup" below |
-
-**Result (2026-09-16):** lines written by RoboGuard were ignored by RobotOS (the robot drove through), while lines drawn by hand in the map tool worked (navigation failed with ```The global is path search failed```). Privacy areas are therefore enforced by RoboGuard itself, see below.
-
-### Privacy area test
-RoboGuard enforces private areas itself: it refuses drives whose target lies in a private area, and stops a drive as soon as the robot comes into or close to a private area on the way. In both cases the robot says: *"Weg führt durch privaten Bereich. Ich halte an und fahre nicht weiter."*
-
-| Step | What to do | Expected | If not |
-|---|---|---|---|
-| **1 Create the area** | Select **Empfangsstelle** in the list, press **Private area around selected** | A red filled circle (1 m) with an outer ring (+0.5 m margin) appears around the Empfangsstelle; the log shows ```PRIVATE area "Privat: Empfangsstelle"``` | |
-| **2 Target inside** | With Empfangsstelle still selected, press **Drive to selected** | The robot does not move; it says the sentence; log: ```REFUSED``` | The robot drives: note the log |
-| **3 Route through the area** | Tap a point on the far side of the red circle (so the direct path crosses it), then **Drive to selected** | The robot starts, stops at the outer ring, says the sentence, then **turns on the spot** (it does not drive) to face away from the area; log: ```ABORTED at (x, y)```, ```turn away: heading …° → …°```, ```turn away finished, heading now …°``` | The robot drives through: note how far into the circle it got. It turns the wrong way (towards the area): note both headings from the log, the turn direction may be inverted |
-| **3b Leave again** | Right after step 3, select a point away from the area (e.g. where the robot came from) and drive there | The robot drives away normally, although it started close to the area | The robot is stopped again straight away: note the log |
-| **4 Route around the area** | Choose a target whose path does not cross the circle | Normal drive, ```ARRIVED``` | |
-| **5 Clear** | **Clear private areas**, then repeat step 2 | The robot drives to the Empfangsstelle | |
-| **6 Draw an area** | Tap the map to open full screen, press **Draw private area**, tap the corners of an area one after another (zoom in first if needed), press **Finish area** | While drawing, red corners and lines appear; after Finish the area is filled red with its margin ring and listed as ```Privat: Bereich 1```. Drives into or through it behave like steps 2 and 3 | **Undo corner** removes the last corner, **Cancel** discards the drawing |
-
-Private areas are kept only while the screen is open. While driving, the robot checks its position every 0.15 s, so at *Slow* speed it can move about 4 cm past the ring (plus braking distance) before it stops.
-
-#### Restoring from the PC backup
-If the app cannot restore the map (or the map is broken), copy the original image back from the PC, then reload the map in the map tool or restart the robot:
-```adb push ~/RoboGuard_map_backups/<backup folder>/navi_data/map.pgm "/sdcard/robot/map/RoboGuard Lab-0916110443/navi_data/map.pgm"```
-
-### Getting the results
-Same as for the other test screens: the log file name is shown in the first log line.
-1. ```adb shell run-as com.example.roboguard ls files/voiceprobe```
-2. ```adb exec-out run-as com.example.roboguard cat files/voiceprobe/<file name> > movement.log```
-
+3. The robot does not speak or move: RoboGuard was not started from the robot's home launcher. Close it and start it again from its icon
+4. Debug mode: tapping the header line of RoboGuard's start screen 7 times switches it on. "Navigation and Map" then shows status information, the detection debug views and the switch "Disable RoboGuard" (stops RoboGuard and keeps it from starting at boot)
+
+## Features
+RoboGuard runs on the robot and enforces the privacy settings chosen in the phone app.
+- **Server and pairing:** an HTTPS server on port 8443 that the phone app pairs with through a QR code and a one-time password. Every request is signed. The phone sends the privacy settings, which are stored on the robot. This code was written before the thesis.
+- **Sensor control:** camera, microphone and LIDAR are switched on or off through RobotOS and Android when the phone saves the settings; the phone is told whether every switch was confirmed
+- **Conversation detection (Discretion Mode):** when the microphone picks up a conversation, the robot asks whether it should leave the room, mute its microphone or not ask again for a while
+- **Object detection (Pixelate Objects):** the robot recognises a marked calendar (or other reference images) in its camera image and asks what to do with it
+- **Navigation and private areas:** the robot's map with its position, places and saved locations, on the robot's screen and in the phone app. Private areas can be drawn on the map; the robot does not enter them and asks for permission when a route leads through one
+- All texts on screen and all spoken sentences are in ```assets/texts/texts.json```, all object detection settings in ```assets/settings/settings.json```
+
+All Code under ```java/com/example/robocontrol``` was written for the thesis. The only preexisting code is under ```java/com/example/robocontrol```, although some adjustments with regard to the server routes were made there as well. Consult the thesis itself for more detailed information.
