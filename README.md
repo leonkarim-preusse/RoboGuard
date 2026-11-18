@@ -45,4 +45,4 @@ RoboGuard runs on the robot and enforces the privacy settings chosen in the phon
 - **Navigation and private areas:** the robot's map with its position, places and saved locations, on the robot's screen and in the phone app. Private areas can be drawn on the map; the robot does not enter them and asks for permission when a route leads through one
 - All texts on screen and all spoken sentences are in ```assets/texts/texts.json```, all object detection settings in ```assets/settings/settings.json```
 
-All Code under ```java/com/example/robocontrol``` was written for the thesis. The only preexisting code is under ```java/com/example/robocontrol```, although some adjustments with regard to the server routes were made there as well. Consult the thesis itself for more detailed information.
+All Code under ```java/com/example/robocontrol``` was written for the thesis. The only preexisting code is under ```java/com/example/robocontrol```, although some adjustments with regard to the server routes were made there as well. Consult the thesis itself for more detailed information. The tag V1.0. points to the last commit before the thesis.
